@@ -27,12 +27,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to listen on %s: %v", cfg.RPCAddr, err)
 	}
-
-	publicAddr := cfg.PublicAddress // from .env, e.g. "4.tcp.ngrok.io:11163"
-	if publicAddr == "" {
-		// fallback if user didn't specify
-		publicAddr = listener.Addr().String()
-	}
+	actualAddr := listener.Addr().String()
+	fmt.Printf("Listening on %s\n", actualAddr)
 
 	// 2) Create the Server struct (without calling initCluster yet)
 	srv, err := server.NewServerBare() // a constructor that does NOT call initCluster
@@ -41,7 +37,7 @@ func main() {
 	}
 
 	// 3) Now that we know the final address, init the cluster
-	if err := srv.InitCluster(publicAddr, cfg.MemStoreAddr); err != nil {
+	if err := srv.InitCluster(actualAddr, cfg.MemStoreAddr); err != nil {
 		log.Fatalf("Failed to init cluster: %v", err)
 	}
 
