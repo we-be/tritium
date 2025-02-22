@@ -12,6 +12,7 @@ type Config struct {
 	RPCAddr        string // address for RPC server
 	MaxConnections int
 	JoinAddr       string // optional address to join existing cluster
+	PublicAddress  string // address advertised to another nodes for connection
 }
 
 func NewConfigFromDotenv(fp string) (Config, error) {
@@ -30,6 +31,7 @@ func NewConfigFromDotenv(fp string) (Config, error) {
 		MemStoreAddr:   cfg["SECURE_STORE_ADDRESS"],
 		RPCAddr:        cfg["RPC_ADDRESS"],
 		MaxConnections: maxConn,
-		JoinAddr:       cfg["JOIN_ADDRESS"], // Optional
+		JoinAddr:       cfg["JOIN_ADDRESS"],   // Optional
+		PublicAddress:  cfg["PUBLIC_ADDRESS"], // Optional
 	}, nil
 }
