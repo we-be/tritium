@@ -18,7 +18,7 @@ type Server struct {
 	rpc      *rpc.Server
 	stats    ServerStats
 	stopCh   chan struct{}
-	cluster  *ClusterInfo // New field
+	cluster  *ClusterInfo
 }
 
 type ServerStats struct {
@@ -26,9 +26,23 @@ type ServerStats struct {
 	BytesTransferred  int64
 }
 
+func NewServerBare() (*Server, error) {
+	s := &Server{
+		rpc:    rpc.NewServer(),
+		stopCh: make(chan struct{}),
+	}
+
+	// Register our Store RPC interface
+	if err := s.rpc.RegisterName("Store", s); err != nil {
+		return nil, fmt.Errorf("failed to register RPC: %w", err)
+	}
+
+	return s, nil
+}
+
 // NewServer creates a new Tritium server
 func NewServer(config config.Config) (*Server, error) {
-	// Initialize with empty replica list - we'll add replicas through the cluster
+	// Initialize with empty replica list
 	store, err := storage.NewRespServer(
 		config.MemStoreAddr,
 		config.MaxConnections,
@@ -72,7 +86,33 @@ func (s *Server) Start(addr string) error {
 	}
 	s.listener = listener
 
+	// Update our cluster's local node RPC address with the actual address
+	if s.cluster != nil {
+		s.cluster.mu.Lock()
+		s.cluster.localNode.RPCAddr = s.listener.Addr().String()
+		s.cluster.mu.Unlock()
+		fmt.Printf("[Start] Updated local node RPCAddr: %s\n", s.cluster.localNode.RPCAddr)
+	}
+
 	// Accept connections
+	go s.acceptLoop()
+	return nil
+}
+
+func (s *Server) InitCluster(rpcAddr, memStoreAddr string) error {
+	// Create a new RespServer with no replicas initially
+	store, err := storage.NewRespServer(memStoreAddr, 4, []string{})
+	if err != nil {
+		return fmt.Errorf("failed to create RESP server: %w", err)
+	}
+	s.store = store
+
+	// Actually initialize the cluster info
+	return s.initCluster(rpcAddr, memStoreAddr)
+}
+
+func (s *Server) StartWithListener(listener net.Listener) error {
+	s.listener = listener
 	go s.acceptLoop()
 	return nil
 }
@@ -85,14 +125,10 @@ func (s *Server) acceptLoop() {
 		default:
 			conn, err := s.listener.Accept()
 			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
-					continue
-				}
-				// Non-temporary error or server shutdown
+				// handle error
 				return
 			}
-			atomic.AddInt64(&s.stats.ActiveConnections, 1)
-			go s.serveConn(conn)
+			go s.rpc.ServeConn(conn)
 		}
 	}
 }
