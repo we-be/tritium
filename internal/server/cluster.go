@@ -314,11 +314,14 @@ func (ci *ClusterInfo) checkNodesHealth() {
 
 	now := time.Now()
 	for id, node := range ci.nodes {
+		// Skip the local node
 		if id == ci.localNode.ID {
 			continue
 		}
 
 		oldState := node.State
+
+		// Mark down if not seen in 15s
 		if now.Sub(node.LastSeen) > 15*time.Second {
 			node.State = NodeStateDown
 		} else if now.Sub(node.LastSeen) > 10*time.Second {
@@ -327,10 +330,17 @@ func (ci *ClusterInfo) checkNodesHealth() {
 			node.State = NodeStateHealthy
 		}
 
+		// If newly marked down, remove replica from local store
 		if oldState != NodeStateDown && node.State == NodeStateDown {
 			if err := ci.server.removeNodeReplica(node); err != nil {
 				fmt.Printf("[health] Failed to remove replica for node %s: %v\n", node.RPCAddr, err)
 			}
+		}
+
+		// After being down for e.g. 60s, remove from cluster membership
+		if node.State == NodeStateDown && now.Sub(node.LastSeen) > 60*time.Second {
+			fmt.Printf("[health] Node %s removed from cluster after extended downtime\n", node.RPCAddr)
+			delete(ci.nodes, id)
 		}
 	}
 }
