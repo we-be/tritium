@@ -126,8 +126,8 @@ func (c *cluster) exchange(addr string, cmd resp.Command) (map[string]storage.No
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(peerTimeout))
 	r := resp.NewReader(conn)
-	if pw := c.server.cfg.Password; pw != "" {
-		if _, err := resp.NewCommand("AUTH", pw).Do(conn, r); err != nil {
+	if pw := c.server.peerPassword(); pw != "" {
+		if _, err := resp.NewCommand("AUTH", "peer", pw).Do(conn, r); err != nil {
 			return nil, fmt.Errorf("auth: %w", err)
 		}
 	}

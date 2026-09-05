@@ -47,7 +47,18 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
+	if cfg.Password != "" && cfg.PeerPassword == "" {
+		slog.Warn("PEER_PASSWORD is unset, so any client that knows AUTH_PASSWORD can join the cluster")
+	}
 	return &Server{cfg: cfg, store: store, tlsServer: tlsServer, tlsPeer: tlsPeer}, nil
+}
+
+// peerPassword is what nodes present to each other as AUTH peer <password>.
+func (s *Server) peerPassword() string {
+	if s.cfg.PeerPassword != "" {
+		return s.cfg.PeerPassword
+	}
+	return s.cfg.Password
 }
 
 // Start listens on addr (":0" picks a free port), with TLS when configured,

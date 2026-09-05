@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,9 @@ import (
 // session is one client connection. It speaks RESP2 until the client asks
 // for RESP3 with HELLO 3; for what tritium sends, the two differ only in how
 // nulls and the HELLO reply are encoded.
+//
+// Two identities exist: the "default" user, a client, and the "peer" user,
+// another node. Only peers may change membership with TRITIUM.GOSSIP.
 type session struct {
 	srv    *Server
 	conn   net.Conn
@@ -23,11 +27,14 @@ type session struct {
 	id     int64
 	proto  int
 	authed bool
+	peer   bool
 }
 
 var (
-	replyOK     = resp.AppendSimpleString(nil, "OK")
-	replyNoAuth = resp.AppendError(nil, "NOAUTH Authentication required.")
+	replyOK        = resp.AppendSimpleString(nil, "OK")
+	replyNoAuth    = resp.AppendError(nil, "NOAUTH Authentication required.")
+	replyWrongPass = resp.AppendError(nil, "WRONGPASS invalid username-password pair or user is disabled.")
+	replyNoPerm    = resp.AppendError(nil, "NOPERM only cluster peers may run this command")
 )
 
 type command struct {
@@ -94,6 +101,9 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	if !s.authed {
 		return replyNoAuth, false
 	}
+	if name == "TRITIUM.GOSSIP" && !s.isPeer() {
+		return replyNoPerm, false
+	}
 	cmd, ok := commands[name]
 	if !ok {
 		return resp.AppendError(nil, fmt.Sprintf("ERR unknown command '%s'", args[0])), false
@@ -112,22 +122,48 @@ func errMsg(err error) []byte {
 	return resp.AppendError(nil, "ERR "+err.Error())
 }
 
-// authenticate handles AUTH [username] password and returns nil on success.
+// authenticate handles AUTH [username] password for the "default" and
+// "peer" users and returns nil on success.
 func (s *session) authenticate(args []string) []byte {
 	if len(args) < 1 || len(args) > 2 {
 		return errArity("AUTH")
 	}
-	if s.srv.cfg.Password == "" {
-		return resp.AppendError(nil, "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+	user, password := "default", args[len(args)-1]
+	if len(args) == 2 {
+		user = args[0]
 	}
-	if len(args) == 2 && args[0] != "default" {
-		return resp.AppendError(nil, "WRONGPASS invalid username-password pair or user is disabled.")
+	var want string
+	switch user {
+	case "default":
+		if s.srv.cfg.Password == "" {
+			return resp.AppendError(nil, "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?")
+		}
+		want = s.srv.cfg.Password
+	case "peer":
+		want = s.srv.peerPassword()
 	}
-	if subtle.ConstantTimeCompare([]byte(args[len(args)-1]), []byte(s.srv.cfg.Password)) != 1 {
-		return resp.AppendError(nil, "WRONGPASS invalid username-password pair or user is disabled.")
+	if want == "" || subtle.ConstantTimeCompare([]byte(password), []byte(want)) != 1 {
+		return replyWrongPass
 	}
 	s.authed = true
+	s.peer = user == "peer"
 	return nil
+}
+
+// isPeer reports whether the connection may change cluster membership: it
+// authenticated as the peer user when a password is configured, and under
+// TLS_CLIENT_AUTH it presented a certificate the listener verified.
+func (s *session) isPeer() bool {
+	if s.srv.peerPassword() != "" && !s.peer {
+		return false
+	}
+	if s.srv.cfg.TLSClientAuth {
+		tc, ok := s.conn.(*tls.Conn)
+		if !ok || len(tc.ConnectionState().VerifiedChains) == 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // hello handles HELLO [protover [AUTH username password] [SETNAME name]]

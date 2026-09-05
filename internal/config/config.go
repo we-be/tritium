@@ -18,7 +18,8 @@ type Config struct {
 	ListenAddr    string // LISTEN_ADDRESS: where this node accepts clients and peers
 	AdvertiseAddr string // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
 	JoinAddr      string // JOIN_ADDRESS: an existing node to join; empty seeds a new cluster
-	Password      string // AUTH_PASSWORD: required from clients and peers when set
+	Password      string // AUTH_PASSWORD: required from clients when set
+	PeerPassword  string // PEER_PASSWORD: what nodes AUTH to each other with; defaults to AUTH_PASSWORD
 	StoreAddr     string // SECURE_STORE_ADDRESS: RESP server this node writes through
 	StorePassword string // SECURE_STORE_PASSWORD: AUTH for the store and every replica
 	PoolSize      int    // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
@@ -53,6 +54,7 @@ func Load(path string) (Config, error) {
 		AdvertiseAddr: get("ADVERTISE_ADDRESS", ""),
 		JoinAddr:      get("JOIN_ADDRESS", ""),
 		Password:      get("AUTH_PASSWORD", ""),
+		PeerPassword:  get("PEER_PASSWORD", ""),
 		StoreAddr:     get("SECURE_STORE_ADDRESS", DefaultStoreAddr),
 		StorePassword: get("SECURE_STORE_PASSWORD", ""),
 		TLSCert:       get("TLS_CERT", ""),

@@ -109,7 +109,8 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `LISTEN_ADDRESS`         | `localhost:8080` | Where the node accepts clients and peers                                |
 | `ADVERTISE_ADDRESS`      | bound address    | Address peers dial; set it behind NAT or in containers                  |
 | `JOIN_ADDRESS`           | none             | An existing node to join; unset seeds a new cluster                     |
-| `AUTH_PASSWORD`          | none             | Password clients and peers must `AUTH` with; shared by the whole cluster |
+| `AUTH_PASSWORD`          | none             | Password clients must `AUTH` with                                       |
+| `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
 | `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                                    |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
@@ -129,14 +130,19 @@ adopts the view, and announces itself to everyone in it with
 `TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
 5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
 is down and dropped from replication, and for 60 s is forgotten. Node-to-node
-traffic uses the same port, password and TLS settings as clients.
+traffic uses the same port and TLS settings as clients, authenticated as the
+`peer` user.
 
 ## Security
 
 - **RAM-only.** Run stores with `--save "" --appendonly no`, as the compose file
   and scripts do, and nothing ever touches disk. Every key expires.
 - **Zero dependencies.** Standard library only; `go.mod` has no requirements.
-- **Authentication.** Set `AUTH_PASSWORD` and every client and peer must `AUTH`.
+- **Authentication.** Set `AUTH_PASSWORD` and every client must `AUTH`. Set
+  `PEER_PASSWORD` too: joining the cluster means every node starts replicating
+  its writes to the newcomer's store, so membership has its own credential.
+  `TRITIUM.GOSSIP` is refused to anyone not authenticated as `peer`, and under
+  `TLS_CLIENT_AUTH` also to any connection without a verified certificate.
 - **Encryption in transit.** Set `TLS_CERT` and `TLS_KEY`; add `TLS_CA` and
   `TLS_CLIENT_AUTH=true` for mutual TLS, which covers node-to-node traffic too.
 - **Encryption at rest, end to end.** Give the Go client a `Key` and every

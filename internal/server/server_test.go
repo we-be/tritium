@@ -118,14 +118,26 @@ func TestCommands(t *testing.T) {
 }
 
 func TestAuth(t *testing.T) {
-	s := startNode(t, config.Config{Password: "s3cret"})
+	s := startNode(t, config.Config{Password: "s3cret", PeerPassword: "peer-s3cret"})
 	c := dial(t, s)
 
 	c.wantErr("NOAUTH", "GET", "auth:k")
 	c.wantErr("WRONGPASS", "AUTH", "wrong")
 	c.wantErr("WRONGPASS", "AUTH", "admin", "s3cret")
+	c.wantErr("WRONGPASS", "AUTH", "peer", "s3cret")
 	c.want("OK", "AUTH", "s3cret")
 	c.want("PONG", "PING")
+
+	// A client may read the view but not change membership; a peer may do both.
+	self := s.cluster.localJSON()
+	if _, err := c.do("TRITIUM.NODES"); err != nil {
+		t.Fatalf("client TRITIUM.NODES: %v", err)
+	}
+	c.wantErr("NOPERM", "TRITIUM.GOSSIP", self)
+	c.want("OK", "AUTH", "peer", "peer-s3cret")
+	if _, err := c.do("TRITIUM.GOSSIP", self); err != nil {
+		t.Fatalf("peer TRITIUM.GOSSIP: %v", err)
+	}
 
 	h := dial(t, s)
 	h.wantErr("NOPROTO", "HELLO", "4")
@@ -161,11 +173,11 @@ func TestRESP3(t *testing.T) {
 	}
 }
 
-// Two nodes with a shared password: join, announce and gossip all run over
-// authenticated RESP, and a write through one lands in the other's store.
+// Two nodes with client and peer passwords: join, announce and gossip all
+// run as the peer user, and a write through one lands in the other's store.
 func TestJoinReplicates(t *testing.T) {
-	seed := startNode(t, config.Config{Password: "pw"})
-	peer := startNode(t, config.Config{Password: "pw", JoinAddr: seed.Addr()})
+	seed := startNode(t, config.Config{Password: "pw", PeerPassword: "peer-pw"})
+	peer := startNode(t, config.Config{Password: "pw", PeerPassword: "peer-pw", JoinAddr: seed.Addr()})
 
 	if n := len(seed.Nodes()); n != 2 {
 		t.Fatalf("seed sees %d nodes, want 2", n)
