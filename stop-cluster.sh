@@ -1,22 +1,18 @@
-#!/bin/bash
-# stop-cluster.sh
+#!/usr/bin/env bash
+# Stops everything start-cluster.sh started.
+set -uo pipefail
+cd "$(dirname "$0")"
 
-echo "Stopping Tritium cluster..."
-
-# Stop Tritium nodes
 for pidfile in logs/node*.pid; do
-    if [ -f "$pidfile" ]; then
-        pid=$(cat "$pidfile")
-        echo "Stopping node with PID $pid"
-        kill $pid 2>/dev/null || true
-        rm "$pidfile"
-    fi
+    [[ -f $pidfile ]] || continue
+    kill "$(cat "$pidfile")" 2>/dev/null && echo "stopped $(basename "$pidfile" .pid)"
+    rm -f "$pidfile"
 done
 
-# Stop Redis instances
-echo "Stopping Redis instances..."
-for port in 6379 6380 6381 6382 6383 6384; do
-    redis-cli -p $port shutdown || true
+CLI=$(command -v valkey-cli || command -v redis-cli || true)
+for port in 6380 6382 6384 6379 6381 6383; do
+    [[ -n $CLI ]] && "$CLI" -p "$port" shutdown nosave >/dev/null 2>&1 && echo "stopped store on $port"
 done
 
-echo "Cleanup complete!"
+rm -f node1.env node2.env node3.env
+echo "cluster stopped"

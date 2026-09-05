@@ -1,0 +1,81 @@
+# Three-node cluster: each tritium node fronts its own Valkey primary with one
+# replica. Nodes are published on 8080-8082 for clients and the monitor.
+#
+#   podman compose up --build          # or: docker compose up --build
+#   go run ./cmd/tritium-monitor
+#   go run ./cmd/tritium-cli -addr localhost:8081 set hello world
+#   go run ./cmd/tritium-cli -addr localhost:8082 get hello
+
+x-store: &store
+  image: docker.io/valkey/valkey:8-alpine
+  healthcheck:
+    test: ["CMD", "valkey-cli", "ping"]
+    interval: 2s
+    timeout: 2s
+    retries: 15
+
+x-node: &node
+  build: .
+  image: localhost/tritium:dev
+
+services:
+  store1:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+  store1-replica:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--replicaof", "store1", "6379"]
+    depends_on:
+      store1: { condition: service_healthy }
+
+  store2:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+  store2-replica:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--replicaof", "store2", "6379"]
+    depends_on:
+      store2: { condition: service_healthy }
+
+  store3:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no"]
+  store3-replica:
+    <<: *store
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--replicaof", "store3", "6379"]
+    depends_on:
+      store3: { condition: service_healthy }
+
+  tritium1:
+    <<: *node
+    environment:
+      SECURE_STORE_ADDRESS: store1:6379
+      RPC_ADDRESS: ":8080"
+      ADVERTISE_ADDRESS: tritium1:8080
+    ports: ["8080:8080"]
+    depends_on:
+      store1: { condition: service_healthy }
+
+  tritium2:
+    <<: *node
+    environment:
+      SECURE_STORE_ADDRESS: store2:6379
+      RPC_ADDRESS: ":8080"
+      ADVERTISE_ADDRESS: tritium2:8080
+      JOIN_ADDRESS: tritium1:8080
+    ports: ["8081:8080"]
+    depends_on:
+      store2: { condition: service_healthy }
+      tritium1: { condition: service_started }
+
+  tritium3:
+    <<: *node
+    environment:
+      SECURE_STORE_ADDRESS: store3:6379
+      RPC_ADDRESS: ":8080"
+      ADVERTISE_ADDRESS: tritium3:8080
+      JOIN_ADDRESS: tritium1:8080
+    ports: ["8082:8080"]
+    depends_on:
+      store3: { condition: service_healthy }
+      tritium1: { condition: service_started }
