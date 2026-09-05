@@ -8,8 +8,8 @@ import (
 	"github.com/we-be/tritium/pkg/storage"
 )
 
-func TestStoreSetGetDelete(t *testing.T) {
-	s, err := storage.NewStore(resptest.Addr(t), 2)
+func TestStoreCommands(t *testing.T) {
+	s, err := storage.NewStore(resptest.Addr(t), 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,11 +31,14 @@ func TestStoreSetGetDelete(t *testing.T) {
 	if v, err := s.Get("storage:empty"); err != nil || v == nil {
 		t.Fatalf("empty value: %#v, %v", v, err)
 	}
-	if ok, err := s.Delete("storage:k"); err != nil || !ok {
-		t.Fatalf("delete: %v, %v", ok, err)
+	if n, err := s.Exists("storage:k", "storage:empty", "storage:missing"); err != nil || n != 2 {
+		t.Fatalf("exists: %d, %v", n, err)
 	}
-	if ok, _ := s.Delete("storage:k"); ok {
-		t.Fatal("second delete reported a key")
+	if ttl, err := s.TTL("storage:k"); err != nil || ttl <= 0 || ttl > 60 {
+		t.Fatalf("ttl: %d, %v", ttl, err)
+	}
+	if n, err := s.Delete("storage:k", "storage:empty", "storage:missing"); err != nil || n != 2 {
+		t.Fatalf("delete: %d, %v", n, err)
 	}
 	if _, err := s.Get("storage:k"); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("after delete: got %v, want ErrNotFound", err)
@@ -43,13 +46,13 @@ func TestStoreSetGetDelete(t *testing.T) {
 }
 
 func TestStoreReplicates(t *testing.T) {
-	primary, err := storage.NewStore(resptest.Addr(t), 1)
+	primary, err := storage.NewStore(resptest.Addr(t), 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer primary.Close()
 	replicaAddr := resptest.Addr(t)
-	replica, err := storage.NewStore(replicaAddr, 1)
+	replica, err := storage.NewStore(replicaAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}

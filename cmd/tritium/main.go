@@ -37,8 +37,8 @@ func main() {
 		slog.Error("start", "err", err)
 		os.Exit(1)
 	}
-	if err := srv.Start(cfg.RPCAddr); err != nil {
-		slog.Error("listen", "addr", cfg.RPCAddr, "err", err)
+	if err := srv.Start(cfg.ListenAddr); err != nil {
+		slog.Error("listen", "addr", cfg.ListenAddr, "err", err)
 		os.Exit(1)
 	}
 	slog.Info("listening", "addr", srv.Addr(), "store", cfg.StoreAddr)

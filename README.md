@@ -1,9 +1,10 @@
 # Tritium
 
-Tritium is a RAM-only, zero-dependency key-value store: a small Go RPC server in
-front of a RESP store (Valkey, Redis, Garnet, anything that speaks the protocol).
-Nodes find each other by gossip and replicate every write into each other's
-stores, so any node can answer for any key.
+Tritium is a RAM-only, zero-dependency key-value store that speaks the Redis
+protocol. Each node is a small Go server in front of a RESP store (Valkey,
+Redis, Garnet, anything that speaks RESP). Nodes find each other by gossip and
+replicate every write into each other's stores, so any node answers for any
+key, and any Redis client can talk to any node.
 
 The [tritium-wails](https://github.com/we-be/tritium-wails) desktop client
 talks to it. The design notes live in
@@ -34,15 +35,24 @@ go run ./cmd/tritium             # loads .env if present; environment overrides 
 
 ## Use it
 
-From the shell:
+Any Redis client works. From the shell:
 
 ```sh
-go run ./cmd/tritium-cli set -ttl 3600 hello world
-go run ./cmd/tritium-cli -addr localhost:8081 get hello   # any node answers
-go run ./cmd/tritium-cli nodes
+valkey-cli -p 8080 set hello world EX 3600
+valkey-cli -p 8081 get hello                  # any node answers
+valkey-cli -p 8080 info tritium
 ```
 
-From Go:
+From Python:
+
+```python
+import redis
+r = redis.Redis(port=8080, password="change-me")
+r.set("hello", b"world", ex=3600)
+r.get("hello")
+```
+
+From Go, without pulling in a Redis library:
 
 ```go
 import "github.com/we-be/tritium/pkg/tritium"
@@ -55,45 +65,74 @@ defer client.Close()
 
 err = client.Set("hello", []byte("world"), new(3600)) // TTL in seconds; nil uses the server default
 value, err := client.Get("hello")                    // tritium.ErrNotFound when missing or expired
+nodes, err := client.Nodes()                         // the cluster view
 ```
+
+`tritium-cli` wraps that client for the shell and adds `nodes`:
+
+```sh
+go run ./cmd/tritium-cli nodes
+```
+
+### Commands
+
+| Command                                     | Notes                                                   |
+| ------------------------------------------- | ------------------------------------------------------- |
+| `SET key value [EX seconds \| PX millis]`   | Without an expiry the key gets the default TTL          |
+| `SETEX key seconds value`                   |                                                         |
+| `GET key`                                   |                                                         |
+| `DEL key [key ...]`                         |                                                         |
+| `EXISTS key [key ...]`                      |                                                         |
+| `TTL key`                                   |                                                         |
+| `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
+| `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
+| `TRITIUM.NODES`                             | The cluster view as JSON                                |
+| `TRITIUM.GOSSIP <node-json>`                | What nodes send each other; replies with the view       |
+
+Every key expires; the default TTL is 17600 seconds. `NX`, `XX`, `KEEPTTL`
+and multi-key reads are not supported.
 
 ## Configuration
 
 Read from `.env` (or the file given by `-config`), then overridden by the environment.
 
-| Variable                 | Default          | Purpose                                                        |
-| ------------------------ | ---------------- | -------------------------------------------------------------- |
-| `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                           |
-| `RPC_ADDRESS`            | `localhost:8080` | Listen address for the RPC server                              |
-| `ADVERTISE_ADDRESS`      | bound address    | Address peers dial; set it behind NAT or in containers          |
-| `JOIN_ADDRESS`           | none             | An existing node to join; unset seeds a new cluster            |
-| `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                             |
+| Variable                 | Default          | Purpose                                                                 |
+| ------------------------ | ---------------- | ----------------------------------------------------------------------- |
+| `LISTEN_ADDRESS`         | `localhost:8080` | Where the node accepts clients and peers                                |
+| `ADVERTISE_ADDRESS`      | bound address    | Address peers dial; set it behind NAT or in containers                  |
+| `JOIN_ADDRESS`           | none             | An existing node to join; unset seeds a new cluster                     |
+| `AUTH_PASSWORD`          | none             | Password clients and peers must `AUTH` with; shared by the whole cluster |
+| `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                                    |
+| `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
+| `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
+| `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
+| `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
+| `TLS_CLIENT_AUTH`        | `false`          | Require client certificates: mutual TLS for clients and between nodes   |
 
 ## How it works
 
 Each node owns one RESP primary (replicate that however you like; the compose
 file gives each one a replica). A write goes to the node's own primary with
 `SETEX`, then fans out to every other node's primary. Reads hit the local
-primary only. Keys always carry a TTL; the default is 17600 seconds.
+primary only.
 
-Membership is gossip: a joining node pulls the cluster view from any member and
-announces itself to everyone in it, then each node swaps views with a random
-peer every 5 seconds. A peer silent for 10 s is degraded, for 15 s is down and
-dropped from replication, and for 60 s is forgotten.
-
-The wire protocol is Go's `net/rpc` over TCP with gob encoding. Method names
-(`Store.Set`, `Store.Get`, `Store.Delete`, `Store.GetClusterNodes`) and the
-types in `pkg/storage` are the compatibility surface.
+Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
+adopts the view, and announces itself to everyone in it with
+`TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
+5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
+is down and dropped from replication, and for 60 s is forgotten. Node-to-node
+traffic uses the same port, password and TLS settings as clients.
 
 ## Security
 
 - **RAM-only.** Run stores with `--save "" --appendonly no`, as the compose file
   and scripts do, and nothing ever touches disk. Every key expires.
 - **Zero dependencies.** Standard library only; `go.mod` has no requirements.
-- **On the wire, nothing yet.** RPC and RESP are plain TCP without
-  authentication or encryption. Bind to loopback or a private network.
-  Client-side payload encryption is the next step; `internal/crypto` holds the
-  primitives.
+- **Authentication.** Set `AUTH_PASSWORD` and every client and peer must `AUTH`.
+- **Encryption in transit.** Set `TLS_CERT` and `TLS_KEY`; add `TLS_CA` and
+  `TLS_CLIENT_AUTH=true` for mutual TLS, which covers node-to-node traffic too.
+- **Not yet.** Values sit in the backing stores as sent. Client-side payload
+  encryption is the next step; `internal/crypto` holds the primitives.
 
 ## Development
 

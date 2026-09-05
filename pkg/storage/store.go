@@ -29,12 +29,13 @@ type conn struct {
 // pool is a fixed-size pool of connections to one RESP server. A slot holds
 // nil after a transport error and is redialed on next use.
 type pool struct {
-	addr  string
-	slots chan *conn
+	addr     string
+	password string
+	slots    chan *conn
 }
 
-func newPool(addr string, size int) (*pool, error) {
-	p := &pool{addr: addr, slots: make(chan *conn, size)}
+func newPool(addr string, size int, password string) (*pool, error) {
+	p := &pool{addr: addr, password: password, slots: make(chan *conn, size)}
 	for range size {
 		c, err := p.dial()
 		if err != nil {
@@ -51,7 +52,14 @@ func (p *pool) dial() (*conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", p.addr, err)
 	}
-	return &conn{Conn: c, r: resp.NewReader(c)}, nil
+	pc := &conn{Conn: c, r: resp.NewReader(c)}
+	if p.password != "" {
+		if _, err := resp.NewCommand("AUTH", p.password).Do(pc, pc.r); err != nil {
+			c.Close()
+			return nil, fmt.Errorf("auth %s: %w", p.addr, err)
+		}
+	}
+	return pc, nil
 }
 
 func (p *pool) get() (*conn, error) {
@@ -110,21 +118,23 @@ func (p *pool) do(cmd resp.Command) (any, error) {
 type Store struct {
 	primary  *pool
 	size     int
+	password string
 	mu       sync.RWMutex
 	replicas []*pool
 }
 
 // NewStore connects poolSize connections to the primary at addr, failing
-// fast if it is unreachable.
-func NewStore(addr string, poolSize int) (*Store, error) {
+// fast if it is unreachable. The password, if any, is sent as AUTH to the
+// primary and to every replica.
+func NewStore(addr string, poolSize int, password string) (*Store, error) {
 	if poolSize < 1 {
 		poolSize = 1
 	}
-	p, err := newPool(addr, poolSize)
+	p, err := newPool(addr, poolSize, password)
 	if err != nil {
 		return nil, fmt.Errorf("primary: %w", err)
 	}
-	return &Store{primary: p, size: poolSize}, nil
+	return &Store{primary: p, size: poolSize, password: password}, nil
 }
 
 // Set stores value under key for ttl seconds, then replicates the write.
@@ -157,16 +167,38 @@ func (s *Store) Get(key string) ([]byte, error) {
 	}
 }
 
-// Delete removes key and reports whether it existed, then replicates.
-func (s *Store) Delete(key string) (bool, error) {
-	cmd := resp.NewCommand("DEL", key)
-	v, err := s.primary.do(cmd)
+// Delete removes keys and returns how many existed, then replicates.
+func (s *Store) Delete(keys ...string) (int64, error) {
+	cmd := resp.NewCommand(append([]string{"DEL"}, keys...)...)
+	n, err := s.primary.integer(cmd)
 	if err != nil {
-		return false, fmt.Errorf("primary: %w", err)
+		return 0, err
 	}
-	n, _ := v.(int64)
 	s.replicate(cmd)
-	return n > 0, nil
+	return n, nil
+}
+
+// Exists returns how many of keys are present.
+func (s *Store) Exists(keys ...string) (int64, error) {
+	return s.primary.integer(resp.NewCommand(append([]string{"EXISTS"}, keys...)...))
+}
+
+// TTL returns the seconds left on key: -1 for no expiry, -2 for no key.
+func (s *Store) TTL(key string) (int64, error) {
+	return s.primary.integer(resp.NewCommand("TTL", key))
+}
+
+// integer runs cmd on the primary and expects an integer reply.
+func (p *pool) integer(cmd resp.Command) (int64, error) {
+	v, err := p.do(cmd)
+	if err != nil {
+		return 0, fmt.Errorf("primary: %w", err)
+	}
+	n, ok := v.(int64)
+	if !ok {
+		return 0, fmt.Errorf("primary: unexpected reply %T", v)
+	}
+	return n, nil
 }
 
 // replicate runs cmd on every replica concurrently. Failures are logged, not
@@ -192,7 +224,7 @@ func (s *Store) AddReplica(addr string) error {
 	if s.hasReplica(addr) {
 		return nil
 	}
-	p, err := newPool(addr, s.size)
+	p, err := newPool(addr, s.size, s.password)
 	if err != nil {
 		return err
 	}

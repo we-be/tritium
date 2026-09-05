@@ -50,7 +50,7 @@ services:
     <<: *node
     environment:
       SECURE_STORE_ADDRESS: store1:6379
-      RPC_ADDRESS: ":8080"
+      LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium1:8080
     ports: ["8080:8080"]
     depends_on:
@@ -60,7 +60,7 @@ services:
     <<: *node
     environment:
       SECURE_STORE_ADDRESS: store2:6379
-      RPC_ADDRESS: ":8080"
+      LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium2:8080
       JOIN_ADDRESS: tritium1:8080
     ports: ["8081:8080"]
@@ -72,7 +72,7 @@ services:
     <<: *node
     environment:
       SECURE_STORE_ADDRESS: store3:6379
-      RPC_ADDRESS: ":8080"
+      LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium3:8080
       JOIN_ADDRESS: tritium1:8080
     ports: ["8082:8080"]

@@ -1,26 +1,41 @@
-// Package tritium is the Go client for a tritium node.
+// Package tritium is a Go client for a tritium node. Tritium speaks RESP2,
+// so any Redis or Valkey client library works too; this one is dependency
+// free and knows the TRITIUM.* cluster commands.
 package tritium
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
-	"net/rpc"
+	"os"
+	"strconv"
+	"sync"
 	"time"
 
+	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
 
 // ErrNotFound is returned by Get for a missing or expired key.
 var ErrNotFound = storage.ErrNotFound
 
-// Client talks to one tritium node over its RPC port.
-type Client struct {
-	rpc *rpc.Client
+type ClientOptions struct {
+	Address  string        // host:port of a node; default localhost:8080
+	Timeout  time.Duration // dial timeout and per-call deadline; default 10s
+	Password string        // sent as AUTH on every connection when set
+	TLS      *tls.Config   // connect with TLS when set; ServerName defaults to the address host
 }
 
-type ClientOptions struct {
-	Address string        // host:port of a node; default localhost:8080
-	Timeout time.Duration // dial timeout; default 10s. Calls themselves have no deadline.
+// Client holds one connection to a node and serializes calls on it. A
+// transport error drops the connection; the next call redials.
+type Client struct {
+	opts ClientOptions
+	mu   sync.Mutex
+	conn net.Conn
+	r    *resp.Reader
 }
 
 // NewClient connects to a node. A nil opts uses the defaults.
@@ -33,63 +48,154 @@ func NewClient(opts *ClientOptions) (*Client, error) {
 		if opts.Timeout > 0 {
 			o.Timeout = opts.Timeout
 		}
+		o.Password, o.TLS = opts.Password, opts.TLS
 	}
-	conn, err := net.DialTimeout("tcp", o.Address, o.Timeout)
-	if err != nil {
-		return nil, fmt.Errorf("tritium: connect %s: %w", o.Address, err)
+	c := &Client{opts: o}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.connect(); err != nil {
+		return nil, err
 	}
-	return &Client{rpc: rpc.NewClient(conn)}, nil
+	return c, nil
 }
 
-// Set stores value under key. ttl is in seconds; nil uses the server's default.
-func (c *Client) Set(key string, value []byte, ttl *int) error {
-	var reply storage.SetReply
-	if err := c.rpc.Call("Store.Set", &storage.SetArgs{Key: key, Value: value, TTL: ttl}, &reply); err != nil {
-		return fmt.Errorf("tritium: set: %w", err)
+func (c *Client) connect() error {
+	d := net.Dialer{Timeout: c.opts.Timeout}
+	var conn net.Conn
+	var err error
+	if c.opts.TLS != nil {
+		conn, err = tls.DialWithDialer(&d, "tcp", c.opts.Address, c.opts.TLS)
+	} else {
+		conn, err = d.Dial("tcp", c.opts.Address)
 	}
-	if reply.Error != "" {
-		return fmt.Errorf("tritium: set: %s", reply.Error)
+	if err != nil {
+		return fmt.Errorf("tritium: connect %s: %w", c.opts.Address, err)
+	}
+	c.conn, c.r = conn, resp.NewReader(conn)
+	if c.opts.Password != "" {
+		if _, err := c.call("AUTH", c.opts.Password); err != nil {
+			c.drop()
+			return err
+		}
 	}
 	return nil
 }
 
+func (c *Client) drop() {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn, c.r = nil, nil
+	}
+}
+
+// do runs one command, reconnecting first if the last call broke the
+// connection.
+func (c *Client) do(args ...string) (any, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		if err := c.connect(); err != nil {
+			return nil, err
+		}
+	}
+	return c.call(args...)
+}
+
+func (c *Client) call(args ...string) (any, error) {
+	c.conn.SetDeadline(time.Now().Add(c.opts.Timeout))
+	v, err := resp.NewCommand(args...).Do(c.conn, c.r)
+	if err != nil {
+		var se *resp.ServerError
+		if errors.As(err, &se) {
+			return nil, fmt.Errorf("tritium: %s", se.Msg)
+		}
+		c.drop()
+		return nil, fmt.Errorf("tritium: %s: %w", args[0], err)
+	}
+	return v, nil
+}
+
+// Set stores value under key. ttl is in seconds; nil uses the server's default.
+func (c *Client) Set(key string, value []byte, ttl *int) error {
+	var err error
+	if ttl == nil {
+		_, err = c.do("SET", key, string(value))
+	} else {
+		_, err = c.do("SETEX", key, strconv.Itoa(*ttl), string(value))
+	}
+	return err
+}
+
 // Get returns the value under key, or ErrNotFound.
 func (c *Client) Get(key string) ([]byte, error) {
-	var reply storage.GetReply
-	if err := c.rpc.Call("Store.Get", &storage.GetArgs{Key: key}, &reply); err != nil {
-		return nil, fmt.Errorf("tritium: get: %w", err)
+	v, err := c.do("GET", key)
+	if err != nil {
+		return nil, err
 	}
-	switch reply.Error {
-	case "":
-		return reply.Value, nil
-	case ErrNotFound.Error():
+	switch b := v.(type) {
+	case nil:
 		return nil, ErrNotFound
+	case []byte:
+		return b, nil
 	default:
-		return nil, fmt.Errorf("tritium: get: %s", reply.Error)
+		return nil, fmt.Errorf("tritium: GET: unexpected reply %T", v)
 	}
 }
 
 // Delete removes key and reports whether it existed.
 func (c *Client) Delete(key string) (bool, error) {
-	var reply storage.DeleteReply
-	if err := c.rpc.Call("Store.Delete", &storage.DeleteArgs{Key: key}, &reply); err != nil {
-		return false, fmt.Errorf("tritium: delete: %w", err)
+	v, err := c.do("DEL", key)
+	if err != nil {
+		return false, err
 	}
-	if reply.Error != "" {
-		return false, fmt.Errorf("tritium: delete: %s", reply.Error)
-	}
-	return reply.Deleted, nil
+	n, _ := v.(int64)
+	return n > 0, nil
 }
 
 // Nodes returns the node's view of the cluster, keyed by node ID.
 func (c *Client) Nodes() (map[string]storage.NodeInfo, error) {
-	var reply map[string]storage.NodeInfo
-	if err := c.rpc.Call("Store.GetClusterNodes", struct{}{}, &reply); err != nil {
+	v, err := c.do("TRITIUM.NODES")
+	if err != nil {
+		return nil, err
+	}
+	raw, _ := v.([]byte)
+	var nodes map[string]storage.NodeInfo
+	if err := json.Unmarshal(raw, &nodes); err != nil {
 		return nil, fmt.Errorf("tritium: nodes: %w", err)
 	}
-	return reply, nil
+	return nodes, nil
+}
+
+func (c *Client) Ping() error {
+	_, err := c.do("PING")
+	return err
 }
 
 func (c *Client) Close() error {
-	return c.rpc.Close()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	err := c.conn.Close()
+	c.conn, c.r = nil, nil
+	return err
+}
+
+// TLSConfig returns a client TLS config that verifies nodes against the PEM
+// bundle at caFile, or against the system roots when caFile is empty.
+func TLSConfig(caFile string) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	if caFile == "" {
+		return cfg, nil
+	}
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("tritium: %w", err)
+	}
+	cfg.RootCAs = x509.NewCertPool()
+	if !cfg.RootCAs.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("tritium: no certificates found in %s", caFile)
+	}
+	return cfg, nil
 }

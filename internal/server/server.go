@@ -1,13 +1,13 @@
-// Package server is a tritium node: an RPC front end over a replicated RESP
+// Package server is a tritium node: a RESP front end over a replicated RESP
 // store, plus the gossip that keeps nodes aware of each other.
 package server
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
-	"net/rpc"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,48 +16,56 @@ import (
 	"github.com/we-be/tritium/pkg/storage"
 )
 
-// DefaultTTL, in seconds, applies to Set calls that don't carry one.
+// DefaultTTL, in seconds, applies to writes that don't carry one. Every key
+// in tritium expires.
 const DefaultTTL = 17600
 
+// Version is reported by INFO and HELLO.
+var Version = "dev"
+
 type Server struct {
-	cfg      config.Config
-	store    *storage.Store
-	rpc      *rpc.Server
-	listener net.Listener
-	cluster  *cluster
-	active   atomic.Int64
-	bytes    atomic.Int64
-	stopOnce sync.Once
-	done     chan struct{}
+	cfg       config.Config
+	store     *storage.Store
+	listener  net.Listener
+	cluster   *cluster
+	tlsServer *tls.Config // nil: plaintext listener
+	tlsPeer   *tls.Config // nil: plaintext peer dials
+	active    atomic.Int64
+	bytes     atomic.Int64
+	clientSeq atomic.Int64
+	stopOnce  sync.Once
 }
 
-// New connects to the node's RESP store and registers the RPC service.
-// Nothing listens until Start.
+// New loads TLS material and connects to the node's RESP store. Nothing
+// listens until Start.
 func New(cfg config.Config) (*Server, error) {
-	store, err := storage.NewStore(cfg.StoreAddr, cfg.PoolSize)
+	tlsServer, tlsPeer, err := tlsConfigs(cfg)
+	if err != nil {
+		return nil, err
+	}
+	store, err := storage.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
-	s := &Server{cfg: cfg, store: store, rpc: rpc.NewServer(), done: make(chan struct{})}
-	if err := s.rpc.RegisterName("Store", s); err != nil {
-		store.Close()
-		return nil, fmt.Errorf("register rpc: %w", err)
-	}
-	return s, nil
+	return &Server{cfg: cfg, store: store, tlsServer: tlsServer, tlsPeer: tlsPeer}, nil
 }
 
-// Start listens on addr (":0" picks a free port) and begins serving.
+// Start listens on addr (":0" picks a free port), with TLS when configured,
+// and begins serving.
 func (s *Server) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
+	if s.tlsServer != nil {
+		ln = tls.NewListener(ln, s.tlsServer)
+	}
 	return s.Serve(ln)
 }
 
 // Serve seeds the cluster view with this node, advertised as
-// cfg.AdvertiseAddr or the listener's address, and accepts RPC connections
-// in the background.
+// cfg.AdvertiseAddr or the listener's address, and accepts connections in
+// the background.
 func (s *Server) Serve(ln net.Listener) error {
 	s.listener = ln
 	advertise := s.cfg.AdvertiseAddr
@@ -84,47 +92,20 @@ func (s *Server) acceptLoop() {
 	}
 }
 
-func (s *Server) serveConn(c net.Conn) {
-	s.active.Add(1)
-	defer s.active.Add(-1)
-	s.rpc.ServeConn(c)
-}
-
-// Set is the Store.Set RPC.
-func (s *Server) Set(args *storage.SetArgs, reply *storage.SetReply) error {
-	ttl := DefaultTTL
-	if args.TTL != nil {
-		ttl = *args.TTL
+// dialPeer opens a connection to another node, over TLS when this node
+// serves TLS.
+func (s *Server) dialPeer(addr string) (net.Conn, error) {
+	d := net.Dialer{Timeout: peerTimeout}
+	if s.tlsPeer == nil {
+		return d.Dial("tcp", addr)
 	}
-	if err := s.store.Set(args.Key, args.Value, ttl); err != nil {
-		reply.Error = err.Error()
-		return nil
-	}
-	s.bytes.Add(int64(len(args.Value)))
-	return nil
-}
-
-// Get is the Store.Get RPC.
-func (s *Server) Get(args *storage.GetArgs, reply *storage.GetReply) error {
-	v, err := s.store.Get(args.Key)
+	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		reply.Error = err.Error()
-		return nil
+		return nil, err
 	}
-	reply.Value = v
-	s.bytes.Add(int64(len(v)))
-	return nil
-}
-
-// Delete is the Store.Delete RPC.
-func (s *Server) Delete(args *storage.DeleteArgs, reply *storage.DeleteReply) error {
-	ok, err := s.store.Delete(args.Key)
-	if err != nil {
-		reply.Error = err.Error()
-		return nil
-	}
-	reply.Deleted = ok
-	return nil
+	cfg := s.tlsPeer.Clone()
+	cfg.ServerName = host
+	return tls.DialWithDialer(&d, "tcp", addr, cfg)
 }
 
 // Join adopts the cluster view of the node at addr and announces this node
@@ -164,7 +145,6 @@ func (s *Server) Addr() string {
 func (s *Server) Stop() error {
 	var err error
 	s.stopOnce.Do(func() {
-		close(s.done)
 		if s.cluster != nil {
 			s.cluster.stop()
 		}

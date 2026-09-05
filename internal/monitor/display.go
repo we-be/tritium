@@ -42,11 +42,11 @@ func renderSummary(w io.Writer, snap Snapshot, now time.Time) {
 	for _, n := range snap.Nodes {
 		color, symbol := stateStyle(n.State)
 		storeColor, storeSymbol := BrightGreen, "✓"
-		if !storeHealthy(snap.Stores[n.RespAddr]) {
+		if !storeHealthy(snap.Stores[n.StoreAddr]) {
 			storeColor, storeSymbol = BrightYellow, "!"
 		}
 		fmt.Fprintf(w, "  %s%s%s Node %s [%s%s%s Store] %s\n",
-			color, symbol, Reset, n.RPCAddr, storeColor, storeSymbol, Reset, role(n))
+			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, role(n))
 	}
 	fmt.Fprintln(w, rule)
 }
@@ -57,12 +57,12 @@ func renderDetailed(w io.Writer, snap Snapshot, now time.Time) {
 		color, symbol := stateStyle(n.State)
 		fmt.Fprintf(w, "\n%s%s%s Node %s%s\n%s\n", Bold, color, symbol, n.ID, Reset, rule)
 		field(w, "Role", BrightCyan, role(n))
-		field(w, "RPC Address", BrightYellow, n.RPCAddr)
-		field(w, "RESP Store", BrightYellow, n.RespAddr)
+		field(w, "Address", BrightYellow, n.Addr)
+		field(w, "Store", BrightYellow, n.StoreAddr)
 		field(w, "Connections", BrightMagenta, fmt.Sprint(n.Stats.ActiveConnections))
 		field(w, "Transferred", BrightGreen, bytesString(n.Stats.BytesTransferred))
 		field(w, "Last Seen", BrightBlue, ago(now.Sub(n.LastSeen)))
-		if s, ok := snap.Stores[n.RespAddr]; ok {
+		if s, ok := snap.Stores[n.StoreAddr]; ok {
 			fmt.Fprintln(w, rule)
 			renderStore(w, s, "Primary")
 			for i, r := range s.Replicas {

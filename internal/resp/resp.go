@@ -9,8 +9,12 @@ import (
 	"strconv"
 )
 
-// ErrInvalidType is returned when a reply starts with an unknown type prefix.
-var ErrInvalidType = errors.New("resp: invalid type prefix")
+var (
+	// ErrInvalidType is returned when a value starts with an unknown type prefix.
+	ErrInvalidType = errors.New("resp: invalid type prefix")
+	// ErrInvalidCommand is returned when a command is not an array of bulk strings.
+	ErrInvalidCommand = errors.New("resp: command must be an array of bulk strings")
+)
 
 // Type prefixes.
 const (

@@ -1,9 +1,10 @@
-// Command tritium-cli talks to a node from the shell.
+// Command tritium-cli talks to a node from the shell. valkey-cli and
+// redis-cli work too; this one adds the cluster view.
 //
-//	tritium-cli [-addr host:port] get KEY
-//	tritium-cli [-addr host:port] set [-ttl SECONDS] KEY VALUE
-//	tritium-cli [-addr host:port] del KEY
-//	tritium-cli [-addr host:port] nodes
+//	tritium-cli [flags] get KEY
+//	tritium-cli [flags] set [-ttl SECONDS] KEY VALUE
+//	tritium-cli [flags] del KEY
+//	tritium-cli [flags] nodes
 package main
 
 import (
@@ -22,6 +23,9 @@ import (
 
 func main() {
 	addr := flag.String("addr", "localhost:8080", "node address")
+	password := flag.String("password", "", "AUTH password")
+	useTLS := flag.Bool("tls", false, "connect with TLS")
+	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
 	flag.Usage = usage
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -29,7 +33,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	client, err := tritium.NewClient(&tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second})
+	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, Password: *password}
+	if *useTLS || *ca != "" {
+		var err error
+		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
+			fail(err)
+		}
+	}
+	client, err := tritium.NewClient(&opts)
 	if err != nil {
 		fail(err)
 	}
@@ -93,19 +104,19 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 				return
 			}
 		}
-	}, func(a, b storage.NodeInfo) int { return strings.Compare(a.RPCAddr, b.RPCAddr) })
+	}, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "RPC\tSTORE\tSTATE\tSEED\tCONNS\tLAST SEEN")
+	fmt.Fprintln(w, "ADDRESS\tSTORE\tSTATE\tSEED\tCONNS\tLAST SEEN")
 	for _, n := range rows {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%d\t%s\n",
-			n.RPCAddr, n.RespAddr, n.State, n.IsLeader, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
+			n.Addr, n.StoreAddr, n.State, n.IsLeader, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
 	}
 	w.Flush()
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [-addr host:port] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | nodes")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | nodes")
 	flag.PrintDefaults()
 }
 

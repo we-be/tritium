@@ -3,7 +3,6 @@
 package resptest
 
 import (
-	"fmt"
 	"net"
 	"os"
 	"strconv"
@@ -25,8 +24,8 @@ func Addr(tb testing.TB) string {
 	return Start(tb).Addr()
 }
 
-// Server speaks just enough RESP for tritium: PING, SET, SETEX, GET, MGET,
-// DEL and INFO.
+// Server speaks just enough RESP to stand in for a backend store: PING, AUTH,
+// SET, SETEX, GET, MGET, DEL, EXISTS, TTL and INFO.
 type Server struct {
 	ln net.Listener
 	mu sync.Mutex
@@ -67,33 +66,15 @@ func (s *Server) handle(c net.Conn) {
 	defer c.Close()
 	r := resp.NewReader(c)
 	for {
-		v, err := r.ReadValue()
+		args, err := r.ReadCommand()
 		if err != nil {
 			return
 		}
-		args, ok := toArgs(v)
-		if !ok || len(args) == 0 {
-			c.Write(errReply("ERR malformed command"))
+		if len(args) == 0 {
 			continue
 		}
 		c.Write(s.exec(args))
 	}
-}
-
-func toArgs(v any) ([]string, bool) {
-	arr, ok := v.([]any)
-	if !ok {
-		return nil, false
-	}
-	args := make([]string, len(arr))
-	for i, e := range arr {
-		b, ok := e.([]byte)
-		if !ok {
-			return nil, false
-		}
-		args[i] = string(b)
-	}
-	return args, true
 }
 
 func (s *Server) exec(args []string) []byte {
@@ -102,47 +83,70 @@ func (s *Server) exec(args []string) []byte {
 	cmd := strings.ToUpper(args[0])
 	switch cmd {
 	case "PING":
-		return []byte("+PONG\r\n")
+		return resp.AppendSimpleString(nil, "PONG")
+	case "AUTH":
+		return resp.AppendSimpleString(nil, "OK")
 	case "SET":
 		if len(args) != 3 {
 			return errArgs(cmd)
 		}
 		s.kv[args[1]] = entry{val: []byte(args[2])}
-		return []byte("+OK\r\n")
+		return resp.AppendSimpleString(nil, "OK")
 	case "SETEX":
 		if len(args) != 4 {
 			return errArgs(cmd)
 		}
 		ttl, err := strconv.Atoi(args[2])
 		if err != nil || ttl <= 0 {
-			return errReply("ERR invalid expire time in 'setex' command")
+			return resp.AppendError(nil, "ERR invalid expire time in 'setex' command")
 		}
 		s.kv[args[1]] = entry{val: []byte(args[3]), exp: time.Now().Add(time.Duration(ttl) * time.Second)}
-		return []byte("+OK\r\n")
+		return resp.AppendSimpleString(nil, "OK")
 	case "GET":
 		if len(args) != 2 {
 			return errArgs(cmd)
 		}
-		return bulk(s.get(args[1]))
+		return resp.AppendBulk(nil, s.get(args[1]))
 	case "MGET":
-		out := fmt.Appendf(nil, "*%d\r\n", len(args)-1)
+		out := resp.AppendArray(nil, len(args)-1)
 		for _, k := range args[1:] {
-			out = append(out, bulk(s.get(k))...)
+			out = resp.AppendBulk(out, s.get(k))
 		}
 		return out
 	case "DEL":
-		n := 0
+		var n int64
 		for _, k := range args[1:] {
 			if _, ok := s.kv[k]; ok {
 				delete(s.kv, k)
 				n++
 			}
 		}
-		return fmt.Appendf(nil, ":%d\r\n", n)
+		return resp.AppendInt(nil, n)
+	case "EXISTS":
+		var n int64
+		for _, k := range args[1:] {
+			if s.get(k) != nil {
+				n++
+			}
+		}
+		return resp.AppendInt(nil, n)
+	case "TTL":
+		if len(args) != 2 {
+			return errArgs(cmd)
+		}
+		e, ok := s.kv[args[1]]
+		switch {
+		case !ok || s.get(args[1]) == nil:
+			return resp.AppendInt(nil, -2)
+		case e.exp.IsZero():
+			return resp.AppendInt(nil, -1)
+		default:
+			return resp.AppendInt(nil, int64(time.Until(e.exp).Seconds()))
+		}
 	case "INFO":
-		return bulk([]byte("# Replication\r\nrole:master\r\nconnected_slaves:0\r\n"))
+		return resp.AppendBulkString(nil, "# Replication\r\nrole:master\r\nconnected_slaves:0\r\n")
 	}
-	return errReply("ERR unknown command '" + args[0] + "'")
+	return resp.AppendError(nil, "ERR unknown command '"+args[0]+"'")
 }
 
 // get returns nil for a missing or expired key and a non-nil slice otherwise,
@@ -162,15 +166,6 @@ func (s *Server) get(k string) []byte {
 	return e.val
 }
 
-func bulk(b []byte) []byte {
-	if b == nil {
-		return []byte("$-1\r\n")
-	}
-	return fmt.Appendf(nil, "$%d\r\n%s\r\n", len(b), b)
-}
-
-func errReply(msg string) []byte { return []byte("-" + msg + "\r\n") }
-
 func errArgs(cmd string) []byte {
-	return errReply("ERR wrong number of arguments for '" + strings.ToLower(cmd) + "' command")
+	return resp.AppendError(nil, "ERR wrong number of arguments for '"+strings.ToLower(cmd)+"' command")
 }

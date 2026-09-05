@@ -1,14 +1,14 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
-	"net"
-	"net/rpc"
 	"sync"
 	"time"
 
+	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
 
@@ -18,12 +18,14 @@ const (
 	degradedAfter  = 10 * time.Second // no word from a peer for this long: degraded
 	downAfter      = 15 * time.Second // ...for this long: down, stop replicating to it
 	evictAfter     = 60 * time.Second // ...for this long: forget it entirely
-	rpcDialTimeout = 3 * time.Second
+	peerTimeout    = 3 * time.Second  // dial plus one round trip to a peer
 )
 
 // cluster is this node's view of its peers, kept fresh by announce-on-join,
 // random-peer gossip every gossipInterval, and LastSeen-based health checks.
 // Every live peer's RESP store is attached to the local Store as a replica.
+// Nodes talk to each other with TRITIUM.NODES and TRITIUM.GOSSIP, which
+// carry the view as JSON.
 type cluster struct {
 	server *Server
 	mu     sync.RWMutex
@@ -32,14 +34,14 @@ type cluster struct {
 	done   chan struct{}
 }
 
-func newCluster(s *Server, rpcAddr, respAddr string, seed bool) *cluster {
+func newCluster(s *Server, addr, storeAddr string, seed bool) *cluster {
 	local := &storage.NodeInfo{
-		ID:       "node-" + rpcAddr,
-		RPCAddr:  rpcAddr,
-		RespAddr: respAddr,
-		State:    storage.NodeStateHealthy,
-		LastSeen: time.Now(),
-		IsLeader: seed,
+		ID:        "node-" + addr,
+		Addr:      addr,
+		StoreAddr: storeAddr,
+		State:     storage.NodeStateHealthy,
+		LastSeen:  time.Now(),
+		IsLeader:  seed,
 	}
 	c := &cluster{
 		server: s,
@@ -48,7 +50,7 @@ func newCluster(s *Server, rpcAddr, respAddr string, seed bool) *cluster {
 		done:   make(chan struct{}),
 	}
 	go c.loop()
-	slog.Info("cluster: node registered", "id", local.ID, "store", respAddr, "seed", seed)
+	slog.Info("cluster: node registered", "id", local.ID, "store", storeAddr, "seed", seed)
 	return c
 }
 
@@ -72,27 +74,14 @@ func (c *cluster) loop() {
 
 func (c *cluster) stop() { close(c.done) }
 
-func dialRPC(addr string) (*rpc.Client, error) {
-	conn, err := net.DialTimeout("tcp", addr, rpcDialTimeout)
-	if err != nil {
-		return nil, err
-	}
-	return rpc.NewClient(conn), nil
-}
-
 // join fetches the cluster view from a known node, adopts it, and announces
 // this node to every peer in it.
 func (c *cluster) join(addr string) error {
-	client, err := dialRPC(addr)
+	view, err := c.exchange(addr, resp.NewCommand("TRITIUM.NODES"))
 	if err != nil {
 		return fmt.Errorf("join %s: %w", addr, err)
 	}
-	defer client.Close()
-	var nodes map[string]storage.NodeInfo
-	if err := client.Call("Store.GetClusterNodes", struct{}{}, &nodes); err != nil {
-		return fmt.Errorf("join %s: %w", addr, err)
-	}
-	c.merge(nodes)
+	c.merge(view)
 	c.announce()
 	return nil
 }
@@ -100,16 +89,9 @@ func (c *cluster) join(addr string) error {
 // announce introduces this node to every known peer and merges each reply,
 // so nodes joining at the same moment learn of each other right away.
 func (c *cluster) announce() {
-	local := c.localCopy()
+	local := c.localJSON()
 	for _, p := range c.peers() {
-		client, err := dialRPC(p.RPCAddr)
-		if err != nil {
-			slog.Warn("cluster: announce dial failed", "peer", p.ID, "err", err)
-			continue
-		}
-		var view map[string]storage.NodeInfo
-		err = client.Call("Store.GossipExchange", &local, &view)
-		client.Close()
+		view, err := c.exchange(p.Addr, resp.NewCommand("TRITIUM.GOSSIP", local))
 		if err != nil {
 			slog.Warn("cluster: announce failed", "peer", p.ID, "err", err)
 			continue
@@ -126,19 +108,48 @@ func (c *cluster) gossip() {
 		return
 	}
 	p := peers[rand.IntN(len(peers))]
-	client, err := dialRPC(p.RPCAddr)
+	view, err := c.exchange(p.Addr, resp.NewCommand("TRITIUM.GOSSIP", c.localJSON()))
 	if err != nil {
-		slog.Debug("cluster: gossip dial failed", "peer", p.ID, "err", err)
-		return
-	}
-	defer client.Close()
-	local := c.localCopy()
-	var remote map[string]storage.NodeInfo
-	if err := client.Call("Store.GossipExchange", &local, &remote); err != nil {
 		slog.Debug("cluster: gossip failed", "peer", p.ID, "err", err)
 		return
 	}
-	c.merge(remote)
+	c.merge(view)
+}
+
+// exchange sends one command to a peer, authenticating first when the
+// cluster has a password, and decodes the JSON view it replies with.
+func (c *cluster) exchange(addr string, cmd resp.Command) (map[string]storage.NodeInfo, error) {
+	conn, err := c.server.dialPeer(addr)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(peerTimeout))
+	r := resp.NewReader(conn)
+	if pw := c.server.cfg.Password; pw != "" {
+		if _, err := resp.NewCommand("AUTH", pw).Do(conn, r); err != nil {
+			return nil, fmt.Errorf("auth: %w", err)
+		}
+	}
+	v, err := cmd.Do(conn, r)
+	if err != nil {
+		return nil, err
+	}
+	raw, ok := v.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("unexpected reply %T", v)
+	}
+	var view map[string]storage.NodeInfo
+	if err := json.Unmarshal(raw, &view); err != nil {
+		return nil, fmt.Errorf("decode view: %w", err)
+	}
+	return view, nil
+}
+
+// learn records a peer that just spoke to us.
+func (c *cluster) learn(n storage.NodeInfo) {
+	n.LastSeen = time.Now()
+	c.merge(map[string]storage.NodeInfo{n.ID: n})
 }
 
 // merge adopts every remote entry that is newer than ours. A peer we are
@@ -167,19 +178,19 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 }
 
 func (c *cluster) attach(n storage.NodeInfo) {
-	if n.RespAddr == c.local.RespAddr {
+	if n.StoreAddr == c.local.StoreAddr {
 		return // sharing our store; replicating to it would be a self-write
 	}
-	if err := c.server.store.AddReplica(n.RespAddr); err != nil {
-		slog.Warn("cluster: attach replica failed", "peer", n.ID, "store", n.RespAddr, "err", err)
+	if err := c.server.store.AddReplica(n.StoreAddr); err != nil {
+		slog.Warn("cluster: attach replica failed", "peer", n.ID, "store", n.StoreAddr, "err", err)
 		return
 	}
-	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.RespAddr)
+	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
 }
 
 func (c *cluster) detach(n storage.NodeInfo) {
-	if c.server.store.RemoveReplica(n.RespAddr) {
-		slog.Info("cluster: peer detached", "peer", n.ID, "store", n.RespAddr)
+	if c.server.store.RemoveReplica(n.StoreAddr) {
+		slog.Info("cluster: peer detached", "peer", n.ID, "store", n.StoreAddr)
 	}
 }
 
@@ -228,6 +239,11 @@ func (c *cluster) localCopy() storage.NodeInfo {
 	return *c.local
 }
 
+func (c *cluster) localJSON() string {
+	b, _ := json.Marshal(c.localCopy())
+	return string(b)
+}
+
 func (c *cluster) peers() []storage.NodeInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -248,26 +264,4 @@ func (c *cluster) snapshot() map[string]storage.NodeInfo {
 		out[id] = *n
 	}
 	return out
-}
-
-// RegisterNode is the Store.RegisterNode RPC: a peer announcing itself.
-// Kept for older nodes; new ones announce through GossipExchange.
-func (s *Server) RegisterNode(n *storage.NodeInfo, _ *struct{}) error {
-	n.LastSeen = time.Now()
-	s.cluster.merge(map[string]storage.NodeInfo{n.ID: *n})
-	return nil
-}
-
-// GetClusterNodes is the Store.GetClusterNodes RPC.
-func (s *Server) GetClusterNodes(_ struct{}, reply *map[string]storage.NodeInfo) error {
-	*reply = s.cluster.snapshot()
-	return nil
-}
-
-// GossipExchange is the Store.GossipExchange RPC: learn the caller, return our view.
-func (s *Server) GossipExchange(peer *storage.NodeInfo, reply *map[string]storage.NodeInfo) error {
-	peer.LastSeen = time.Now()
-	s.cluster.merge(map[string]storage.NodeInfo{peer.ID: *peer})
-	*reply = s.cluster.snapshot()
-	return nil
 }

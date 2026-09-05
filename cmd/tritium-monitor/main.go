@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"strings"
@@ -11,18 +12,31 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/monitor"
+	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
-	rpc := flag.String("rpc", "localhost:8080,localhost:8081,localhost:8082", "comma-separated RPC addresses; the first that answers is used")
+	nodes := flag.String("nodes", "localhost:8080,localhost:8081,localhost:8082", "comma-separated node addresses; the first that answers is used")
+	password := flag.String("password", "", "AUTH password")
+	useTLS := flag.Bool("tls", false, "connect with TLS")
+	ca := flag.String("ca", "", "PEM bundle to verify nodes against (implies -tls)")
 	summary := flag.Bool("summary", false, "one line per node")
 	interval := flag.Duration("interval", 2*time.Second, "refresh interval")
 	flag.Parse()
 
+	opts := tritium.ClientOptions{Password: *password}
+	if *useTLS || *ca != "" {
+		var err error
+		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
+			fmt.Fprintln(os.Stderr, "tritium-monitor:", err)
+			os.Exit(1)
+		}
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	m := monitor.New(strings.Split(*rpc, ","))
+	m := monitor.New(strings.Split(*nodes, ","), opts)
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 	for {

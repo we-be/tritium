@@ -57,6 +57,27 @@ func (r *Reader) ReadValue() (any, error) {
 	}
 }
 
+// ReadCommand reads a client command: an array of bulk strings.
+func (r *Reader) ReadCommand() ([]string, error) {
+	v, err := r.ReadValue()
+	if err != nil {
+		return nil, err
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, ErrInvalidCommand
+	}
+	args := make([]string, len(arr))
+	for i, e := range arr {
+		b, ok := e.([]byte)
+		if !ok {
+			return nil, ErrInvalidCommand
+		}
+		args[i] = string(b)
+	}
+	return args, nil
+}
+
 // ReadOK expects a "+OK" reply.
 func (r *Reader) ReadOK() error {
 	v, err := r.ReadValue()

@@ -1,6 +1,6 @@
 // Package monitor gathers a live picture of a tritium cluster: the node view
-// from any reachable RPC node, plus replication state from every node's
-// RESP store and the replicas that store reports.
+// from any reachable node, plus replication state from every node's RESP
+// store and the replicas that store reports.
 package monitor
 
 import (
@@ -18,19 +18,20 @@ import (
 const dialTimeout = time.Second
 
 type Monitor struct {
-	rpcAddrs []string
+	addrs []string
+	opts  tritium.ClientOptions // Password and TLS are used; Address and Timeout are set per node
 }
 
-// New polls the given RPC addresses in order until one answers.
-func New(rpcAddrs []string) *Monitor {
-	return &Monitor{rpcAddrs: rpcAddrs}
+// New polls the given node addresses in order until one answers.
+func New(addrs []string, opts tritium.ClientOptions) *Monitor {
+	return &Monitor{addrs: addrs, opts: opts}
 }
 
 // Snapshot is one refresh of the cluster.
 type Snapshot struct {
-	Nodes  []storage.NodeInfo // sorted by RPC address
+	Nodes  []storage.NodeInfo // sorted by address
 	Stores map[string]Store   // keyed by the node's RESP address
-	Err    error              // set when no RPC node answered
+	Err    error              // set when no node answered
 }
 
 // Store is a RESP server's "INFO replication" view and, for a primary, the
@@ -56,17 +57,19 @@ func (m *Monitor) Snapshot() Snapshot {
 	snap := Snapshot{Err: err, Stores: map[string]Store{}}
 	for _, n := range nodes {
 		snap.Nodes = append(snap.Nodes, n)
-		if _, seen := snap.Stores[n.RespAddr]; !seen {
-			snap.Stores[n.RespAddr] = inspectStore(n.RespAddr)
+		if _, seen := snap.Stores[n.StoreAddr]; !seen {
+			snap.Stores[n.StoreAddr] = inspectStore(n.StoreAddr)
 		}
 	}
-	slices.SortFunc(snap.Nodes, func(a, b storage.NodeInfo) int { return strings.Compare(a.RPCAddr, b.RPCAddr) })
+	slices.SortFunc(snap.Nodes, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 	return snap
 }
 
 func (m *Monitor) nodes() (map[string]storage.NodeInfo, error) {
-	for _, addr := range m.rpcAddrs {
-		c, err := tritium.NewClient(&tritium.ClientOptions{Address: addr, Timeout: dialTimeout})
+	for _, addr := range m.addrs {
+		opts := m.opts
+		opts.Address, opts.Timeout = addr, dialTimeout
+		c, err := tritium.NewClient(&opts)
 		if err != nil {
 			continue
 		}
@@ -76,7 +79,7 @@ func (m *Monitor) nodes() (map[string]storage.NodeInfo, error) {
 			return nodes, nil
 		}
 	}
-	return nil, errors.New("no RPC node answered")
+	return nil, errors.New("no node answered")
 }
 
 func inspectStore(addr string) Store {

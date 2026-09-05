@@ -43,7 +43,7 @@ for i in 1 2 3; do
     store=$((6379 + (i - 1) * 2))
     {
         echo "SECURE_STORE_ADDRESS=127.0.0.1:$store"
-        echo "RPC_ADDRESS=127.0.0.1:$rpc"
+        echo "LISTEN_ADDRESS=127.0.0.1:$rpc"
         if (( i > 1 )); then echo "JOIN_ADDRESS=127.0.0.1:8080"; fi
     } > "node$i.env"
     ./bin/tritium -config "node$i.env" > "logs/node$i.log" 2>&1 &
