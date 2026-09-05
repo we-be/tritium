@@ -1,21 +1,18 @@
+// Package resp encodes commands and decodes replies in the Redis Serialization
+// Protocol (RESP2), which Valkey, Redis, Garnet and friends all speak.
 package resp
 
 import (
 	"errors"
 	"fmt"
-	"net"
+	"io"
 	"strconv"
 )
 
-var (
-	ErrInvalidResp   = errors.New("invalid RESP data type")
-	ErrInvalidLength = errors.New("invalid length")
-	ErrInvalidConn   = errors.New("invalid connection")
-)
+// ErrInvalidType is returned when a reply starts with an unknown type prefix.
+var ErrInvalidType = errors.New("resp: invalid type prefix")
 
-// RESP data types
-type RespType byte
-
+// Type prefixes.
 const (
 	SimpleString = '+'
 	Error        = '-'
@@ -24,77 +21,42 @@ const (
 	Array        = '*'
 )
 
-type RespCommand []byte
-
-// NewCommand creates a new RESP command with variadic string arguments
-func NewCommand(args ...string) *RespCommand {
-	// Pre-calculate total length to avoid multiple allocations
-	totalLen := 1 + len(strconv.Itoa(len(args))) + 2 // *<len>\r\n
-	for _, arg := range args {
-		totalLen += 1 + len(strconv.Itoa(len(arg))) + 2 + len(arg) + 2 // $<len>\r\n<data>\r\n
-	}
-
-	// Initialize with capacity
-	cmd := make(RespCommand, 0, totalLen)
-
-	// Append array header
-	cmd = append(cmd, []byte(fmt.Sprintf("*%d\r\n", len(args)))...)
-
-	// Append each argument as a bulk string
-	for _, arg := range args {
-		cmd = append(cmd, []byte(fmt.Sprintf("$%d\r\n%s\r\n", len(arg), arg))...)
-	}
-
-	return &cmd
+// ServerError is an error reply ("-ERR ...") from the server. The connection
+// is still healthy after one; only transport errors poison it.
+type ServerError struct {
+	Msg string
 }
 
-// Execute writes the command to the connection and returns the number of bytes written
-// It's important to remember to read the string off the buffer before Executing other commands
-func (cmd *RespCommand) Execute(conn net.Conn) (int, error) {
-	if conn == nil {
-		return 0, ErrInvalidConn
-	}
+func (e *ServerError) Error() string { return "resp: " + e.Msg }
 
-	// Write in a single call to avoid partial writes
-	return conn.Write(*cmd)
+// Command is an encoded RESP command: an array of bulk strings.
+type Command []byte
+
+// NewCommand encodes args as a RESP array of bulk strings.
+func NewCommand(args ...string) Command {
+	n := 1 + len(strconv.Itoa(len(args))) + 2 // *<len>\r\n
+	for _, a := range args {
+		n += 1 + len(strconv.Itoa(len(a))) + 2 + len(a) + 2 // $<len>\r\n<data>\r\n
+	}
+	cmd := make(Command, 0, n)
+	cmd = fmt.Appendf(cmd, "*%d\r\n", len(args))
+	for _, a := range args {
+		cmd = fmt.Appendf(cmd, "$%d\r\n%s\r\n", len(a), a)
+	}
+	return cmd
 }
 
-// ExecuteWithResponse writes the command and reads the response
-func (cmd *RespCommand) ExecuteWithResponse(conn net.Conn, reader *Reader) (interface{}, error) {
-	if conn == nil {
-		return nil, ErrInvalidConn
-	}
-
-	// Write command
-	_, err := cmd.Execute(conn)
-	if err != nil {
-		return nil, fmt.Errorf("write error: %w", err)
-	}
-
-	// Read response
-	if reader == nil {
-		reader = NewReader(conn)
-	}
-	return reader.ReadValue()
+// WriteTo writes the command with a single Write so it can never interleave
+// with another writer on the same connection.
+func (c Command) WriteTo(w io.Writer) (int64, error) {
+	n, err := w.Write(c)
+	return int64(n), err
 }
 
-// Example usage:
-func Example() {
-	// Create a command
-	cmd := NewCommand("SET", "mykey", "myvalue")
-
-	// Connect to Redis/Garnet
-	conn, err := net.Dial("tcp", ":6379")
-	if err != nil {
-		panic(err)
+// Do writes the command to w and reads one reply from r.
+func (c Command) Do(w io.Writer, r *Reader) (any, error) {
+	if _, err := c.WriteTo(w); err != nil {
+		return nil, fmt.Errorf("resp: write: %w", err)
 	}
-	defer conn.Close()
-
-	// Execute with response
-	resp, err := cmd.ExecuteWithResponse(conn, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Printf("Response: %v\n", resp)
+	return r.ReadValue()
 }

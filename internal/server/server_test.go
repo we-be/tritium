@@ -5,137 +5,79 @@ import (
 	"testing"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
 )
 
-const testAddr = ":0" // Let OS assign a random port
-
-func TestServerConnectivity(t *testing.T) {
-	// Create server
-	cfg := config.Config{
-		MemStoreAddr:   "localhost:6379",
-		MaxConnections: 10,
-	}
-
-	srv, err := NewServer(cfg)
+func startNode(t *testing.T, join string) *Server {
+	t.Helper()
+	cfg := config.Config{StoreAddr: resptest.Addr(t), RPCAddr: "127.0.0.1:0", PoolSize: 2, JoinAddr: join}
+	s, err := New(cfg)
 	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
+		t.Fatal(err)
 	}
-
-	// Start server
-	if err := srv.Start(testAddr); err != nil {
-		t.Fatalf("Failed to start server: %v", err)
+	if err := s.Start(cfg.RPCAddr); err != nil {
+		t.Fatal(err)
 	}
-	// defer srv.Close()
+	t.Cleanup(func() { s.Stop() })
+	if join != "" {
+		if err := s.Join(join); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
 
-	// Get the actual address that was assigned
-	addr := srv.listener.Addr().String()
-	t.Logf("Server listening on %s", addr)
-
-	// Connect RPC client
-	client, err := rpc.Dial("tcp", addr)
+func TestRPCSetGetDelete(t *testing.T) {
+	s := startNode(t, "")
+	c, err := rpc.Dial("tcp", s.Addr())
 	if err != nil {
-		t.Fatalf("Failed to connect client: %v", err)
+		t.Fatal(err)
 	}
-	defer client.Close()
+	defer c.Close()
 
-	// Simple ping test
-	args := &storage.GetArgs{Key: "test-key"}
-	reply := &storage.GetReply{}
-
-	err = client.Call("Store.Get", args, reply)
-	if err != nil {
-		t.Fatalf("RPC call failed: %v", err)
+	var set storage.SetReply
+	if err := c.Call("Store.Set", &storage.SetArgs{Key: "server:k", Value: []byte("v"), TTL: new(60)}, &set); err != nil || set.Error != "" {
+		t.Fatalf("set: %v %q", err, set.Error)
 	}
-
-	// We expect a "key not found" error for a non-existent key
-	if reply.Error != "key not found" {
-		t.Errorf("Expected 'key not found' error, got: %v", reply.Error)
+	var get storage.GetReply
+	if err := c.Call("Store.Get", &storage.GetArgs{Key: "server:k"}, &get); err != nil || string(get.Value) != "v" {
+		t.Fatalf("get: %v %+v", err, get)
+	}
+	var missing storage.GetReply
+	if err := c.Call("Store.Get", &storage.GetArgs{Key: "server:missing"}, &missing); err != nil || missing.Error != storage.ErrNotFound.Error() {
+		t.Fatalf("missing: %v %+v", err, missing)
+	}
+	var del storage.DeleteReply
+	if err := c.Call("Store.Delete", &storage.DeleteArgs{Key: "server:k"}, &del); err != nil || !del.Deleted {
+		t.Fatalf("delete: %v %+v", err, del)
+	}
+	if st := s.Stats(); st.ActiveConnections != 1 || st.BytesTransferred != 2 {
+		t.Fatalf("stats: %+v", st)
 	}
 }
 
-func TestServerReadWrite(t *testing.T) {
-	// Create server
-	cfg := config.Config{
-		MemStoreAddr:   "localhost:6379",
-		MaxConnections: 10,
+func TestJoinReplicates(t *testing.T) {
+	seed := startNode(t, "")
+	peer := startNode(t, seed.Addr())
+
+	if n := len(seed.Nodes()); n != 2 {
+		t.Fatalf("seed sees %d nodes, want 2", n)
+	}
+	if n := len(peer.Nodes()); n != 2 {
+		t.Fatalf("peer sees %d nodes, want 2", n)
 	}
 
-	srv, err := NewServer(cfg)
+	c, err := rpc.Dial("tcp", peer.Addr())
 	if err != nil {
-		t.Fatalf("Failed to create server: %v", err)
+		t.Fatal(err)
 	}
-
-	// Start server
-	if err := srv.Start(testAddr); err != nil {
-		t.Fatalf("Failed to start server: %v", err)
+	defer c.Close()
+	var set storage.SetReply
+	if err := c.Call("Store.Set", &storage.SetArgs{Key: "server:rep", Value: []byte("v")}, &set); err != nil || set.Error != "" {
+		t.Fatalf("set via peer: %v %q", err, set.Error)
 	}
-	// defer srv.Close()
-
-	// Get the actual address that was assigned
-	addr := srv.listener.Addr().String()
-
-	// Connect RPC client
-	client, err := rpc.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("Failed to connect client: %v", err)
-	}
-	defer client.Close()
-
-	// Test data
-	testKey := "test-key-1"
-	testValue := []byte("Hello, Tritium!")
-
-	// Test Set operation
-	setArgs := &storage.SetArgs{
-		Key:   testKey,
-		Value: testValue,
-	}
-	setReply := &storage.SetReply{}
-
-	err = client.Call("Store.Set", setArgs, setReply)
-	if err != nil {
-		t.Fatalf("Set RPC call failed: %v", err)
-	}
-	if setReply.Error != "" {
-		t.Fatalf("Set operation failed: %v", setReply.Error)
-	}
-
-	// Test Get operation - should retrieve the value we just set
-	getArgs := &storage.GetArgs{Key: testKey}
-	getReply := &storage.GetReply{}
-
-	err = client.Call("Store.Get", getArgs, getReply)
-	if err != nil {
-		t.Fatalf("Get RPC call failed: %v", err)
-	}
-	if getReply.Error != "" {
-		t.Fatalf("Get operation failed: %v", getReply.Error)
-	}
-
-	// Verify the value matches what we set
-	if string(getReply.Value) != string(testValue) {
-		t.Errorf("Expected value %q, got %q", string(testValue), string(getReply.Value))
-	}
-
-	// Test Get with non-existent key
-	getNonExistentArgs := &storage.GetArgs{Key: "non-existent-key"}
-	getNonExistentReply := &storage.GetReply{}
-
-	err = client.Call("Store.Get", getNonExistentArgs, getNonExistentReply)
-	if err != nil {
-		t.Fatalf("Get RPC call failed: %v", err)
-	}
-	if getNonExistentReply.Error != "key not found" {
-		t.Errorf("Expected 'key not found' error, got: %v", getNonExistentReply.Error)
-	}
-
-	// Verify server stats
-	if srv.stats.ActiveConnections != 1 {
-		t.Errorf("Expected 1 active connection, got %d", srv.stats.ActiveConnections)
-	}
-	expectedBytes := int64(len(testValue))
-	if srv.stats.BytesTransferred != expectedBytes {
-		t.Errorf("Expected %d bytes transferred, got %d", expectedBytes, srv.stats.BytesTransferred)
+	if v, err := seed.store.Get("server:rep"); err != nil || string(v) != "v" {
+		t.Fatalf("write did not reach the seed's store: %q, %v", v, err)
 	}
 }

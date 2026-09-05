@@ -7,69 +7,55 @@ import (
 	"strings"
 )
 
-func ReadDotenv(filename string) (map[string]string, error) {
-	envMap := make(map[string]string)
-
-	file, err := os.Open(filename)
+// ReadDotenv parses KEY=value lines. Blank lines and # comments are skipped,
+// an unquoted value ends at " #", and a value opened with a quote may span
+// lines until the closing quote.
+func ReadDotenv(path string) (map[string]string, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("error opening file: %w", err)
+		return nil, err
 	}
-	defer file.Close()
+	defer f.Close()
 
-	scanner := bufio.NewScanner(file)
-	lineNum := 0
-	var multilineKey, multilineValue string
-	inMultiline := false
+	vals := map[string]string{}
+	sc := bufio.NewScanner(f)
+	var key, quoted string
+	var quote byte
+	for n := 1; sc.Scan(); n++ {
+		line := strings.TrimSpace(sc.Text())
 
-	for scanner.Scan() {
-		lineNum++
-		line := strings.TrimSpace(scanner.Text())
-
-		if !inMultiline {
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+		if quote != 0 {
+			quoted += "\n" + line
+			if strings.HasSuffix(line, string(quote)) {
+				vals[key] = strings.TrimSuffix(quoted, string(quote))
+				quote = 0
 			}
-
-			if strings.Contains(line, "=") && (strings.Count(line, `"`) == 1 || strings.Count(line, `'`) == 1) {
-				parts := strings.SplitN(line, "=", 2)
-				multilineKey = strings.TrimSpace(parts[0])
-				multilineValue = strings.TrimSpace(parts[1])
-				inMultiline = true
-				continue
-			}
-
-			parts := strings.SplitN(line, "=", 2)
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid format on line %d: %s", lineNum, line)
-			}
-
-			key := strings.TrimSpace(parts[0])
-			value := strings.TrimSpace(parts[1])
-			value = strings.Trim(value, `"'`)
-			envMap[key] = value
-			os.Setenv(key, value)
-
-		} else {
-			multilineValue += "\n" + line
-
-			if strings.HasSuffix(multilineValue, `"`) || strings.HasSuffix(multilineValue, `'`) {
-				inMultiline = false
-				multilineValue = strings.Trim(multilineValue, `"'`)
-				envMap[multilineKey] = multilineValue
-				os.Setenv(multilineKey, multilineValue)
-				multilineKey = ""
-				multilineValue = ""
-			}
+			continue
 		}
+		if line == "" || line[0] == '#' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			return nil, fmt.Errorf("%s:%d: expected KEY=value", path, n)
+		}
+		key, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		if len(v) > 0 && (v[0] == '"' || v[0] == '\'') {
+			if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
+				vals[key] = v[1 : 1+end] // anything after the closing quote is a comment
+			} else {
+				quote, quoted = v[0], v[1:]
+			}
+			continue
+		}
+		v, _, _ = strings.Cut(v, " #")
+		vals[key] = strings.TrimSpace(v)
 	}
-
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("error reading file: %w", err)
+	if err := sc.Err(); err != nil {
+		return nil, err
 	}
-
-	if inMultiline {
-		return nil, fmt.Errorf("unterminated multiline value starting at line %d", lineNum)
+	if quote != 0 {
+		return nil, fmt.Errorf("%s: unterminated quoted value for %s", path, key)
 	}
-
-	return envMap, nil
+	return vals, nil
 }

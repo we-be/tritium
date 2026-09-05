@@ -5,41 +5,32 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
+	"fmt"
 )
 
-// GenerateKeyPair generates a new RSA key pair and returns the public and private keys.
+// GenerateKeyPair returns a fresh RSA key pair of the given size.
 func GenerateKeyPair(bits int) (*rsa.PrivateKey, *rsa.PublicKey, error) {
-	// Generate RSA key pair
-	privateKey, err := rsa.GenerateKey(rand.Reader, bits)
+	priv, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
-		return nil, nil, errors.New("failed to generate RSA key pair")
+		return nil, nil, fmt.Errorf("generate rsa key: %w", err)
 	}
-
-	// Extract public key
-	publicKey := &privateKey.PublicKey
-
-	return privateKey, publicKey, nil
+	return priv, &priv.PublicKey, nil
 }
 
-// EncodePrivateKey encodes the private key in PEM format.
-func EncodePrivateKey(privateKey *rsa.PrivateKey) []byte {
-	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
+// EncodePrivateKey encodes the key as PKCS#1 PEM ("RSA PRIVATE KEY").
+func EncodePrivateKey(priv *rsa.PrivateKey) []byte {
+	return pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+		Bytes: x509.MarshalPKCS1PrivateKey(priv),
 	})
-	return privateKeyPEM
 }
 
-// EncodePublicKey encodes the public key in PEM format.
-func EncodePublicKey(publicKey *rsa.PublicKey) ([]byte, error) {
-	publicKeyBytes, err := x509.MarshalPKIXPublicKey(publicKey)
+// EncodePublicKey encodes the key as PKIX PEM ("PUBLIC KEY"), the form
+// openssl and most other tools expect.
+func EncodePublicKey(pub *rsa.PublicKey) ([]byte, error) {
+	der, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
-		return nil, errors.New("failed to marshal public key")
+		return nil, fmt.Errorf("marshal public key: %w", err)
 	}
-	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PUBLIC KEY",
-		Bytes: publicKeyBytes,
-	})
-	return publicKeyPEM, nil
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
 }
