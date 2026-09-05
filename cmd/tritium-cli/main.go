@@ -1,5 +1,6 @@
 // Command tritium-cli talks to a node from the shell. valkey-cli and
-// redis-cli work too; this one adds the cluster view.
+// redis-cli work too; this one adds the cluster view and client-side
+// encryption.
 //
 //	tritium-cli [flags] get KEY
 //	tritium-cli [flags] set [-ttl SECONDS] KEY VALUE
@@ -26,6 +27,7 @@ func main() {
 	password := flag.String("password", "", "AUTH password")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
 	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
+	key := flag.String("key", os.Getenv("TRITIUM_KEY"), "32-byte encryption key as hex or base64; values are sealed client-side (default $TRITIUM_KEY)")
 	flag.Usage = usage
 	flag.Parse()
 	if flag.NArg() == 0 {
@@ -34,6 +36,12 @@ func main() {
 	}
 
 	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, Password: *password}
+	if *key != "" {
+		var err error
+		if opts.Key, err = tritium.ParseKey(*key); err != nil {
+			fail(err)
+		}
+	}
 	if *useTLS || *ca != "" {
 		var err error
 		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {

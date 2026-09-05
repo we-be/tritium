@@ -1,6 +1,6 @@
-// Package tritium is a Go client for a tritium node. Tritium speaks RESP2,
-// so any Redis or Valkey client library works too; this one is dependency
-// free and knows the TRITIUM.* cluster commands.
+// Package tritium is a Go client for a tritium node. Tritium speaks RESP, so
+// any Redis or Valkey client library works too; this one is dependency free,
+// knows the TRITIUM.* cluster commands, and can encrypt values end to end.
 package tritium
 
 import (
@@ -27,12 +27,14 @@ type ClientOptions struct {
 	Timeout  time.Duration // dial timeout and per-call deadline; default 10s
 	Password string        // sent as AUTH on every connection when set
 	TLS      *tls.Config   // connect with TLS when set; ServerName defaults to the address host
+	Key      []byte        // KeySize bytes; when set, values are encrypted client-side (see crypto.go)
 }
 
 // Client holds one connection to a node and serializes calls on it. A
 // transport error drops the connection; the next call redials.
 type Client struct {
 	opts ClientOptions
+	box  *box // nil: values pass through in the clear
 	mu   sync.Mutex
 	conn net.Conn
 	r    *resp.Reader
@@ -48,9 +50,15 @@ func NewClient(opts *ClientOptions) (*Client, error) {
 		if opts.Timeout > 0 {
 			o.Timeout = opts.Timeout
 		}
-		o.Password, o.TLS = opts.Password, opts.TLS
+		o.Password, o.TLS, o.Key = opts.Password, opts.TLS, opts.Key
 	}
 	c := &Client{opts: o}
+	if o.Key != nil {
+		var err error
+		if c.box, err = newBox(o.Key); err != nil {
+			return nil, err
+		}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.connect(); err != nil {
@@ -117,6 +125,9 @@ func (c *Client) call(args ...string) (any, error) {
 
 // Set stores value under key. ttl is in seconds; nil uses the server's default.
 func (c *Client) Set(key string, value []byte, ttl *int) error {
+	if c.box != nil {
+		value = c.box.seal(key, value)
+	}
 	var err error
 	if ttl == nil {
 		_, err = c.do("SET", key, string(value))
@@ -136,6 +147,9 @@ func (c *Client) Get(key string) ([]byte, error) {
 	case nil:
 		return nil, ErrNotFound
 	case []byte:
+		if c.box != nil {
+			return c.box.open(key, b)
+		}
 		return b, nil
 	default:
 		return nil, fmt.Errorf("tritium: GET: unexpected reply %T", v)

@@ -1,6 +1,7 @@
 package tritium_test
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -40,5 +41,63 @@ func TestClient(t *testing.T) {
 	}
 	if nodes, err := c.Nodes(); err != nil || len(nodes) != 1 {
 		t.Fatalf("nodes: %v, %v", nodes, err)
+	}
+}
+
+// A keyed client round-trips values, the node only ever sees ciphertext, and
+// the wrong key, a moved value, or an unencrypted value are all refused.
+func TestEncryption(t *testing.T) {
+	srv, err := server.New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Stop() })
+
+	key := tritium.KeyFromPassphrase("correct horse", "salt")
+	sealed, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr(), Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sealed.Close()
+	plain, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer plain.Close()
+
+	secret := []byte("attack at dawn")
+	if err := sealed.Set("enc:k", secret, nil); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := sealed.Get("enc:k"); err != nil || !bytes.Equal(v, secret) {
+		t.Fatalf("round trip: %q, %v", v, err)
+	}
+	raw, err := plain.Get("enc:k")
+	if err != nil || bytes.Contains(raw, secret) || !bytes.HasPrefix(raw, []byte("TE1")) {
+		t.Fatalf("stored value is not sealed: %q, %v", raw, err)
+	}
+
+	wrong, _ := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr(), Key: tritium.KeyFromPassphrase("wrong", "salt")})
+	defer wrong.Close()
+	if _, err := wrong.Get("enc:k"); !errors.Is(err, tritium.ErrDecrypt) {
+		t.Fatalf("wrong key: got %v, want ErrDecrypt", err)
+	}
+	if err := plain.Set("enc:moved", raw, nil); err != nil { // same ciphertext under another name
+		t.Fatal(err)
+	}
+	if _, err := sealed.Get("enc:moved"); !errors.Is(err, tritium.ErrDecrypt) {
+		t.Fatalf("moved value: got %v, want ErrDecrypt", err)
+	}
+	if err := plain.Set("enc:plain", []byte("clear"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sealed.Get("enc:plain"); !errors.Is(err, tritium.ErrNotEncrypted) {
+		t.Fatalf("unencrypted value: got %v, want ErrNotEncrypted", err)
+	}
+	if _, err := tritium.ParseKey("too-short"); err == nil {
+		t.Fatal("short key accepted")
 	}
 }

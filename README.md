@@ -52,12 +52,16 @@ r.set("hello", b"world", ex=3600)
 r.get("hello")
 ```
 
-From Go, without pulling in a Redis library:
+From Go, without pulling in a Redis library, and with values encrypted before
+they leave the process:
 
 ```go
 import "github.com/we-be/tritium/pkg/tritium"
 
-client, err := tritium.NewClient(&tritium.ClientOptions{Address: "localhost:8080"})
+client, err := tritium.NewClient(&tritium.ClientOptions{
+    Address: "localhost:8080",
+    Key:     tritium.KeyFromPassphrase("correct horse battery staple", "my-app"),
+})
 if err != nil {
     return err
 }
@@ -71,6 +75,10 @@ nodes, err := client.Nodes()                         // the cluster view
 `tritium-cli` wraps that client for the shell and adds `nodes`:
 
 ```sh
+export TRITIUM_KEY=$(openssl rand -hex 32)
+go run ./cmd/tritium-cli set hello world      # sealed with $TRITIUM_KEY
+go run ./cmd/tritium-cli get hello            # world
+valkey-cli -p 8080 get hello                  # "TE1..." ciphertext
 go run ./cmd/tritium-cli nodes
 ```
 
@@ -131,8 +139,22 @@ traffic uses the same port, password and TLS settings as clients.
 - **Authentication.** Set `AUTH_PASSWORD` and every client and peer must `AUTH`.
 - **Encryption in transit.** Set `TLS_CERT` and `TLS_KEY`; add `TLS_CA` and
   `TLS_CLIENT_AUTH=true` for mutual TLS, which covers node-to-node traffic too.
-- **Not yet.** Values sit in the backing stores as sent. Client-side payload
-  encryption is the next step; `internal/crypto` holds the primitives.
+- **Encryption at rest, end to end.** Give the Go client a `Key` and every
+  value is sealed with AES-256-GCM before it leaves the process. Nodes, stores
+  and the network only ever see ciphertext; key names stay in the clear and are
+  bound to the ciphertext, so a value can't be replayed under another name.
+  Every client sharing the data needs the same 32-byte key, from
+  `tritium.ParseKey` (hex or base64) or `tritium.KeyFromPassphrase`.
+
+The sealed format is `"TE1" || 12-byte nonce || AES-256-GCM(plaintext, aad = key name)`,
+so other languages can read it. In Python with `cryptography`:
+
+```python
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+ct = r.get("hello")
+assert ct[:3] == b"TE1"
+plaintext = AESGCM(key).decrypt(ct[3:15], ct[15:], b"hello")
+```
 
 ## Development
 
