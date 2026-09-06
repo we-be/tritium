@@ -7,6 +7,7 @@ node does. Check an item off with the commit that closed it.
 ## Now
 
 - [x] Resync a peer's store on attach — 2026-09-06
+- [ ] A node upgrade wipes its store: `mubs-tritium.sh` owns both processes, so restarting the unit restarts Valkey too (found dogfooding the resync — both nodes restarted together and the plane started empty). Restart the node alone, or split the store into its own unit
 - [ ] `linux/arm` (GOARM=6) in `make dist` for a Pi Zero worker; `linux/arm64` already covers a Zero 2 W on a 64-bit OS
 - [ ] Load test: a `cmd/tritium-load` or `make load` that drives SET/GET/ZADD at a rate against a node and reports p50/p99 and replication lag between two nodes
 - [ ] Replication through the peer's node, not straight into its store, so a peer's Valkey never has to be reachable — the precondition for a cross-network replica (a second Mac on another network is coming)
