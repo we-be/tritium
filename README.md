@@ -74,6 +74,7 @@ defer client.Close()
 
 err = client.Set("hello", []byte("world"), new(3600)) // TTL in seconds; nil uses the server default
 value, err := client.Get("hello")                    // tritium.ErrNotFound when missing or expired
+opts, err := tritium.OptionsFromEnv(".env")          // or reach the node next door from its own env file
 nodes, err := client.Nodes()                         // the cluster view
 ```
 
