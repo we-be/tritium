@@ -107,7 +107,7 @@ func TestEncryption(t *testing.T) {
 func TestOptionsFromEnv(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node.env")
 	os.WriteFile(path, []byte("LISTEN_ADDRESS=:9090\nAUTH_PASSWORD=pw\n"), 0o600)
-	opts, err := OptionsFromEnv(path)
+	opts, err := tritium.OptionsFromEnv(path)
 	if err != nil || opts.Address != "127.0.0.1:9090" || opts.Password != "pw" || opts.TLS != nil {
 		t.Fatalf("OptionsFromEnv = %+v, %v", opts, err)
 	}
