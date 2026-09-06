@@ -28,7 +28,7 @@ import (
 	"strings"
 )
 
-const prekeyLabel = "tritium-messenger-v1 prekey"
+const bundleLabel = "tritium-messenger-v1 bundle"
 
 var ErrBadBundle = errors.New("messenger: bundle is malformed or its prekey signature is invalid")
 
@@ -66,29 +66,38 @@ type Bundle struct {
 	Signing   []byte `json:"signing"`    // Ed25519 public key
 	Agreement []byte `json:"agreement"`  // X25519 public key
 	Prekey    []byte `json:"prekey"`     // X25519 public key
-	PrekeySig []byte `json:"prekey_sig"` // Ed25519 signature of prekeyLabel || Prekey
+	PrekeySig []byte `json:"prekey_sig"` // Ed25519 signature over the name and both public keys
+}
+
+// signed is what PrekeySig covers: every public field, so no key or name
+// can be swapped for another and still verify.
+func (b Bundle) signed() []byte {
+	out := append([]byte(bundleLabel), b.Name...)
+	out = append(out, 0)
+	out = append(out, b.Agreement...)
+	return append(out, b.Prekey...)
 }
 
 func (id *Identity) Bundle() Bundle {
-	prekey := id.prekey.PublicKey().Bytes()
-	return Bundle{
+	b := Bundle{
 		Name:      id.Name,
 		Signing:   id.signing.Public().(ed25519.PublicKey),
 		Agreement: id.agreement.PublicKey().Bytes(),
-		Prekey:    prekey,
-		PrekeySig: ed25519.Sign(id.signing, append([]byte(prekeyLabel), prekey...)),
+		Prekey:    id.prekey.PublicKey().Bytes(),
 	}
+	b.PrekeySig = ed25519.Sign(id.signing, b.signed())
+	return b
 }
 
 func (id *Identity) Fingerprint() string { return id.Bundle().Fingerprint() }
 
-// Verify checks the bundle's shape and that the prekey was signed by the
-// identity it claims.
+// Verify checks the bundle's shape and that its name and keys were signed
+// together by the identity it claims.
 func (b Bundle) Verify() error {
-	if len(b.Signing) != ed25519.PublicKeySize || len(b.Agreement) != 32 || len(b.Prekey) != 32 {
+	if b.Name == "" || len(b.Signing) != ed25519.PublicKeySize || len(b.Agreement) != 32 || len(b.Prekey) != 32 {
 		return ErrBadBundle
 	}
-	if !ed25519.Verify(ed25519.PublicKey(b.Signing), append([]byte(prekeyLabel), b.Prekey...), b.PrekeySig) {
+	if !ed25519.Verify(ed25519.PublicKey(b.Signing), b.signed(), b.PrekeySig) {
 		return ErrBadBundle
 	}
 	return nil

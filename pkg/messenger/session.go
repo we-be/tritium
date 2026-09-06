@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	protocol = "tritium-messenger-v1"
-	maxSkip  = 1000 // messages a receiver will derive keys for while waiting on a gap
+	protocol       = "tritium-messenger-v1"
+	maxSkip        = 1000 // messages a receiver will derive keys for in one gap
+	maxSkippedKeys = 2000 // keys kept for messages that never arrived; oldest go first
 )
 
 var (
@@ -192,10 +193,24 @@ func (s *Session) open(n uint32, ct, aad []byte) ([]byte, error) {
 	pt, err := aead(mk, ct, aad, false)
 	if err != nil {
 		s.Skipped[n] = mk // a genuine copy may still turn up
+		s.pruneSkipped()
 		return nil, ErrDecrypt
 	}
 	delete(s.Skipped, n)
+	s.pruneSkipped()
 	return pt, nil
+}
+
+// pruneSkipped forgets the oldest skipped keys once there are too many, so
+// a peer or a hostile node cannot make the session hoard keys forever.
+func (s *Session) pruneSkipped() {
+	for len(s.Skipped) > maxSkippedKeys {
+		oldest := ^uint32(0)
+		for n := range s.Skipped {
+			oldest = min(oldest, n)
+		}
+		delete(s.Skipped, oldest)
+	}
 }
 
 // aead seals or opens with AES-256-GCM under a key and nonce derived from

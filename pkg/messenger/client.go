@@ -218,11 +218,15 @@ func (c *Client) fetch(mailbox string, cur *cursor) ([]item, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	vals, err := c.t.Do(append([]string{"MGET"}, keys...)...)
+	v, err = c.t.Do(append([]string{"MGET"}, keys...)...)
 	if err != nil {
 		return nil, err
 	}
-	for i, val := range vals.([]any) {
+	vals, ok := v.([]any)
+	if !ok || len(vals) != len(items) {
+		return nil, fmt.Errorf("messenger: unexpected MGET reply %T", v)
+	}
+	for i, val := range vals {
 		items[i].data, _ = val.([]byte)
 	}
 	for _, it := range items { // entries arrive ordered by score
@@ -259,12 +263,19 @@ func (c *Client) openHello(it item) (Message, bool) {
 		slog.Warn("messenger: hello agreement failed", "key", it.key, "err", err)
 		return Message{}, false
 	}
+	// Only a message that decrypts proves the sender holds the identity key,
+	// so nothing is adopted before that; otherwise anyone with a public
+	// bundle could replace a live session with a dead one.
+	m, ok := c.openWith(fresh, it)
+	if !ok {
+		return Message{}, false
+	}
 	// Adopt the peer's session unless we opened one to them at the same time
 	// and ours wins the tie: the lower fingerprint's initiation survives.
 	if cur == nil || cur.Hello == nil || fp < c.id.Fingerprint() {
 		c.sessions[fp] = fresh
 	}
-	return c.openWith(fresh, it)
+	return m, true
 }
 
 // openWith decrypts an envelope with s and marks the session answered.

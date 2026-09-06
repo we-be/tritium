@@ -134,6 +134,11 @@ func TestConversation(t *testing.T) {
 	if err := w.alice.Send(bad, []byte("x")); !errors.Is(err, ErrBadBundle) {
 		t.Fatalf("tampered bundle accepted: %v", err)
 	}
+	mixed := bob // bob's signing key and prekey with someone else's agreement key
+	mixed.Agreement = w.alice.id.Bundle().Agreement
+	if err := mixed.Verify(); !errors.Is(err, ErrBadBundle) {
+		t.Fatalf("bundle with a swapped agreement key verified: %v", err)
+	}
 	eve, _ := NewIdentity(w.name("bob"))
 	if err := New(w.conn(), eve).Publish(); !errors.Is(err, ErrNameTaken) {
 		t.Fatalf("name squatting allowed: %v", err)
@@ -177,6 +182,32 @@ func TestSkipTamperReplay(t *testing.T) {
 	w.raw.Do("ZADD", hello, score, id)
 	w.bob.hello = cursor{} // forget we read it, so only the ratchet can catch the replay
 	w.receive(w.bob)
+}
+
+// A hello forged from a public bundle (no identity key) must not disturb
+// the real session with that peer.
+func TestForgedHello(t *testing.T) {
+	w := setup(t)
+	bob := w.lookup(w.alice, "bob")
+	w.send(w.alice, bob, "real")
+	w.receive(w.bob, "real")
+	before := w.bob.sessions[w.alice.id.Fingerprint()].Inbox
+
+	forged, err := initiate(w.bob.id, w.alice.id.Bundle()) // fresh ephemeral, alice's public bundle...
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged.Hello.Bundle = w.alice.id.Bundle() // ...claiming to be alice, without her keys
+	mallory := New(w.conn(), w.bob.id)
+	mallory.sessions[bob.Fingerprint()] = forged
+	w.send(mallory, bob, "forged")
+
+	w.receive(w.bob)
+	if w.bob.sessions[w.alice.id.Fingerprint()].Inbox != before {
+		t.Fatal("forged hello replaced the real session")
+	}
+	w.send(w.alice, bob, "still here")
+	w.receive(w.bob, "still here")
 }
 
 func TestStateRoundTrip(t *testing.T) {
