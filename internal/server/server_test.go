@@ -385,6 +385,15 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	}
 }
 
+// Two nodes whose stores both say 127.0.0.1 have two stores, not one.
+func TestLoopbackStoresAreNotShared(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:6380": true, "localhost:6380": true, "[::1]:6380": true, "bazzite.local:6380": false, "10.0.0.4:6380": false} {
+		if loopback(addr) != want {
+			t.Fatalf("loopback(%q) = %v", addr, !want)
+		}
+	}
+}
+
 // A peer that was down comes back with an empty store and is brought up to
 // date: what was written while it was away is copied over on attach.
 func TestResyncAfterOutage(t *testing.T) {

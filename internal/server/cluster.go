@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"sync"
 	"time"
 
@@ -247,8 +248,8 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 // holds and only has its gaps filled — it may be the survivor and we the one
 // that just started.
 func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
-	if n.StoreAddr == c.local.StoreAddr {
-		return // sharing our store; replicating to it would be a self-write
+	if n.StoreAddr == c.local.StoreAddr && !loopback(c.local.StoreAddr) {
+		return // sharing our store; replicating to it would be a self-write (a loopback store is never shared)
 	}
 	if err := c.server.store.AddReplica(n.Addr); err != nil {
 		slog.Warn("cluster: attach replica failed", "peer", n.ID, "err", err)
@@ -263,6 +264,20 @@ func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
 		}
 		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", wasDown)
 	}()
+}
+
+// loopback reports whether addr names this machine only, so equal loopback
+// store addresses on two nodes are two stores, not one.
+func loopback(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (c *cluster) detach(n storage.NodeInfo) {

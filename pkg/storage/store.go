@@ -129,12 +129,10 @@ func (p *pool) do(cmd resp.Command) (any, error) {
 
 // doAll pipelines cmds on one connection. Every reply is returned; the
 // first server error, if any, is the error. A transport error retires the
-// connection and returns no replies.
+// connection; if it struck before any reply came back the batch is tried
+// once more on a fresh connection — a pooled connection to a peer that
+// restarted is dead on first use, and every write here is idempotent.
 func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
-	c, err := p.get()
-	if err != nil {
-		return nil, err
-	}
 	var buf []byte
 	for _, cmd := range cmds {
 		if p.via.Wrap != "" {
@@ -142,17 +140,40 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 		}
 		buf = append(buf, cmd...)
 	}
+	for attempt := 1; ; attempt++ {
+		c, err := p.get()
+		if err != nil {
+			return nil, err
+		}
+		out, first, err := p.exchange(c, buf, len(cmds))
+		if err == nil {
+			return out, first
+		}
+		if out != nil || attempt == 2 { // replies were read, or the fresh connection failed too
+			return nil, err
+		}
+	}
+}
+
+// exchange writes one batch and reads its replies. out is nil when the
+// transport failed before the first reply, so the caller knows nothing
+// was applied on that connection.
+func (p *pool) exchange(c *conn, buf []byte, n int) (out []any, first, err error) {
 	if _, err := c.Write(buf); err != nil {
 		p.put(c, err)
-		return nil, fmt.Errorf("write: %w", err)
+		return nil, nil, fmt.Errorf("write: %w", err)
 	}
-	out := make([]any, len(cmds))
-	var first error
-	for i := range cmds {
+	for i := range n {
 		v, err := c.r.ReadValue()
 		if err != nil && !errors.As(err, new(*resp.ServerError)) {
 			p.put(c, err)
-			return nil, err
+			if i == 0 {
+				return nil, nil, err
+			}
+			return []any{}, nil, err
+		}
+		if out == nil {
+			out = make([]any, n)
 		}
 		if err != nil && first == nil {
 			first = err
@@ -160,7 +181,7 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 		out[i] = v
 	}
 	p.put(c, nil)
-	return out, first
+	return out, first, nil
 }
 
 // Store writes through to a primary RESP server and fans every write out to
