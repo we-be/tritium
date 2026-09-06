@@ -14,6 +14,12 @@ import (
 	"github.com/we-be/tritium/pkg/storage"
 )
 
+// ttlCommand is what a replicated sorted-set write is followed by, so every
+// key still expires.
+func ttlCommand(key string) resp.Command {
+	return resp.NewCommand("EXPIRE", key, strconv.Itoa(DefaultTTL))
+}
+
 // session is one client connection. It speaks RESP2 until the client asks
 // for RESP3 with HELLO 3; for what tritium sends, the two differ only in how
 // nulls and the HELLO reply are encoded.
@@ -38,27 +44,35 @@ var (
 )
 
 type command struct {
-	min, max int // argument counts after the name; max -1 means unbounded
-	fn       func(*session, []string) []byte
+	min, max    int // argument counts after the name; max -1 means unbounded
+	fn          func(*session, []string) []byte
+	passthrough bool // fn receives the command name as args[0]
 }
 
 // commands are dispatched after authentication. AUTH, HELLO and QUIT are
 // handled before it in dispatch.
 var commands = map[string]command{
-	"PING":           {0, 1, (*session).ping},
-	"ECHO":           {1, 1, (*session).echo},
-	"SET":            {2, -1, (*session).set},
-	"SETEX":          {3, 3, (*session).setex},
-	"GET":            {1, 1, (*session).get},
-	"DEL":            {1, -1, (*session).del},
-	"EXISTS":         {1, -1, (*session).exists},
-	"TTL":            {1, 1, (*session).ttl},
-	"INFO":           {0, -1, (*session).info},
-	"CLIENT":         {1, -1, (*session).client},
-	"COMMAND":        {0, -1, (*session).command},
-	"SELECT":         {1, 1, (*session).selectDB},
-	"TRITIUM.NODES":  {0, 0, (*session).nodes},
-	"TRITIUM.GOSSIP": {1, 1, (*session).gossip},
+	"PING":             {min: 0, max: 1, fn: (*session).ping},
+	"ECHO":             {min: 1, max: 1, fn: (*session).echo},
+	"SET":              {min: 2, max: -1, fn: (*session).set},
+	"SETEX":            {min: 3, max: 3, fn: (*session).setex},
+	"GET":              {min: 1, max: 1, fn: (*session).get},
+	"GETDEL":           {min: 1, max: 1, fn: (*session).getdel},
+	"MGET":             {min: 1, max: -1, fn: (*session).mget},
+	"DEL":              {min: 1, max: -1, fn: (*session).del},
+	"EXISTS":           {min: 1, max: -1, fn: (*session).exists},
+	"TTL":              {min: 1, max: 1, fn: (*session).ttl},
+	"ZADD":             {min: 3, max: -1, fn: (*session).zadd},
+	"ZRANGEBYSCORE":    {min: 3, max: -1, fn: (*session).query, passthrough: true},
+	"ZREM":             {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
+	"ZREMRANGEBYSCORE": {min: 3, max: 3, fn: (*session).mutate, passthrough: true},
+	"ZCARD":            {min: 1, max: 1, fn: (*session).query, passthrough: true},
+	"INFO":             {min: 0, max: -1, fn: (*session).info},
+	"CLIENT":           {min: 1, max: -1, fn: (*session).client},
+	"COMMAND":          {min: 0, max: -1, fn: (*session).command},
+	"SELECT":           {min: 1, max: 1, fn: (*session).selectDB},
+	"TRITIUM.NODES":    {min: 0, max: 0, fn: (*session).nodes},
+	"TRITIUM.GOSSIP":   {min: 1, max: 1, fn: (*session).gossip},
 }
 
 func (s *Server) serveConn(c net.Conn) {
@@ -111,6 +125,9 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	if n := len(args) - 1; n < cmd.min || (cmd.max >= 0 && n > cmd.max) {
 		return errArity(name), false
 	}
+	if cmd.passthrough {
+		return cmd.fn(s, append([]string{name}, args[1:]...)), false
+	}
 	return cmd.fn(s, args[1:]), false
 }
 
@@ -118,7 +135,13 @@ func errArity(name string) []byte {
 	return resp.AppendError(nil, "ERR wrong number of arguments for '"+strings.ToLower(name)+"' command")
 }
 
+// errMsg passes a backing store's own error reply through verbatim and
+// wraps anything else as ERR.
 func errMsg(err error) []byte {
+	var se *resp.ServerError
+	if errors.As(err, &se) {
+		return resp.AppendError(nil, se.Msg)
+	}
 	return resp.AppendError(nil, "ERR "+err.Error())
 }
 
@@ -233,27 +256,47 @@ func (s *session) echo(args []string) []byte {
 	return resp.AppendBulkString(nil, args[0])
 }
 
-// set handles SET key value [EX seconds | PX milliseconds]. A write without
-// an expiry gets DefaultTTL; NX, XX, KEEPTTL and GET are not supported.
+// set handles SET key value [EX seconds | PX milliseconds] [NX]. A write
+// without an expiry gets DefaultTTL; XX, KEEPTTL and GET are not supported.
 func (s *session) set(args []string) []byte {
 	key, value := args[0], args[1]
 	ttl := DefaultTTL
+	nx := false
 	for i := 2; i < len(args); i++ {
-		opt := strings.ToUpper(args[i])
-		if (opt != "EX" && opt != "PX") || i+1 >= len(args) {
+		switch opt := strings.ToUpper(args[i]); opt {
+		case "NX":
+			nx = true
+		case "EX", "PX":
+			if i+1 >= len(args) {
+				return resp.AppendError(nil, "ERR syntax error")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return resp.AppendError(nil, "ERR invalid expire time in 'set' command")
+			}
+			if opt == "PX" {
+				n = (n + 999) / 1000
+			}
+			ttl = n
+			i++
+		default:
 			return resp.AppendError(nil, "ERR syntax error")
 		}
-		n, err := strconv.Atoi(args[i+1])
-		if err != nil || n <= 0 {
-			return resp.AppendError(nil, "ERR invalid expire time in 'set' command")
-		}
-		if opt == "PX" {
-			n = (n + 999) / 1000
-		}
-		ttl = n
-		i++
 	}
-	return s.write(key, value, ttl)
+	if !nx {
+		return s.write(key, value, ttl)
+	}
+	// NX is decided by the primary; replicas only hear about it if it won.
+	v, err := s.srv.store.Query("SET", key, value, "EX", strconv.Itoa(ttl), "NX")
+	if err != nil {
+		return errMsg(err)
+	}
+	if v == nil {
+		return s.null()
+	}
+	s.srv.store.Replicate(resp.NewCommand("SETEX", key, strconv.Itoa(ttl), value))
+	s.srv.bytes.Add(int64(len(value)))
+	return replyOK
 }
 
 func (s *session) setex(args []string) []byte {
@@ -292,8 +335,65 @@ func (s *session) get(args []string) []byte {
 	return resp.AppendBulk(nil, v)
 }
 
+// getdel reads and removes a key in one step on the primary, then tells
+// the replicas to drop it.
+func (s *session) getdel(args []string) []byte {
+	v, err := s.srv.store.Query("GETDEL", args[0])
+	if err != nil {
+		return errMsg(err)
+	}
+	if v == nil {
+		return s.null()
+	}
+	s.srv.store.Replicate(resp.NewCommand("DEL", args[0]))
+	b, _ := v.([]byte)
+	s.srv.bytes.Add(int64(len(b)))
+	return resp.AppendBulk(nil, b)
+}
+
+func (s *session) mget(args []string) []byte {
+	return s.query(append([]string{"MGET"}, args...))
+}
+
 func (s *session) del(args []string) []byte {
 	return integer(s.srv.store.Delete(args...))
+}
+
+// zadd handles ZADD key score member [score member ...], plain form only,
+// and refreshes the set's TTL so it expires like everything else.
+func (s *session) zadd(args []string) []byte {
+	if len(args)%2 != 1 {
+		return resp.AppendError(nil, "ERR syntax error")
+	}
+	for i := 1; i < len(args); i += 2 {
+		if _, err := strconv.ParseFloat(args[i], 64); err != nil {
+			return resp.AppendError(nil, "ERR value is not a valid float")
+		}
+	}
+	out, err := s.srv.store.Mutate(resp.NewCommand(append([]string{"ZADD"}, args...)...), ttlCommand(args[0]))
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendValue(nil, out[0])
+}
+
+// query passes a read-only command through to the primary. The command name
+// is args[0] when called directly by dispatch.
+func (s *session) query(args []string) []byte {
+	v, err := s.srv.store.Query(args...)
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendValue(nil, v)
+}
+
+// mutate passes a write through to the primary and replicates it.
+func (s *session) mutate(args []string) []byte {
+	out, err := s.srv.store.Mutate(resp.NewCommand(args...))
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendValue(nil, out[0])
 }
 
 func (s *session) exists(args []string) []byte {

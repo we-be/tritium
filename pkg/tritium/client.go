@@ -185,6 +185,12 @@ func (c *Client) Ping() error {
 	return err
 }
 
+// Do runs any command and returns the decoded reply: string, int64, []byte,
+// []any or nil. Values are not sealed or opened; use Set and Get for that.
+func (c *Client) Do(args ...string) (any, error) {
+	return c.do(args...)
+}
+
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

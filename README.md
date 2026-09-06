@@ -86,19 +86,44 @@ go run ./cmd/tritium-cli nodes
 
 | Command                                     | Notes                                                   |
 | ------------------------------------------- | ------------------------------------------------------- |
-| `SET key value [EX seconds \| PX millis]`   | Without an expiry the key gets the default TTL          |
+| `SET key value [EX seconds \| PX millis] [NX]` | Without an expiry the key gets the default TTL       |
 | `SETEX key seconds value`                   |                                                         |
-| `GET key`                                   |                                                         |
+| `GET key`, `GETDEL key`, `MGET key [key ...]` |                                                       |
 | `DEL key [key ...]`                         |                                                         |
 | `EXISTS key [key ...]`                      |                                                         |
 | `TTL key`                                   |                                                         |
+| `ZADD key score member [...]`               | Plain form only; the set's TTL is refreshed to the default |
+| `ZRANGEBYSCORE`, `ZREM`, `ZREMRANGEBYSCORE`, `ZCARD` | Passed through; writes replicate                |
 | `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
 | `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
 | `TRITIUM.GOSSIP <node-json>`                | What nodes send each other; replies with the view       |
 
-Every key expires; the default TTL is 17600 seconds. `NX`, `XX`, `KEEPTTL`
-and multi-key reads are not supported.
+Every key expires; the default TTL is 17600 seconds. `XX` and `KEEPTTL` are
+not supported. `NX` is decided by the node's own store, so two nodes can each
+accept the same claim; treat it as first-come per node, not a global lock.
+
+## Messenger
+
+`pkg/messenger` is a secure one-to-one messenger on top of tritium, standard
+library only. Identities are an Ed25519 signing key and an X25519 agreement
+key, published as a signed bundle under `id:<name>`. A session starts with an
+X3DH-style agreement, so you can message someone who is offline, and runs a
+hash ratchet in each direction so every message has its own key. Mailboxes are
+named by secrets derived from the session, so nodes can't see who is talking
+to whom, and every message expires.
+
+```sh
+go run ./cmd/tritium-msg init alice        # identity in ~/.tritium-msg, published as id:alice
+go run ./cmd/tritium-msg lookup bob        # prints bob's fingerprint: compare it with bob in person
+go run ./cmd/tritium-msg send bob "hey"
+go run ./cmd/tritium-msg recv -watch
+```
+
+What it does not do yet: forward secrecy across a compromised device (there is
+no Diffie-Hellman ratchet, only the hash ratchet), sealed sender on first
+contact, groups, or multiple devices per identity. Names are first come, first
+served per node; the fingerprint is the identity, the name is a convenience.
 
 ## Configuration
 

@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -99,20 +100,41 @@ func TestCommands(t *testing.T) {
 	}
 	c.want("OK", "SET", "cmd:k2", "v2", "px", "1500")
 	c.want("OK", "SETEX", "cmd:k3", "30", "v3")
+	c.want(nil, "SET", "cmd:k", "other", "NX")
+	c.want("OK", "SET", "cmd:nx", "first", "NX", "EX", "60")
 	c.want(int64(3), "EXISTS", "cmd:k", "cmd:k2", "cmd:k3", "cmd:missing")
+	if v, err := c.do("MGET", "cmd:k", "cmd:missing"); err != nil || !reflect.DeepEqual(v, []any{[]byte("v"), nil}) {
+		t.Fatalf("MGET: %#v, %v", v, err)
+	}
+	c.want("first", "GETDEL", "cmd:nx")
+	c.want(nil, "GETDEL", "cmd:nx")
 	c.want(int64(3), "DEL", "cmd:k", "cmd:k2", "cmd:k3")
 	c.want(nil, "GET", "cmd:k")
+
+	c.want(int64(2), "ZADD", "cmd:z", "2", "b", "1", "a")
+	c.want(int64(0), "ZADD", "cmd:z", "3", "b")
+	c.wantErr("ERR", "ZADD", "cmd:z", "x", "a")
+	if v, err := c.do("ZRANGEBYSCORE", "cmd:z", "(1", "+inf", "WITHSCORES", "LIMIT", "0", "10"); err != nil || !reflect.DeepEqual(v, []any{[]byte("b"), []byte("3")}) {
+		t.Fatalf("ZRANGEBYSCORE: %#v, %v", v, err)
+	}
+	if ttl, err := c.do("TTL", "cmd:z"); err != nil || ttl.(int64) <= 0 {
+		t.Fatalf("sorted set did not get a TTL: %v, %v", ttl, err)
+	}
+	c.want(int64(2), "ZCARD", "cmd:z")
+	c.want(int64(1), "ZREM", "cmd:z", "a")
+	c.want(int64(1), "ZREMRANGEBYSCORE", "cmd:z", "-inf", "+inf")
+	c.want(int64(0), "ZCARD", "cmd:z")
 	c.want("OK", "CLIENT", "SETNAME", "test")
 	c.want("OK", "SELECT", "0")
 	c.wantErr("ERR DB index", "SELECT", "1")
 	c.wantErr("ERR unknown command", "FLUSHALL")
 	c.wantErr("ERR wrong number of arguments for 'get'", "GET")
-	c.wantErr("ERR syntax error", "SET", "cmd:k", "v", "NX")
+	c.wantErr("ERR syntax error", "SET", "cmd:k", "v", "XX")
 	c.wantErr("ERR AUTH <password> called without", "AUTH", "x")
 	if info, err := c.do("INFO", "tritium"); err != nil || !strings.Contains(string(info.([]byte)), "node_id:node-") {
 		t.Fatalf("INFO tritium: %q, %v", info, err)
 	}
-	if st := s.Stats(); st.ActiveConnections != 1 || st.BytesTransferred != 6 { // v, v (read), v2, v3
+	if st := s.Stats(); st.ActiveConnections != 1 || st.BytesTransferred != 16 { // v, v, v2, v3, first (nx), first (getdel)
 		t.Fatalf("stats: %+v", st)
 	}
 }
@@ -195,6 +217,12 @@ func TestJoinReplicates(t *testing.T) {
 	}
 	if v, err := seed.store.Get("join:k"); err != nil || string(v) != "v" {
 		t.Fatalf("write did not reach the seed's store: %q, %v", v, err)
+	}
+	if _, err := client.Do("ZADD", "join:z", "1", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := seed.store.Query("ZCARD", "join:z"); err != nil || n != int64(1) {
+		t.Fatalf("sorted-set write did not reach the seed's store: %v, %v", n, err)
 	}
 }
 

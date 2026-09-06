@@ -1,0 +1,346 @@
+package messenger
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/we-be/tritium/pkg/tritium"
+)
+
+const (
+	bundleTTL  = 30 * 24 * 3600 // seconds a published bundle lives without a refresh
+	fetchBatch = 100
+)
+
+var ErrNameTaken = errors.New("messenger: name is registered to another identity")
+
+// Client is one user's messenger: their identity, their sessions, and a
+// tritium connection. The tritium client must not have its own Key set;
+// the messenger does its own sealing.
+type Client struct {
+	t        *tritium.Client
+	id       *Identity
+	TTL      int                 // seconds a message lives on the server; 0 uses the node's default
+	sessions map[string]*Session // by peer fingerprint
+	hello    cursor
+}
+
+// cursor remembers how far into a mailbox we have read.
+type cursor struct {
+	Score float64  `json:"score"`
+	Seen  []string `json:"seen,omitempty"` // ids consumed at Score
+}
+
+func New(t *tritium.Client, id *Identity) *Client {
+	return &Client{t: t, id: id, sessions: map[string]*Session{}}
+}
+
+// Message is a decrypted message from a peer.
+type Message struct {
+	From Bundle
+	Time time.Time
+	Body []byte
+}
+
+// envelope is the stored form of a message.
+type envelope struct {
+	V     int          `json:"v"`
+	Hello *helloHeader `json:"hello,omitempty"`
+	N     uint32       `json:"n"`
+	CT    []byte       `json:"ct"`
+}
+
+// Publish registers the identity's bundle under id:<name>. The first
+// identity to claim a name on a node keeps it; a bundle expires after
+// bundleTTL unless republished.
+func (c *Client) Publish() error {
+	b, err := json.Marshal(c.id.Bundle())
+	if err != nil {
+		return err
+	}
+	key := "id:" + c.id.Name
+	v, err := c.t.Do("SET", key, string(b), "EX", strconv.Itoa(bundleTTL), "NX")
+	if err != nil {
+		return err
+	}
+	if v != nil {
+		return nil
+	}
+	existing, err := c.Lookup(c.id.Name)
+	if err != nil {
+		return err
+	}
+	if existing.Fingerprint() != c.id.Fingerprint() {
+		return ErrNameTaken
+	}
+	_, err = c.t.Do("SET", key, string(b), "EX", strconv.Itoa(bundleTTL))
+	return err
+}
+
+// Lookup fetches and verifies the bundle published under name. Verify the
+// fingerprint with its owner before trusting it.
+func (c *Client) Lookup(name string) (Bundle, error) {
+	v, err := c.t.Do("GET", "id:"+name)
+	if err != nil {
+		return Bundle{}, err
+	}
+	raw, ok := v.([]byte)
+	if !ok {
+		return Bundle{}, fmt.Errorf("messenger: no identity named %q", name)
+	}
+	var b Bundle
+	if err := json.Unmarshal(raw, &b); err != nil || b.Name != name {
+		return Bundle{}, ErrBadBundle
+	}
+	if err := b.Verify(); err != nil {
+		return Bundle{}, err
+	}
+	return b, nil
+}
+
+// Send delivers body to peer, opening a session on first contact.
+func (c *Client) Send(peer Bundle, body []byte) error {
+	if err := peer.Verify(); err != nil {
+		return err
+	}
+	fp := peer.Fingerprint()
+	s := c.sessions[fp]
+	if s == nil {
+		var err error
+		if s, err = initiate(c.id, peer); err != nil {
+			return err
+		}
+		c.sessions[fp] = s
+	}
+	// Until the peer answers, everything goes to their hello mailbox with our
+	// opening keys attached; after that, to the session's private mailbox.
+	mailbox := s.Outbox
+	if s.Hello != nil {
+		mailbox = helloMailbox(peer)
+	}
+
+	now := time.Now()
+	id := messageID(now)
+	key := "msg:" + mailbox + ":" + id
+	plaintext := make([]byte, 8+len(body))
+	binary.BigEndian.PutUint64(plaintext, uint64(now.UnixMilli()))
+	copy(plaintext[8:], body)
+
+	env := envelope{V: 1, Hello: s.Hello, N: s.Send.N}
+	ct, err := s.seal(plaintext, aad(key, env.N))
+	if err != nil {
+		return err
+	}
+	env.CT = ct
+	data, err := json.Marshal(env)
+	if err != nil {
+		return err
+	}
+	set := []string{"SET", key, string(data)}
+	if c.TTL > 0 {
+		set = append(set, "EX", strconv.Itoa(c.TTL))
+	}
+	if _, err := c.t.Do(set...); err != nil {
+		return err
+	}
+	_, err = c.t.Do("ZADD", mailbox, strconv.FormatInt(now.UnixMilli(), 10), id)
+	return err
+}
+
+// Receive collects new messages from the hello mailbox and every session's
+// inbox, oldest first. Messages that cannot be opened are dropped and logged.
+func (c *Client) Receive() ([]Message, error) {
+	var out []Message
+	items, err := c.fetch(helloMailbox(c.id.Bundle()), &c.hello)
+	if err != nil {
+		return nil, err
+	}
+	for _, it := range items {
+		if m, ok := c.openHello(it); ok {
+			out = append(out, m)
+		}
+	}
+	for _, s := range c.sessions {
+		cur := cursor{s.Cursor, s.Seen}
+		items, err := c.fetch(s.Inbox, &cur)
+		s.Cursor, s.Seen = cur.Score, cur.Seen
+		if err != nil {
+			return out, err
+		}
+		for _, it := range items {
+			if m, ok := c.openWith(s, it); ok {
+				out = append(out, m)
+			}
+		}
+	}
+	slices.SortFunc(out, func(a, b Message) int { return a.Time.Compare(b.Time) })
+	return out, nil
+}
+
+type item struct {
+	key   string
+	score float64
+	data  []byte
+}
+
+// fetch loads a mailbox's entries from the cursor on, advances it, and
+// deletes what it loaded from the server.
+func (c *Client) fetch(mailbox string, cur *cursor) ([]item, error) {
+	v, err := c.t.Do("ZRANGEBYSCORE", mailbox, strconv.FormatFloat(cur.Score, 'f', -1, 64), "+inf",
+		"WITHSCORES", "LIMIT", "0", strconv.Itoa(fetchBatch))
+	if err != nil {
+		return nil, err
+	}
+	arr, _ := v.([]any)
+	var items []item
+	var ids, keys []string
+	for i := 0; i+1 < len(arr); i += 2 {
+		id, _ := arr[i].([]byte)
+		scoreText, _ := arr[i+1].([]byte)
+		score, err := strconv.ParseFloat(string(scoreText), 64)
+		if err != nil || (score == cur.Score && slices.Contains(cur.Seen, string(id))) {
+			continue
+		}
+		ids = append(ids, string(id))
+		keys = append(keys, "msg:"+mailbox+":"+string(id))
+		items = append(items, item{key: keys[len(keys)-1], score: score})
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	vals, err := c.t.Do(append([]string{"MGET"}, keys...)...)
+	if err != nil {
+		return nil, err
+	}
+	for i, val := range vals.([]any) {
+		items[i].data, _ = val.([]byte)
+	}
+	for _, it := range items { // entries arrive ordered by score
+		if it.score > cur.Score {
+			cur.Score, cur.Seen = it.score, cur.Seen[:0]
+		}
+		cur.Seen = append(cur.Seen, it.key[len("msg:"+mailbox+":"):])
+	}
+	c.t.Do(append([]string{"ZREM", mailbox}, ids...)...)
+	c.t.Do(append([]string{"DEL"}, keys...)...)
+	return slices.DeleteFunc(items, func(it item) bool { return it.data == nil }), nil
+}
+
+// openHello handles a message from our hello mailbox: it carries the
+// sender's opening keys, so it can start a session or repeat one.
+func (c *Client) openHello(it item) (Message, bool) {
+	var env envelope
+	if err := json.Unmarshal(it.data, &env); err != nil || env.Hello == nil {
+		slog.Warn("messenger: malformed hello", "key", it.key)
+		return Message{}, false
+	}
+	h := *env.Hello
+	if err := h.Bundle.Verify(); err != nil {
+		slog.Warn("messenger: hello with bad bundle", "key", it.key)
+		return Message{}, false
+	}
+	fp := h.Bundle.Fingerprint()
+	cur := c.sessions[fp]
+	if cur != nil && bytes.Equal(cur.PeerEphemeral, h.Ephemeral) {
+		return c.openWith(cur, it) // the session this hello already started
+	}
+	fresh, err := respond(c.id, h)
+	if err != nil {
+		slog.Warn("messenger: hello agreement failed", "key", it.key, "err", err)
+		return Message{}, false
+	}
+	// Adopt the peer's session unless we opened one to them at the same time
+	// and ours wins the tie: the lower fingerprint's initiation survives.
+	if cur == nil || cur.Hello == nil || fp < c.id.Fingerprint() {
+		c.sessions[fp] = fresh
+	}
+	return c.openWith(fresh, it)
+}
+
+// openWith decrypts an envelope with s and marks the session answered.
+func (c *Client) openWith(s *Session, it item) (Message, bool) {
+	var env envelope
+	if err := json.Unmarshal(it.data, &env); err != nil {
+		slog.Warn("messenger: malformed message", "key", it.key)
+		return Message{}, false
+	}
+	pt, err := s.open(env.N, env.CT, aad(it.key, env.N))
+	if err != nil {
+		slog.Warn("messenger: dropped message", "key", it.key, "err", err)
+		return Message{}, false
+	}
+	if len(pt) < 8 {
+		return Message{}, false
+	}
+	s.Hello = nil // they answered; the private mailbox is live
+	return Message{
+		From: s.Peer,
+		Time: time.UnixMilli(int64(binary.BigEndian.Uint64(pt))),
+		Body: pt[8:],
+	}, true
+}
+
+// Sessions lists the peers we have sessions with.
+func (c *Client) Sessions() []Bundle {
+	out := make([]Bundle, 0, len(c.sessions))
+	for _, s := range c.sessions {
+		out = append(out, s.Peer)
+	}
+	return out
+}
+
+type state struct {
+	Sessions map[string]*Session `json:"sessions"`
+	Hello    cursor              `json:"hello"`
+}
+
+// State serializes sessions and cursors for storage. It contains chain
+// keys; keep it as secret as the identity.
+func (c *Client) State() ([]byte, error) {
+	return json.Marshal(state{c.sessions, c.hello})
+}
+
+func (c *Client) Restore(data []byte) error {
+	var st state
+	if err := json.Unmarshal(data, &st); err != nil {
+		return err
+	}
+	if st.Sessions == nil {
+		st.Sessions = map[string]*Session{}
+	}
+	for _, s := range st.Sessions {
+		if s.Skipped == nil {
+			s.Skipped = map[uint32][]byte{}
+		}
+	}
+	c.sessions, c.hello = st.Sessions, st.Hello
+	return nil
+}
+
+// helloMailbox is where first contact for a bundle's owner lands. Anyone
+// with the bundle can compute it, so it reveals that someone wrote to the
+// owner, but not who.
+func helloMailbox(b Bundle) string {
+	sum := sha256.Sum256(append([]byte("hello:"), b.Signing...))
+	return "hello:" + hex.EncodeToString(sum[:16])
+}
+
+func messageID(now time.Time) string {
+	var r [4]byte
+	rand.Read(r[:])
+	return strconv.FormatInt(now.UnixMilli(), 10) + "-" + hex.EncodeToString(r[:])
+}
+
+func aad(key string, n uint32) []byte {
+	return []byte(key + "#" + strconv.FormatUint(uint64(n), 10))
+}

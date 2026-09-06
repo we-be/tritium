@@ -48,3 +48,26 @@ func AppendMap(b []byte, n int) []byte {
 	b = strconv.AppendInt(append(b, '%'), int64(n), 10)
 	return append(b, '\r', '\n')
 }
+
+// AppendValue encodes a decoded reply (as returned by Reader.ReadValue)
+// back into RESP, for passing a backend's reply through to a client.
+func AppendValue(b []byte, v any) []byte {
+	switch v := v.(type) {
+	case nil:
+		return AppendNull(b)
+	case string:
+		return AppendSimpleString(b, v)
+	case int64:
+		return AppendInt(b, v)
+	case []byte:
+		return AppendBulk(b, v)
+	case []any:
+		b = AppendArray(b, len(v))
+		for _, e := range v {
+			b = AppendValue(b, e)
+		}
+		return b
+	default:
+		return AppendError(b, "ERR unencodable reply")
+	}
+}

@@ -100,17 +100,44 @@ func (p *pool) close() {
 // do runs cmd on a pooled connection. A server error reply leaves the
 // connection healthy; a transport error retires it.
 func (p *pool) do(cmd resp.Command) (any, error) {
+	out, err := p.doAll([]resp.Command{cmd})
+	if out == nil {
+		return nil, err
+	}
+	return out[0], err
+}
+
+// doAll pipelines cmds on one connection. Every reply is returned; the
+// first server error, if any, is the error. A transport error retires the
+// connection and returns no replies.
+func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 	c, err := p.get()
 	if err != nil {
 		return nil, err
 	}
-	v, err := cmd.Do(c, c.r)
-	if err != nil && !errors.As(err, new(*resp.ServerError)) {
-		p.put(c, err)
-	} else {
-		p.put(c, nil)
+	var buf []byte
+	for _, cmd := range cmds {
+		buf = append(buf, cmd...)
 	}
-	return v, err
+	if _, err := c.Write(buf); err != nil {
+		p.put(c, err)
+		return nil, fmt.Errorf("write: %w", err)
+	}
+	out := make([]any, len(cmds))
+	var first error
+	for i := range cmds {
+		v, err := c.r.ReadValue()
+		if err != nil && !errors.As(err, new(*resp.ServerError)) {
+			p.put(c, err)
+			return nil, err
+		}
+		if err != nil && first == nil {
+			first = err
+		}
+		out[i] = v
+	}
+	p.put(c, nil)
+	return out, first
 }
 
 // Store writes through to a primary RESP server and fans every write out to
@@ -178,6 +205,32 @@ func (s *Store) Delete(keys ...string) (int64, error) {
 	return n, nil
 }
 
+// Query runs one command on the primary without replicating it: reads, or
+// writes whose replication the caller decides on after seeing the reply.
+func (s *Store) Query(args ...string) (any, error) {
+	v, err := s.primary.do(resp.NewCommand(args...))
+	if err != nil {
+		return v, fmt.Errorf("primary: %w", err)
+	}
+	return v, nil
+}
+
+// Mutate pipelines cmds on the primary, then replicates them all if none
+// failed. Replies are returned even when one is a server error.
+func (s *Store) Mutate(cmds ...resp.Command) ([]any, error) {
+	out, err := s.primary.doAll(cmds)
+	if err != nil {
+		return out, fmt.Errorf("primary: %w", err)
+	}
+	s.replicateAll(cmds)
+	return out, nil
+}
+
+// Replicate fans cmds out to the replicas without touching the primary.
+func (s *Store) Replicate(cmds ...resp.Command) {
+	s.replicateAll(cmds)
+}
+
 // Exists returns how many of keys are present.
 func (s *Store) Exists(keys ...string) (int64, error) {
 	return s.primary.integer(resp.NewCommand(append([]string{"EXISTS"}, keys...)...))
@@ -201,9 +254,13 @@ func (p *pool) integer(cmd resp.Command) (int64, error) {
 	return n, nil
 }
 
-// replicate runs cmd on every replica concurrently. Failures are logged, not
-// returned: the primary write already succeeded.
 func (s *Store) replicate(cmd resp.Command) {
+	s.replicateAll([]resp.Command{cmd})
+}
+
+// replicateAll runs cmds on every replica concurrently. Failures are logged,
+// not returned: the primary write already succeeded.
+func (s *Store) replicateAll(cmds []resp.Command) {
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
 	s.mu.RUnlock()
@@ -211,7 +268,7 @@ func (s *Store) replicate(cmd resp.Command) {
 	var wg sync.WaitGroup
 	for _, r := range replicas {
 		wg.Go(func() {
-			if _, err := r.do(cmd); err != nil {
+			if _, err := r.doAll(cmds); err != nil {
 				slog.Warn("replica write failed", "addr", r.addr, "err", err)
 			}
 		})
