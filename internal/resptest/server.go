@@ -143,7 +143,7 @@ func (s *Server) exec(args []string) []byte {
 		delete(s.kv, args[1])
 		return resp.AppendBulk(nil, v)
 	case "EXPIRE":
-		if len(args) != 3 {
+		if len(args) != 3 && len(args) != 4 {
 			return errArgs(cmd)
 		}
 		n, err := strconv.Atoi(args[2])
@@ -151,7 +151,28 @@ func (s *Server) exec(args []string) []byte {
 		if err != nil || e == nil {
 			return resp.AppendInt(nil, 0)
 		}
-		e.exp = time.Now().Add(time.Duration(n) * time.Second)
+		exp := time.Now().Add(time.Duration(n) * time.Second)
+		if len(args) == 4 {
+			switch strings.ToUpper(args[3]) {
+			case "GT":
+				if !e.exp.IsZero() && !exp.After(e.exp) {
+					return resp.AppendInt(nil, 0)
+				}
+			case "LT":
+				if !e.exp.IsZero() && !exp.Before(e.exp) {
+					return resp.AppendInt(nil, 0)
+				}
+			case "NX":
+				if !e.exp.IsZero() {
+					return resp.AppendInt(nil, 0)
+				}
+			case "XX":
+				if e.exp.IsZero() {
+					return resp.AppendInt(nil, 0)
+				}
+			}
+		}
+		e.exp = exp
 		return resp.AppendInt(nil, 1)
 	case "ZADD":
 		if len(args) < 4 || len(args)%2 != 0 {

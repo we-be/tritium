@@ -14,6 +14,7 @@ import (
 
 const (
 	protocol       = "tritium-messenger-v1"
+	padBlock       = 160  // plaintexts are padded to a multiple of this, so a size reveals only its bucket
 	maxSkip        = 1000 // messages a receiver will derive keys for in one gap
 	maxSkippedKeys = 2000 // keys kept for messages that never arrived; oldest go first
 )
@@ -53,8 +54,7 @@ type Session struct {
 	Skipped       map[uint32][]byte `json:"skipped,omitempty"` // keys for messages that arrived out of order
 	Outbox        string            `json:"outbox"`            // mailbox we post to
 	Inbox         string            `json:"inbox"`             // mailbox we poll
-	Cursor        float64           `json:"cursor"`            // inbox score last consumed
-	Seen          []string          `json:"seen,omitempty"`    // ids consumed at Cursor
+	Seen          []string          `json:"seen,omitempty"`    // inbox entries read by the last Receive, deleted by the next
 	Hello         *helloHeader      `json:"hello,omitempty"`   // our opening keys, sent until the peer answers
 	PeerEphemeral []byte            `json:"peer_ephemeral,omitempty"`
 }
@@ -64,6 +64,7 @@ type Session struct {
 type helloHeader struct {
 	Bundle    Bundle `json:"bundle"`
 	Ephemeral []byte `json:"ek"`
+	Prekey    []byte `json:"spk"` // the peer's prekey this hello was made against
 }
 
 // initiate runs the initiator's side of the agreement against peer's bundle.
@@ -96,7 +97,7 @@ func initiate(me *Identity, peer Bundle) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.Hello = &helloHeader{Bundle: me.Bundle(), Ephemeral: ek.PublicKey().Bytes()}
+	s.Hello = &helloHeader{Bundle: me.Bundle(), Ephemeral: ek.PublicKey().Bytes(), Prekey: peer.Prekey}
 	return s, nil
 }
 
@@ -104,6 +105,10 @@ func initiate(me *Identity, peer Bundle) (*Session, error) {
 func respond(me *Identity, h helloHeader) (*Session, error) {
 	if err := h.Bundle.Verify(); err != nil {
 		return nil, err
+	}
+	spk := me.prekeyFor(h.Prekey)
+	if spk == nil {
+		return nil, ErrUnknownPrekey
 	}
 	peerIK, err := ecdh.X25519().NewPublicKey(h.Bundle.Agreement)
 	if err != nil {
@@ -113,7 +118,7 @@ func respond(me *Identity, h helloHeader) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	dh1, err := me.prekey.ECDH(peerIK)
+	dh1, err := spk.ECDH(peerIK)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +126,7 @@ func respond(me *Identity, h helloHeader) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	dh3, err := me.prekey.ECDH(peerEK)
+	dh3, err := spk.ECDH(peerEK)
 	if err != nil {
 		return nil, err
 	}
@@ -166,10 +171,10 @@ func mailbox(seed []byte, info string) string {
 	return "mbx:" + hex.EncodeToString(k)
 }
 
-// seal encrypts plaintext with the next sending key. aad binds the
-// ciphertext to where it is stored and its position in the chain.
+// seal pads and encrypts plaintext with the next sending key. aad binds
+// the ciphertext to where it is stored and its position in the chain.
 func (s *Session) seal(plaintext, aad []byte) ([]byte, error) {
-	return aead(s.Send.step(), plaintext, aad, true)
+	return aead(s.Send.step(), pad(plaintext), aad, true)
 }
 
 // open decrypts message n, deriving and keeping keys for any messages
@@ -198,7 +203,26 @@ func (s *Session) open(n uint32, ct, aad []byte) ([]byte, error) {
 	}
 	delete(s.Skipped, n)
 	s.pruneSkipped()
-	return pt, nil
+	return unpad(pt)
+}
+
+// pad appends 0x80 and zeros up to the next multiple of padBlock.
+func pad(pt []byte) []byte {
+	out := make([]byte, (len(pt)+padBlock)/padBlock*padBlock)
+	copy(out, pt)
+	out[len(pt)] = 0x80
+	return out
+}
+
+func unpad(pt []byte) ([]byte, error) {
+	i := len(pt) - 1
+	for i >= 0 && pt[i] == 0 {
+		i--
+	}
+	if i < 0 || pt[i] != 0x80 {
+		return nil, ErrDecrypt
+	}
+	return pt[:i], nil
 }
 
 // pruneSkipped forgets the oldest skipped keys once there are too many, so

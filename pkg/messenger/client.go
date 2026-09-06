@@ -20,6 +20,7 @@ import (
 const (
 	bundleTTL  = 30 * 24 * 3600 // seconds a published bundle lives without a refresh
 	fetchBatch = 100
+	version    = 2 // envelope format: padded plaintext, hello names the prekey it used
 )
 
 var ErrNameTaken = errors.New("messenger: name is registered to another identity")
@@ -28,17 +29,11 @@ var ErrNameTaken = errors.New("messenger: name is registered to another identity
 // tritium connection. The tritium client must not have its own Key set;
 // the messenger does its own sealing.
 type Client struct {
-	t        *tritium.Client
-	id       *Identity
-	TTL      int                 // seconds a message lives on the server; 0 uses the node's default
-	sessions map[string]*Session // by peer fingerprint
-	hello    cursor
-}
-
-// cursor remembers how far into a mailbox we have read.
-type cursor struct {
-	Score float64  `json:"score"`
-	Seen  []string `json:"seen,omitempty"` // ids consumed at Score
+	t         *tritium.Client
+	id        *Identity
+	TTL       int                 // seconds a message lives on the server; 0 uses the node's default
+	sessions  map[string]*Session // by peer fingerprint
+	helloSeen []string            // hello mailbox entries read by the last Receive, deleted by the next
 }
 
 func New(t *tritium.Client, id *Identity) *Client {
@@ -60,10 +55,12 @@ type envelope struct {
 	CT    []byte       `json:"ct"`
 }
 
-// Publish registers the identity's bundle under id:<name>. The first
-// identity to claim a name on a node keeps it; a bundle expires after
-// bundleTTL unless republished.
+// Publish registers the identity's bundle under id:<name>, rotating the
+// prekey first when it is due. The first identity to claim a name on a node
+// keeps it; a bundle expires after bundleTTL unless republished. Call it
+// regularly and store the Identity afterwards, since rotation changes it.
 func (c *Client) Publish() error {
+	c.id.rotate(time.Now())
 	b, err := json.Marshal(c.id.Bundle())
 	if err != nil {
 		return err
@@ -136,7 +133,7 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 	binary.BigEndian.PutUint64(plaintext, uint64(now.UnixMilli()))
 	copy(plaintext[8:], body)
 
-	env := envelope{V: 1, Hello: s.Hello, N: s.Send.N}
+	env := envelope{V: version, Hello: s.Hello, N: s.Send.N}
 	ct, err := s.seal(plaintext, aad(key, env.N))
 	if err != nil {
 		return err
@@ -153,15 +150,22 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 	if _, err := c.t.Do(set...); err != nil {
 		return err
 	}
-	_, err = c.t.Do("ZADD", mailbox, strconv.FormatInt(now.UnixMilli(), 10), id)
+	if _, err := c.t.Do("ZADD", mailbox, strconv.FormatInt(now.UnixMilli(), 10), id); err != nil {
+		return err
+	}
+	if c.TTL > 0 { // the index must outlive the messages it names; the node's default may not
+		_, err = c.t.Do("EXPIRE", mailbox, strconv.Itoa(c.TTL), "GT")
+	}
 	return err
 }
 
 // Receive collects new messages from the hello mailbox and every session's
-// inbox, oldest first. Messages that cannot be opened are dropped and logged.
+// inbox, oldest first, one batch per mailbox. Messages that cannot be
+// opened are dropped and logged. What one call reads, the next call deletes
+// from the server, so store State between calls and a crash loses nothing.
 func (c *Client) Receive() ([]Message, error) {
 	var out []Message
-	items, err := c.fetch(helloMailbox(c.id.Bundle()), &c.hello)
+	items, err := c.fetch(helloMailbox(c.id.Bundle()), &c.helloSeen)
 	if err != nil {
 		return nil, err
 	}
@@ -171,9 +175,7 @@ func (c *Client) Receive() ([]Message, error) {
 		}
 	}
 	for _, s := range c.sessions {
-		cur := cursor{s.Cursor, s.Seen}
-		items, err := c.fetch(s.Inbox, &cur)
-		s.Cursor, s.Seen = cur.Score, cur.Seen
+		items, err := c.fetch(s.Inbox, &s.Seen)
 		if err != nil {
 			return out, err
 		}
@@ -188,63 +190,67 @@ func (c *Client) Receive() ([]Message, error) {
 }
 
 type item struct {
-	key   string
-	score float64
-	data  []byte
+	key  string
+	data []byte
 }
 
-// fetch loads a mailbox's entries from the cursor on, advances it, and
-// deletes what it loaded from the server.
-func (c *Client) fetch(mailbox string, cur *cursor) ([]item, error) {
-	v, err := c.t.Do("ZRANGEBYSCORE", mailbox, strconv.FormatFloat(cur.Score, 'f', -1, 64), "+inf",
-		"WITHSCORES", "LIMIT", "0", strconv.Itoa(fetchBatch))
+// fetch loads a mailbox's unread entries and deletes the ones read last
+// time, which the caller has had a chance to persist since.
+func (c *Client) fetch(mailbox string, seen *[]string) ([]item, error) {
+	v, err := c.t.Do("ZRANGEBYSCORE", mailbox, "-inf", "+inf", "LIMIT", "0", strconv.Itoa(fetchBatch+len(*seen)))
 	if err != nil {
 		return nil, err
 	}
 	arr, _ := v.([]any)
-	var items []item
-	var ids, keys []string
-	for i := 0; i+1 < len(arr); i += 2 {
-		id, _ := arr[i].([]byte)
-		scoreText, _ := arr[i+1].([]byte)
-		score, err := strconv.ParseFloat(string(scoreText), 64)
-		if err != nil || (score == cur.Score && slices.Contains(cur.Seen, string(id))) {
-			continue
+	var read, fresh []string
+	for _, e := range arr {
+		id, _ := e.([]byte)
+		if slices.Contains(*seen, string(id)) {
+			read = append(read, string(id))
+		} else {
+			fresh = append(fresh, string(id))
 		}
-		ids = append(ids, string(id))
-		keys = append(keys, "msg:"+mailbox+":"+string(id))
-		items = append(items, item{key: keys[len(keys)-1], score: score})
 	}
-	if len(items) == 0 {
+	if len(read) > 0 {
+		c.t.Do(append([]string{"ZREM", mailbox}, read...)...)
+		c.t.Do(append([]string{"DEL"}, messageKeys(mailbox, read)...)...)
+	}
+	*seen = nil
+	if len(fresh) == 0 {
 		return nil, nil
 	}
+	keys := messageKeys(mailbox, fresh)
 	v, err = c.t.Do(append([]string{"MGET"}, keys...)...)
 	if err != nil {
 		return nil, err
 	}
 	vals, ok := v.([]any)
-	if !ok || len(vals) != len(items) {
+	if !ok || len(vals) != len(keys) {
 		return nil, fmt.Errorf("messenger: unexpected MGET reply %T", v)
 	}
+	*seen = fresh
+	var items []item
 	for i, val := range vals {
-		items[i].data, _ = val.([]byte)
-	}
-	for _, it := range items { // entries arrive ordered by score
-		if it.score > cur.Score {
-			cur.Score, cur.Seen = it.score, cur.Seen[:0]
+		if data, _ := val.([]byte); data != nil { // an entry whose message expired is just cleaned up next time
+			items = append(items, item{key: keys[i], data: data})
 		}
-		cur.Seen = append(cur.Seen, it.key[len("msg:"+mailbox+":"):])
 	}
-	c.t.Do(append([]string{"ZREM", mailbox}, ids...)...)
-	c.t.Do(append([]string{"DEL"}, keys...)...)
-	return slices.DeleteFunc(items, func(it item) bool { return it.data == nil }), nil
+	return items, nil
+}
+
+func messageKeys(mailbox string, ids []string) []string {
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = "msg:" + mailbox + ":" + id
+	}
+	return keys
 }
 
 // openHello handles a message from our hello mailbox: it carries the
 // sender's opening keys, so it can start a session or repeat one.
 func (c *Client) openHello(it item) (Message, bool) {
 	var env envelope
-	if err := json.Unmarshal(it.data, &env); err != nil || env.Hello == nil {
+	if err := json.Unmarshal(it.data, &env); err != nil || env.V != version || env.Hello == nil {
 		slog.Warn("messenger: malformed hello", "key", it.key)
 		return Message{}, false
 	}
@@ -281,7 +287,7 @@ func (c *Client) openHello(it item) (Message, bool) {
 // openWith decrypts an envelope with s and marks the session answered.
 func (c *Client) openWith(s *Session, it item) (Message, bool) {
 	var env envelope
-	if err := json.Unmarshal(it.data, &env); err != nil {
+	if err := json.Unmarshal(it.data, &env); err != nil || env.V != version {
 		slog.Warn("messenger: malformed message", "key", it.key)
 		return Message{}, false
 	}
@@ -311,14 +317,14 @@ func (c *Client) Sessions() []Bundle {
 }
 
 type state struct {
-	Sessions map[string]*Session `json:"sessions"`
-	Hello    cursor              `json:"hello"`
+	Sessions  map[string]*Session `json:"sessions"`
+	HelloSeen []string            `json:"hello_seen,omitempty"`
 }
 
-// State serializes sessions and cursors for storage. It contains chain
-// keys; keep it as secret as the identity.
+// State serializes sessions and read positions for storage. It contains
+// chain keys; keep it as secret as the identity.
 func (c *Client) State() ([]byte, error) {
-	return json.Marshal(state{c.sessions, c.hello})
+	return json.Marshal(state{c.sessions, c.helloSeen})
 }
 
 func (c *Client) Restore(data []byte) error {
@@ -334,7 +340,7 @@ func (c *Client) Restore(data []byte) error {
 			s.Skipped = map[uint32][]byte{}
 		}
 	}
-	c.sessions, c.hello = st.Sessions, st.Hello
+	c.sessions, c.helloSeen = st.Sessions, st.HelloSeen
 	return nil
 }
 

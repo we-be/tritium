@@ -103,6 +103,12 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		}
 		return os.WriteFile(stateFile, st, 0o600)
 	}
+	publish := func() error { // rotation may have changed the identity
+		if err := client.Publish(); err != nil {
+			return err
+		}
+		return writeJSON(idFile, &id)
+	}
 
 	switch cmd {
 	case "me":
@@ -120,7 +126,7 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		if len(args) < 2 {
 			return errors.New("usage: send NAME TEXT")
 		}
-		if err := client.Publish(); err != nil {
+		if err := publish(); err != nil {
 			return err
 		}
 		peer, err := client.Lookup(args[0])
@@ -138,7 +144,7 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
-		if err := client.Publish(); err != nil {
+		if err := publish(); err != nil {
 			return err
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -148,11 +154,14 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 			if err != nil {
 				return err
 			}
+			if err := save(); err != nil { // before printing: a message is deleted only once its receipt is on disk
+				return err
+			}
 			for _, m := range msgs {
 				fmt.Printf("[%s] %s (%s): %s\n", m.Time.Local().Format("15:04:05"), m.From.Name, m.From.Fingerprint()[:11], m.Body)
 			}
-			if err := save(); err != nil {
-				return err
+			if len(msgs) > 0 {
+				continue // another batch may be waiting, and this one is deleted by the next call
 			}
 			if !*watch {
 				return nil

@@ -62,6 +62,7 @@ var commands = map[string]command{
 	"DEL":              {min: 1, max: -1, fn: (*session).del},
 	"EXISTS":           {min: 1, max: -1, fn: (*session).exists},
 	"TTL":              {min: 1, max: 1, fn: (*session).ttl},
+	"EXPIRE":           {min: 2, max: 3, fn: (*session).expire},
 	"ZADD":             {min: 3, max: -1, fn: (*session).zadd},
 	"ZRANGEBYSCORE":    {min: 3, max: -1, fn: (*session).query, passthrough: true},
 	"ZREM":             {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
@@ -394,6 +395,22 @@ func (s *session) mutate(args []string) []byte {
 		return errMsg(err)
 	}
 	return resp.AppendValue(nil, out[0])
+}
+
+// expire handles EXPIRE key seconds [NX|XX|GT|LT]. Seconds must be
+// positive: keys are removed with DEL, not by expiring them into the past.
+func (s *session) expire(args []string) []byte {
+	if n, err := strconv.Atoi(args[1]); err != nil || n <= 0 {
+		return resp.AppendError(nil, "ERR invalid expire time in 'expire' command")
+	}
+	if len(args) == 3 {
+		switch strings.ToUpper(args[2]) {
+		case "NX", "XX", "GT", "LT":
+		default:
+			return resp.AppendError(nil, "ERR Unsupported option "+args[2])
+		}
+	}
+	return s.mutate(append([]string{"EXPIRE"}, args...))
 }
 
 func (s *session) exists(args []string) []byte {

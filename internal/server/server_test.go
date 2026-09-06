@@ -98,6 +98,12 @@ func TestCommands(t *testing.T) {
 	if ttl, err := c.do("TTL", "cmd:k"); err != nil || ttl.(int64) <= 0 || ttl.(int64) > 60 {
 		t.Fatalf("TTL: %v, %v", ttl, err)
 	}
+	c.want(int64(0), "EXPIRE", "cmd:k", "30", "GT")
+	c.want(int64(1), "EXPIRE", "cmd:k", "90", "GT")
+	if ttl, err := c.do("TTL", "cmd:k"); err != nil || ttl.(int64) <= 60 {
+		t.Fatalf("TTL after EXPIRE GT: %v, %v", ttl, err)
+	}
+	c.wantErr("ERR invalid expire time", "EXPIRE", "cmd:k", "0")
 	c.want("OK", "SET", "cmd:k2", "v2", "px", "1500")
 	c.want("OK", "SETEX", "cmd:k3", "30", "v3")
 	c.want(nil, "SET", "cmd:k", "other", "NX")

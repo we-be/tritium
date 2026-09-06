@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resptest"
@@ -73,6 +74,19 @@ func (w *world) lookup(c *Client, name string) Bundle {
 	return b
 }
 
+func (w *world) ids(mailbox string) []string {
+	w.t.Helper()
+	v, err := w.raw.Do("ZRANGEBYSCORE", mailbox, "-inf", "+inf")
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	var ids []string
+	for _, e := range v.([]any) {
+		ids = append(ids, string(e.([]byte)))
+	}
+	return ids
+}
+
 func (w *world) send(from *Client, to Bundle, body string) {
 	w.t.Helper()
 	if err := from.Send(to, []byte(body)); err != nil {
@@ -120,6 +134,7 @@ func TestConversation(t *testing.T) {
 	}
 	w.send(w.alice, bob, "cool")
 	w.receive(w.bob, "cool")
+	w.receive(w.bob) // what the last call read, this one deletes
 
 	// Mailboxes are consumed, and nothing on the server names either party.
 	for _, mbx := range []string{helloMailbox(bob), w.alice.sessions[bob.Fingerprint()].Outbox} {
@@ -154,17 +169,15 @@ func TestSkipTamperReplay(t *testing.T) {
 		w.send(w.alice, bob, body)
 	}
 	hello := helloMailbox(bob)
-	ids, _ := w.raw.Do("ZRANGEBYSCORE", hello, "-inf", "+inf")
-	first := string(ids.([]any)[0].([]byte))
-	w.raw.Do("DEL", "msg:"+hello+":"+first)
+	w.raw.Do("DEL", "msg:"+hello+":"+w.ids(hello)[0])
 	w.receive(w.bob, "two", "three")
 	if _, ok := w.bob.sessions[w.alice.id.Fingerprint()].Skipped[0]; !ok {
 		t.Fatal("key for the missing message was not kept")
 	}
+	w.receive(w.bob)
 
 	w.send(w.alice, bob, "four")
-	ids, _ = w.raw.Do("ZRANGEBYSCORE", hello, "-inf", "+inf")
-	key := "msg:" + hello + ":" + string(ids.([]any)[0].([]byte))
+	key := "msg:" + hello + ":" + w.ids(hello)[0]
 	raw, _ := w.raw.Do("GET", key)
 	var env envelope
 	json.Unmarshal(raw.([]byte), &env)
@@ -172,16 +185,29 @@ func TestSkipTamperReplay(t *testing.T) {
 	tampered, _ := json.Marshal(env)
 	w.raw.Do("SET", key, string(tampered))
 	w.receive(w.bob)
+	w.receive(w.bob)
 
 	w.send(w.alice, bob, "five")
-	ids, _ = w.raw.Do("ZRANGEBYSCORE", hello, "-inf", "+inf", "WITHSCORES")
-	id, score := string(ids.([]any)[0].([]byte)), string(ids.([]any)[1].([]byte))
-	raw, _ = w.raw.Do("GET", "msg:"+hello+":"+id)
 	w.receive(w.bob, "five")
-	w.raw.Do("SET", "msg:"+hello+":"+id, string(raw.([]byte)))
-	w.raw.Do("ZADD", hello, score, id)
-	w.bob.hello = cursor{} // forget we read it, so only the ratchet can catch the replay
+	w.bob.helloSeen = nil // forget we read it while it is still on the server, so only the ratchet can catch the replay
 	w.receive(w.bob)
+	w.receive(w.bob)
+	if n := len(w.ids(hello)); n != 0 {
+		t.Fatalf("hello mailbox still holds %d entries", n)
+	}
+}
+
+// Padding hides message length within a bucket.
+func TestPadding(t *testing.T) {
+	s := &Session{Send: chain{Key: make([]byte, 32)}}
+	short, _ := s.seal([]byte("x"), nil)
+	long, _ := s.seal(bytes.Repeat([]byte("x"), padBlock-9), nil)
+	if len(short) != len(long) {
+		t.Fatalf("ciphertext lengths %d and %d differ within one bucket", len(short), len(long))
+	}
+	if _, err := unpad(make([]byte, padBlock)); !errors.Is(err, ErrDecrypt) {
+		t.Fatalf("all-zero padding accepted: %v", err)
+	}
 }
 
 // A hello forged from a public bundle (no identity key) must not disturb
@@ -193,7 +219,7 @@ func TestForgedHello(t *testing.T) {
 	w.receive(w.bob, "real")
 	before := w.bob.sessions[w.alice.id.Fingerprint()].Inbox
 
-	forged, err := initiate(w.bob.id, w.alice.id.Bundle()) // fresh ephemeral, alice's public bundle...
+	forged, err := initiate(w.bob.id, bob) // a fresh ephemeral against bob's prekey...
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,6 +262,51 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	w.send(w.alice, bob, "after")
 	w.receive(bob2, "after")
+
+	// A message is deleted only by the Receive after the one that read it, so
+	// state stored between them never loses a message.
+	if st, err = bob2.State(); err != nil {
+		t.Fatal(err)
+	}
+	w.send(w.alice, bob, "again")
+	w.receive(bob2, "again")
+	bob3 := New(w.conn(), &id)
+	if err := bob3.Restore(st); err != nil {
+		t.Fatal(err)
+	}
+	w.receive(bob3, "again")
+}
+
+// A rotated prekey keeps the fingerprint, hellos made against the old one
+// still open sessions during its grace period, and not after.
+func TestPrekeyRotation(t *testing.T) {
+	w := setup(t)
+	old := w.lookup(w.alice, "bob")
+	w.bob.id.prekeys[0].created = time.Now().Add(-prekeyLifetime)
+	if err := w.bob.Publish(); err != nil {
+		t.Fatal(err)
+	}
+	cur := w.lookup(w.alice, "bob")
+	if bytes.Equal(cur.Prekey, old.Prekey) || cur.Fingerprint() != old.Fingerprint() {
+		t.Fatal("prekey did not rotate, or rotating it changed the fingerprint")
+	}
+	idJSON, _ := json.Marshal(w.bob.id)
+	var restored Identity
+	if err := json.Unmarshal(idJSON, &restored); err != nil || restored.prekeyFor(old.Prekey) == nil {
+		t.Fatalf("retired prekey did not survive JSON: %v", err)
+	}
+	w.send(w.alice, old, "against the old prekey")
+	w.receive(w.bob, "against the old prekey")
+
+	w.bob.id.prekeys[0].created = time.Now().Add(-prekeyGrace)
+	w.bob.id.rotate(time.Now())
+	if w.bob.id.prekeyFor(old.Prekey) != nil {
+		t.Fatal("prekey kept past its grace period")
+	}
+	carol, dave := w.user("carol"), w.user("dave")
+	w.send(carol, old, "too late")
+	w.send(dave, w.lookup(dave, "bob"), "in time")
+	w.receive(w.bob, "in time")
 }
 
 // Both sides open a session to each other before either has read anything;

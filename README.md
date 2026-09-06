@@ -92,6 +92,7 @@ go run ./cmd/tritium-cli nodes
 | `DEL key [key ...]`                         |                                                         |
 | `EXISTS key [key ...]`                      |                                                         |
 | `TTL key`                                   |                                                         |
+| `EXPIRE key seconds [NX \| XX \| GT \| LT]` | Seconds must be positive; use `DEL` to remove a key   |
 | `ZADD key score member [...]`               | Plain form only; the set's TTL is refreshed to the default |
 | `ZRANGEBYSCORE`, `ZREM`, `ZREMRANGEBYSCORE`, `ZCARD` | Passed through; writes replicate                |
 | `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
@@ -109,9 +110,13 @@ accept the same claim; treat it as first-come per node, not a global lock.
 library only. Identities are an Ed25519 signing key and an X25519 agreement
 key, published as a signed bundle under `id:<name>`. A session starts with an
 X3DH-style agreement, so you can message someone who is offline, and runs a
-hash ratchet in each direction so every message has its own key. Mailboxes are
-named by secrets derived from the session, so nodes can't see who is talking
-to whom, and every message expires.
+hash ratchet in each direction so every message has its own key. The signed
+prekey rotates weekly and retired ones are forgotten after thirty days, so a
+stolen device unlocks only sessions opened in that window. Mailboxes are named
+by secrets derived from the session, so nodes can't see who is talking to
+whom; messages are padded so their sizes say little; and everything expires.
+A message is deleted from the server only by the read after the one that
+delivered it, so a client that stores its state between reads never loses one.
 
 ```sh
 go run ./cmd/tritium-msg init alice        # identity in ~/.tritium-msg, published as id:alice
