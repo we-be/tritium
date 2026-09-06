@@ -2,7 +2,7 @@
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 LDFLAGS = -s -w -X github.com/we-be/tritium/internal/server.Version=$(VERSION)
-PLATFORMS = linux/amd64 linux/arm64 darwin/arm64 darwin/amd64
+PLATFORMS = linux/amd64 linux/arm64 linux/arm darwin/arm64 darwin/amd64   # linux/arm is GOARM=6: a Pi Zero
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
@@ -13,7 +13,7 @@ dist:
 	rm -rf dist && mkdir -p dist
 	for p in $(PLATFORMS); do \
 	  os=$${p%/*}; arch=$${p#*/}; out=dist/tritium-$(VERSION)-$$os-$$arch; \
-	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o $$out/ ./cmd/... || exit 1; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch GOARM=6 go build -trimpath -ldflags "$(LDFLAGS)" -o $$out/ ./cmd/... || exit 1; \
 	  tar -C dist -czf $$out.tar.gz $$(basename $$out) && rm -r $$out; \
 	done
 	ls -l dist

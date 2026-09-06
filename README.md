@@ -33,8 +33,9 @@ valkey-server --save "" --appendonly no &
 go run ./cmd/tritium             # loads .env if present; environment overrides it
 ```
 
-Prebuilt binaries for Linux and macOS, amd64 and arm64, are on the
-[releases page](https://github.com/we-be/tritium/releases); each tarball holds
+Prebuilt binaries for Linux and macOS, amd64 and arm64, plus 32-bit ARM for a
+Pi Zero, are on the [releases page](https://github.com/we-be/tritium/releases);
+each tarball holds
 `tritium`, `tritium-cli`, `tritium-monitor` and `tritium-msg`. `make dist` builds
 the same set locally.
 

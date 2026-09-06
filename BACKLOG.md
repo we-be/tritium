@@ -8,7 +8,7 @@ node does. Check an item off with the commit that closed it.
 
 - [x] Resync a peer's store on attach — 2026-09-06
 - [x] A node upgrade wipes its store — mubs 0f832c9: `systemctl --user reload mubs-tritium` (SIGHUP) restarts the node alone, 2026-09-06
-- [ ] `linux/arm` (GOARM=6) in `make dist` for a Pi Zero worker; `linux/arm64` already covers a Zero 2 W on a 64-bit OS
+- [x] `linux/arm` (GOARM=6) in `make dist` for a Pi Zero worker; `linux/arm64` already covers a Zero 2 W on a 64-bit OS — v0.6.0, 2026-09-06
 - [ ] Load test: a `cmd/tritium-load` or `make load` that drives SET/GET/ZADD at a rate against a node and reports p50/p99 and replication lag between two nodes
 - [ ] Replication through the peer's node, not straight into its store, so a peer's Valkey never has to be reachable — the precondition for a cross-network replica (a second Mac on another network is coming)
 - [ ] Chaos testing: a script that kills and restarts nodes and stores at random, partitions them, and checks the fleet converges (presence, resync, seed re-join) — run against a three-node lab, then the real fleet
