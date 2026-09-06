@@ -18,11 +18,13 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/pkg/storage"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
+	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
 	password := flag.String("password", "", "AUTH password")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
@@ -30,6 +32,23 @@ func main() {
 	key := flag.String("key", os.Getenv("TRITIUM_KEY"), "32-byte encryption key as hex or base64; values are sealed client-side (default $TRITIUM_KEY)")
 	flag.Usage = usage
 	flag.Parse()
+	if *configPath != "" {
+		loc, err := config.LoadLocal(*configPath)
+		if err != nil {
+			fail(err)
+		}
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if !set["addr"] {
+			*addr = loc.Addr
+		}
+		if !set["password"] {
+			*password = loc.Password
+		}
+		if !set["ca"] && loc.CA != "" {
+			*ca = loc.CA
+		}
+	}
 	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)

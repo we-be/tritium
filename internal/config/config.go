@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -32,6 +33,25 @@ type Config struct {
 
 // Load reads path as a dotenv file (empty path: none), then lets process
 // environment variables override it.
+// Local is how to reach the node a dotenv file configures from the same
+// machine: its port on loopback and what it demands of a client. Tools take
+// it through -config so the one file serves the node and its clients.
+type Local struct {
+	Addr, Password, StorePassword, CA string
+}
+
+func LoadLocal(path string) (Local, error) {
+	cfg, err := Load(path)
+	if err != nil {
+		return Local{}, err
+	}
+	_, port, err := net.SplitHostPort(cfg.ListenAddr)
+	if err != nil {
+		return Local{}, fmt.Errorf("LISTEN_ADDRESS %q: %w", cfg.ListenAddr, err)
+	}
+	return Local{Addr: "127.0.0.1:" + port, Password: cfg.Password, StorePassword: cfg.StorePassword, CA: cfg.TLSCA}, nil
+}
+
 // Seeds is JOIN_ADDRESS as a list. Each entry is dialed until it answers and
 // again whenever it drops out of the view, so nodes can boot in any order.
 func (c Config) Seeds() []string {

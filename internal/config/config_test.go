@@ -32,3 +32,12 @@ func TestLoad(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadLocal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "node.env")
+	os.WriteFile(path, []byte("LISTEN_ADDRESS=:9090\nAUTH_PASSWORD=a\nSECURE_STORE_PASSWORD=s\nTLS_CA=/ca.pem\n"), 0o600)
+	loc, err := LoadLocal(path)
+	if err != nil || loc != (Local{Addr: "127.0.0.1:9090", Password: "a", StorePassword: "s", CA: "/ca.pem"}) {
+		t.Fatalf("LoadLocal = %+v, %v", loc, err)
+	}
+}

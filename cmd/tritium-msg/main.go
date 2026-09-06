@@ -23,12 +23,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/pkg/messenger"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
 	home, _ := os.UserHomeDir()
+	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
 	password := flag.String("password", "", "AUTH password")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
@@ -36,6 +38,23 @@ func main() {
 	dir := flag.String("state", filepath.Join(home, ".tritium-msg"), "directory holding identity and session state")
 	flag.Usage = usage
 	flag.Parse()
+	if *configPath != "" {
+		loc, err := config.LoadLocal(*configPath)
+		if err != nil {
+			fail(err)
+		}
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if !set["addr"] {
+			*addr = loc.Addr
+		}
+		if !set["password"] {
+			*password = loc.Password
+		}
+		if !set["ca"] && loc.CA != "" {
+			*ca = loc.CA
+		}
+	}
 	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)

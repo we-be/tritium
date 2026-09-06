@@ -11,11 +11,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/monitor"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
+	configPath := flag.String("config", "", "a node's dotenv file: fills -nodes, -password, -ca and -store-password from it (explicit flags win)")
 	nodes := flag.String("nodes", "localhost:8080,localhost:8081,localhost:8082", "comma-separated node addresses; the first that answers is used")
 	password := flag.String("password", "", "AUTH password")
 	storePassword := flag.String("store-password", os.Getenv("TRITIUM_STORE_PASSWORD"), "password of the nodes' RESP stores, which the monitor dials directly (default $TRITIUM_STORE_PASSWORD)")
@@ -24,6 +26,27 @@ func main() {
 	summary := flag.Bool("summary", false, "one line per node")
 	interval := flag.Duration("interval", 2*time.Second, "refresh interval")
 	flag.Parse()
+	if *configPath != "" {
+		loc, err := config.LoadLocal(*configPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "tritium-monitor:", err)
+			os.Exit(1)
+		}
+		set := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+		if !set["nodes"] {
+			*nodes = loc.Addr
+		}
+		if !set["password"] {
+			*password = loc.Password
+		}
+		if !set["ca"] && loc.CA != "" {
+			*ca = loc.CA
+		}
+		if !set["store-password"] {
+			*storePassword = loc.StorePassword
+		}
+	}
 
 	opts := tritium.ClientOptions{Password: *password}
 	if *useTLS || *ca != "" {
