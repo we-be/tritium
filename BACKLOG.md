@@ -17,6 +17,7 @@ node does. Check an item off with the commit that closed it.
 ## Later
 
 - [ ] Sync pipelining: copy keys in batches of a page instead of one round trip per key
+- [ ] Writes pay the peer round trip synchronously (SET p50 4.6 ms vs GET 161 µs on the LAN fleet): consider acknowledging after the primary write and fanning out from a queue — faster, but a write would no longer be on the peer when acked; decide with the cross-network work
 - [ ] Messenger groups; multiple devices per identity
 - [ ] A cloud node, so a fleet that spans networks has a member that is always up
 
