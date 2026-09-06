@@ -154,9 +154,36 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 		return err
 	}
 	if c.TTL > 0 { // the index must outlive the messages it names; the node's default may not
-		_, err = c.t.Do("EXPIRE", mailbox, strconv.Itoa(c.TTL), "GT")
+		if _, err := c.t.Do("EXPIRE", mailbox, strconv.Itoa(c.TTL), "GT"); err != nil {
+			return err
+		}
 	}
-	return err
+	s.Touched = now
+	return nil
+}
+
+// Reply sends body to the peer with fingerprint fp, who must already have a
+// session — the answer to a message Receive returned.
+func (c *Client) Reply(fp string, body []byte) error {
+	s := c.sessions[fp]
+	if s == nil {
+		return fmt.Errorf("messenger: no session with %s", fp)
+	}
+	return c.Send(s.Peer, body)
+}
+
+// Prune forgets sessions unused for longer than idle and reports how many. A
+// server answering throwaway identities (Ask) would otherwise keep one forever
+// each.
+func (c *Client) Prune(idle time.Duration) int {
+	n := 0
+	for fp, s := range c.sessions {
+		if time.Since(s.Touched) > idle {
+			delete(c.sessions, fp)
+			n++
+		}
+	}
+	return n
 }
 
 // Receive collects new messages from the hello mailbox and every session's
@@ -300,6 +327,7 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 		return Message{}, false
 	}
 	s.Hello = nil // they answered; the private mailbox is live
+	s.Touched = time.Now()
 	return Message{
 		From: s.Peer,
 		Time: time.UnixMilli(int64(binary.BigEndian.Uint64(pt))),
@@ -338,6 +366,9 @@ func (c *Client) Restore(data []byte) error {
 	for _, s := range st.Sessions {
 		if s.Skipped == nil {
 			s.Skipped = map[uint32][]byte{}
+		}
+		if s.Touched.IsZero() { // stored before Touched existed: count from now
+			s.Touched = time.Now()
 		}
 	}
 	c.sessions, c.helloSeen = st.Sessions, st.HelloSeen

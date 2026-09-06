@@ -130,6 +130,16 @@ go run ./cmd/tritium-msg send bob "hey"
 go run ./cmd/tritium-msg recv -watch
 ```
 
+Programs use it as request and reply. `serve` prints each incoming message as
+one JSON line on stdout and sends back the JSON lines it reads on stdin; `ask`
+speaks from a throwaway identity, so processes never share ratchet state, and
+refuses a peer whose fingerprint is not the one pinned with `-fp`:
+
+```sh
+go run ./cmd/tritium-msg serve -name bob       # stdout: {"from","fp","time","body"} per message; stdin: {"fp","body"} per reply
+echo '{"q":"lunch"}' | go run ./cmd/tritium-msg ask -fp 23FK7-ISTCB-… bob   # prints bob's reply; exit 2 on no reply, 3 on a wrong pin
+```
+
 What it does not do yet: forward secrecy across a compromised device (there is
 no Diffie-Hellman ratchet, only the hash ratchet), sealed sender on first
 contact, groups, or multiple devices per identity. Names are first come, first

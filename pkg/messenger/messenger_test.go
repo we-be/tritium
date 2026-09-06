@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -327,5 +328,42 @@ func TestSimultaneousHello(t *testing.T) {
 	a, b := w.alice.sessions[bob.Fingerprint()], w.bob.sessions[alice.Fingerprint()]
 	if a.Outbox != b.Inbox || a.Inbox != b.Outbox || a.Hello != nil || b.Hello != nil {
 		t.Fatalf("sessions did not converge: alice %s/%s bob %s/%s", a.Outbox, a.Inbox, b.Outbox, b.Inbox)
+	}
+}
+
+// A throwaway identity asks a served name and gets exactly its reply; a pinned
+// fingerprint that does not match is refused before anything is sent; the
+// server forgets the throwaway session once it goes idle.
+func TestAsk(t *testing.T) {
+	w := setup(t)
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() { // bob serves until told to stop; the client is not goroutine-safe, so nothing else touches him meanwhile
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+			msgs, _ := w.bob.Receive()
+			for _, m := range msgs {
+				w.bob.Reply(m.From.Fingerprint(), append([]byte("re:"), m.Body...))
+			}
+		}
+	})
+	reply, err := Ask(w.conn(), w.name("bob"), w.bob.id.Fingerprint(), []byte("ping"), 5*time.Second, 60)
+	if err != nil || string(reply) != "re:ping" {
+		t.Fatalf("Ask = %q, %v", reply, err)
+	}
+	if _, err := Ask(w.conn(), w.name("bob"), w.alice.id.Fingerprint(), []byte("x"), time.Second, 60); !errors.Is(err, ErrFingerprint) {
+		t.Fatalf("wrong pin accepted: %v", err)
+	}
+	close(stop)
+	wg.Wait()
+	if n := len(w.bob.Sessions()); n != 1 {
+		t.Fatalf("bob holds %d sessions, want the one asker", n)
+	}
+	if w.bob.Prune(time.Hour) != 0 || w.bob.Prune(0) != 1 || len(w.bob.Sessions()) != 0 {
+		t.Fatal("idle session pruning went wrong")
 	}
 }

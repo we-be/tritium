@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"time"
 )
 
 const (
@@ -57,6 +58,7 @@ type Session struct {
 	Seen          []string          `json:"seen,omitempty"`    // inbox entries read by the last Receive, deleted by the next
 	Hello         *helloHeader      `json:"hello,omitempty"`   // our opening keys, sent until the peer answers
 	PeerEphemeral []byte            `json:"peer_ephemeral,omitempty"`
+	Touched       time.Time         `json:"touched,omitzero"` // last send or successful receive; Prune uses it
 }
 
 // helloHeader rides on every message the initiator sends until the peer
