@@ -20,6 +20,10 @@ const dialTimeout = time.Second
 type Monitor struct {
 	addrs []string
 	opts  tritium.ClientOptions // Password and TLS are used; Address and Timeout are set per node
+	// StorePassword is presented to each node's RESP store, which the monitor
+	// dials directly for INFO replication; without it a password-gated store
+	// shows as unreachable.
+	StorePassword string
 }
 
 // New polls the given node addresses in order until one answers.
@@ -58,7 +62,7 @@ func (m *Monitor) Snapshot() Snapshot {
 	for _, n := range nodes {
 		snap.Nodes = append(snap.Nodes, n)
 		if _, seen := snap.Stores[n.StoreAddr]; !seen {
-			snap.Stores[n.StoreAddr] = inspectStore(n.StoreAddr)
+			snap.Stores[n.StoreAddr] = inspectStore(n.StoreAddr, m.StorePassword)
 		}
 	}
 	slices.SortFunc(snap.Nodes, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
@@ -82,23 +86,29 @@ func (m *Monitor) nodes() (map[string]storage.NodeInfo, error) {
 	return nil, errors.New("no node answered")
 }
 
-func inspectStore(addr string) Store {
-	s := Store{Addr: addr, Info: replicationInfo(addr)}
+func inspectStore(addr, password string) Store {
+	s := Store{Addr: addr, Info: replicationInfo(addr, password)}
 	for _, r := range replicaAddrs(s.Info) {
-		s.Replicas = append(s.Replicas, Store{Addr: r, Info: replicationInfo(r)})
+		s.Replicas = append(s.Replicas, Store{Addr: r, Info: replicationInfo(r, password)})
 	}
 	return s
 }
 
 // replicationInfo parses "INFO replication" into its key:value fields.
-func replicationInfo(addr string) map[string]string {
+func replicationInfo(addr, password string) map[string]string {
 	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(dialTimeout))
-	v, err := resp.NewCommand("INFO", "replication").Do(conn, resp.NewReader(conn))
+	r := resp.NewReader(conn)
+	if password != "" {
+		if _, err := resp.NewCommand("AUTH", password).Do(conn, r); err != nil {
+			return nil
+		}
+	}
+	v, err := resp.NewCommand("INFO", "replication").Do(conn, r)
 	if err != nil {
 		return nil
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,8 +21,18 @@ import (
 // in tritium expires.
 const DefaultTTL = 17600
 
-// Version is reported by INFO and HELLO.
+// Version is reported by INFO and HELLO. Release builds stamp it with -X;
+// a `go install ...@vX.Y.Z` build takes it from the module version instead.
 var Version = "dev"
+
+func init() {
+	if Version != "dev" {
+		return
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		Version = bi.Main.Version
+	}
+}
 
 type Server struct {
 	cfg       config.Config
