@@ -81,3 +81,10 @@ func TestRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestPrefix(t *testing.T) {
+	got := resp.Prefix(resp.NewCommand("SETEX", "k", "60", "v"), "TRITIUM.REPLICATE")
+	if string(got) != string(resp.NewCommand("TRITIUM.REPLICATE", "SETEX", "k", "60", "v")) {
+		t.Fatalf("Prefix = %q", got)
+	}
+}

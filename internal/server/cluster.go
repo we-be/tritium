@@ -240,22 +240,23 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 	}
 }
 
-// attach starts replicating to a peer's store and, in the background, copies
-// what it has missed. A peer we watched go down and return is stale, so our
-// copy of every key wins there; one we are meeting for the first time keeps
-// what it holds and only has its gaps filled — it may be the survivor and we
-// the one that just started.
+// attach starts replicating to a peer — through its node, which applies our
+// writes to its own store — and, in the background, copies what it has
+// missed. A peer we watched go down and return is stale, so our copy of
+// every key wins there; one we are meeting for the first time keeps what it
+// holds and only has its gaps filled — it may be the survivor and we the one
+// that just started.
 func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
 	if n.StoreAddr == c.local.StoreAddr {
 		return // sharing our store; replicating to it would be a self-write
 	}
-	if err := c.server.store.AddReplica(n.StoreAddr); err != nil {
-		slog.Warn("cluster: attach replica failed", "peer", n.ID, "store", n.StoreAddr, "err", err)
+	if err := c.server.store.AddReplica(n.Addr); err != nil {
+		slog.Warn("cluster: attach replica failed", "peer", n.ID, "err", err)
 		return
 	}
 	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
 	go func() {
-		copied, err := c.server.store.Sync(n.StoreAddr, wasDown)
+		copied, err := c.server.store.Sync(n.Addr, wasDown)
 		if err != nil {
 			slog.Warn("cluster: resync incomplete", "peer", n.ID, "keys", copied, "err", err)
 			return
@@ -265,7 +266,7 @@ func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
 }
 
 func (c *cluster) detach(n storage.NodeInfo) {
-	if c.server.store.RemoveReplica(n.StoreAddr) {
+	if c.server.store.RemoveReplica(n.Addr) {
 		slog.Info("cluster: peer detached", "peer", n.ID, "store", n.StoreAddr)
 	}
 }

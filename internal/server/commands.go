@@ -52,28 +52,29 @@ type command struct {
 // commands are dispatched after authentication. AUTH, HELLO and QUIT are
 // handled before it in dispatch.
 var commands = map[string]command{
-	"PING":             {min: 0, max: 1, fn: (*session).ping},
-	"ECHO":             {min: 1, max: 1, fn: (*session).echo},
-	"SET":              {min: 2, max: -1, fn: (*session).set},
-	"SETEX":            {min: 3, max: 3, fn: (*session).setex},
-	"GET":              {min: 1, max: 1, fn: (*session).get},
-	"GETDEL":           {min: 1, max: 1, fn: (*session).getdel},
-	"MGET":             {min: 1, max: -1, fn: (*session).mget},
-	"DEL":              {min: 1, max: -1, fn: (*session).del},
-	"EXISTS":           {min: 1, max: -1, fn: (*session).exists},
-	"TTL":              {min: 1, max: 1, fn: (*session).ttl},
-	"EXPIRE":           {min: 2, max: 3, fn: (*session).expire},
-	"ZADD":             {min: 3, max: -1, fn: (*session).zadd},
-	"ZRANGEBYSCORE":    {min: 3, max: -1, fn: (*session).query, passthrough: true},
-	"ZREM":             {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
-	"ZREMRANGEBYSCORE": {min: 3, max: 3, fn: (*session).mutate, passthrough: true},
-	"ZCARD":            {min: 1, max: 1, fn: (*session).query, passthrough: true},
-	"INFO":             {min: 0, max: -1, fn: (*session).info},
-	"CLIENT":           {min: 1, max: -1, fn: (*session).client},
-	"COMMAND":          {min: 0, max: -1, fn: (*session).command},
-	"SELECT":           {min: 1, max: 1, fn: (*session).selectDB},
-	"TRITIUM.NODES":    {min: 0, max: 0, fn: (*session).nodes},
-	"TRITIUM.GOSSIP":   {min: 1, max: 1, fn: (*session).gossip},
+	"PING":              {min: 0, max: 1, fn: (*session).ping},
+	"ECHO":              {min: 1, max: 1, fn: (*session).echo},
+	"SET":               {min: 2, max: -1, fn: (*session).set},
+	"SETEX":             {min: 3, max: 3, fn: (*session).setex},
+	"GET":               {min: 1, max: 1, fn: (*session).get},
+	"GETDEL":            {min: 1, max: 1, fn: (*session).getdel},
+	"MGET":              {min: 1, max: -1, fn: (*session).mget},
+	"DEL":               {min: 1, max: -1, fn: (*session).del},
+	"EXISTS":            {min: 1, max: -1, fn: (*session).exists},
+	"TTL":               {min: 1, max: 1, fn: (*session).ttl},
+	"EXPIRE":            {min: 2, max: 3, fn: (*session).expire},
+	"ZADD":              {min: 3, max: -1, fn: (*session).zadd},
+	"ZRANGEBYSCORE":     {min: 3, max: -1, fn: (*session).query, passthrough: true},
+	"ZREM":              {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
+	"ZREMRANGEBYSCORE":  {min: 3, max: 3, fn: (*session).mutate, passthrough: true},
+	"ZCARD":             {min: 1, max: 1, fn: (*session).query, passthrough: true},
+	"INFO":              {min: 0, max: -1, fn: (*session).info},
+	"CLIENT":            {min: 1, max: -1, fn: (*session).client},
+	"COMMAND":           {min: 0, max: -1, fn: (*session).command},
+	"SELECT":            {min: 1, max: 1, fn: (*session).selectDB},
+	"TRITIUM.NODES":     {min: 0, max: 0, fn: (*session).nodes},
+	"TRITIUM.GOSSIP":    {min: 1, max: 1, fn: (*session).gossip},
+	"TRITIUM.REPLICATE": {min: 2, max: -1, fn: (*session).replicate},
 }
 
 func (s *Server) serveConn(c net.Conn) {
@@ -116,7 +117,7 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	if !s.authed {
 		return replyNoAuth, false
 	}
-	if name == "TRITIUM.GOSSIP" && !s.isPeer() {
+	if (name == "TRITIUM.GOSSIP" || name == "TRITIUM.REPLICATE") && !s.isPeer() {
 		return replyNoPerm, false
 	}
 	cmd, ok := commands[name]
@@ -501,6 +502,26 @@ func (s *session) nodes(args []string) []byte {
 
 // gossip handles TRITIUM.GOSSIP <node-json>: learn the caller, reply with
 // our view.
+// replicatable is what a peer may write through us: the writes our own
+// fan-out produces, nothing that reads or reaches beyond the store.
+var replicatable = map[string]bool{"SET": true, "SETEX": true, "DEL": true, "EXPIRE": true,
+	"ZADD": true, "ZREM": true, "ZREMRANGEBYSCORE": true}
+
+// replicate applies a peer's write to this node's store only. It is how a
+// peer's SET reaches us without ever dialing our store, and it never fans
+// out again: the peer already sent it to everyone.
+func (s *session) replicate(args []string) []byte {
+	inner := strings.ToUpper(args[0])
+	if !replicatable[inner] {
+		return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[0]+"'")
+	}
+	v, err := s.srv.store.Apply(resp.NewCommand(append([]string{inner}, args[1:]...)...))
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendValue(nil, v)
+}
+
 func (s *session) gossip(args []string) []byte {
 	var n storage.NodeInfo
 	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" {

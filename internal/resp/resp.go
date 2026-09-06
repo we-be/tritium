@@ -3,6 +3,7 @@
 package resp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -48,6 +49,23 @@ func NewCommand(args ...string) Command {
 		cmd = fmt.Appendf(cmd, "$%d\r\n%s\r\n", len(a), a)
 	}
 	return cmd
+}
+
+// Prefix returns cmd with one more argument in front: "*N" becomes "*N+1"
+// and the argument is inserted, so a serialized command can be wrapped in
+// another (TRITIUM.REPLICATE <cmd>) without decoding it.
+func Prefix(cmd Command, arg string) Command {
+	nl := bytes.IndexByte(cmd, '\n')
+	if nl < 2 || cmd[0] != '*' {
+		return cmd
+	}
+	n, err := strconv.Atoi(string(cmd[1 : nl-1]))
+	if err != nil {
+		return cmd
+	}
+	out := make(Command, 0, len(cmd)+len(arg)+16)
+	out = fmt.Appendf(out, "*%d\r\n$%d\r\n%s\r\n", n+1, len(arg), arg)
+	return append(out, cmd[nl+1:]...)
 }
 
 // WriteTo writes the command with a single Write so it can never interleave

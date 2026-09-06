@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
 
@@ -94,6 +95,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	if advertise == "" {
 		advertise = ln.Addr().String()
 	}
+	s.store.SetReplicaTransport(s.peerTransport())
 	s.cluster = newCluster(s, advertise, s.cfg.StoreAddr, s.cfg.Seeds())
 	go s.acceptLoop()
 	return nil
@@ -128,6 +130,17 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 	cfg := s.tlsPeer.Clone()
 	cfg.ServerName = host
 	return tls.DialWithDialer(&d, "tcp", addr, cfg)
+}
+
+// peerTransport reaches a peer's node the way gossip does — TLS when
+// configured, AUTH as the peer user — and wraps every write in
+// TRITIUM.REPLICATE, which the peer applies to its own store only.
+func (s *Server) peerTransport() storage.Transport {
+	t := storage.Transport{Dial: s.dialPeer, Wrap: "TRITIUM.REPLICATE"}
+	if pw := s.peerPassword(); pw != "" {
+		t.Auth = resp.NewCommand("AUTH", "peer", pw)
+	}
+	return t
 }
 
 // Join adopts the cluster view of the node at addr and announces this node

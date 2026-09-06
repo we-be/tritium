@@ -26,16 +26,36 @@ type conn struct {
 	r *resp.Reader
 }
 
+// Transport is how a pool reaches its server: a dialer, the AUTH to send on
+// a fresh connection (nil for none), and a command to wrap every write in.
+// The primary is reached directly with the store password; replicas are
+// reached however the owner says — a tritium node reaches its peers' nodes
+// over TLS as the peer user and wraps writes in TRITIUM.REPLICATE, so a
+// peer's store never has to be reachable from anywhere but its own node.
+type Transport struct {
+	Dial func(addr string) (net.Conn, error)
+	Auth resp.Command
+	Wrap string
+}
+
+func direct(password string) Transport {
+	t := Transport{Dial: func(addr string) (net.Conn, error) { return net.DialTimeout("tcp", addr, dialTimeout) }}
+	if password != "" {
+		t.Auth = resp.NewCommand("AUTH", password)
+	}
+	return t
+}
+
 // pool is a fixed-size pool of connections to one RESP server. A slot holds
 // nil after a transport error and is redialed on next use.
 type pool struct {
-	addr     string
-	password string
-	slots    chan *conn
+	addr  string
+	via   Transport
+	slots chan *conn
 }
 
-func newPool(addr string, size int, password string) (*pool, error) {
-	p := &pool{addr: addr, password: password, slots: make(chan *conn, size)}
+func newPool(addr string, size int, via Transport) (*pool, error) {
+	p := &pool{addr: addr, via: via, slots: make(chan *conn, size)}
 	for range size {
 		c, err := p.dial()
 		if err != nil {
@@ -48,13 +68,13 @@ func newPool(addr string, size int, password string) (*pool, error) {
 }
 
 func (p *pool) dial() (*conn, error) {
-	c, err := net.DialTimeout("tcp", p.addr, dialTimeout)
+	c, err := p.via.Dial(p.addr)
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", p.addr, err)
 	}
 	pc := &conn{Conn: c, r: resp.NewReader(c)}
-	if p.password != "" {
-		if _, err := resp.NewCommand("AUTH", p.password).Do(pc, pc.r); err != nil {
+	if p.via.Auth != nil {
+		if _, err := p.via.Auth.Do(pc, pc.r); err != nil {
 			c.Close()
 			return nil, fmt.Errorf("auth %s: %w", p.addr, err)
 		}
@@ -117,6 +137,9 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 	}
 	var buf []byte
 	for _, cmd := range cmds {
+		if p.via.Wrap != "" {
+			cmd = resp.Prefix(cmd, p.via.Wrap)
+		}
 		buf = append(buf, cmd...)
 	}
 	if _, err := c.Write(buf); err != nil {
@@ -145,23 +168,37 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 type Store struct {
 	primary  *pool
 	size     int
-	password string
+	via      Transport // how replicas are reached; the primary's own by default
 	mu       sync.RWMutex
 	replicas []*pool
 }
 
 // NewStore connects poolSize connections to the primary at addr, failing
 // fast if it is unreachable. The password, if any, is sent as AUTH to the
-// primary and to every replica.
+// primary, and, until SetReplicaTransport says otherwise, to every replica.
 func NewStore(addr string, poolSize int, password string) (*Store, error) {
 	if poolSize < 1 {
 		poolSize = 1
 	}
-	p, err := newPool(addr, poolSize, password)
+	via := direct(password)
+	p, err := newPool(addr, poolSize, via)
 	if err != nil {
 		return nil, fmt.Errorf("primary: %w", err)
 	}
-	return &Store{primary: p, size: poolSize, password: password}, nil
+	return &Store{primary: p, size: poolSize, via: via}, nil
+}
+
+// SetReplicaTransport is how replicas added from now on are reached.
+func (s *Store) SetReplicaTransport(t Transport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.via = t
+}
+
+// Apply runs one write on the primary only — what a peer's replicated
+// write becomes here, never fanned out again.
+func (s *Store) Apply(cmd resp.Command) (any, error) {
+	return s.primary.do(cmd)
 }
 
 // Set stores value under key for ttl seconds, then replicates the write.
@@ -281,7 +318,10 @@ func (s *Store) AddReplica(addr string) error {
 	if s.hasReplica(addr) {
 		return nil
 	}
-	p, err := newPool(addr, s.size, s.password)
+	s.mu.RLock()
+	via := s.via
+	s.mu.RUnlock()
+	p, err := newPool(addr, s.size, via)
 	if err != nil {
 		return err
 	}
@@ -302,7 +342,10 @@ func (s *Store) AddReplica(addr string) error {
 // node that just started never clobbers what the survivors hold. Best
 // effort, one key at a time: the count copied and the first error.
 func (s *Store) Sync(addr string, overwrite bool) (int, error) {
-	dst, err := newPool(addr, 1, s.password)
+	s.mu.RLock()
+	via := s.via
+	s.mu.RUnlock()
+	dst, err := newPool(addr, 1, via)
 	if err != nil {
 		return 0, err
 	}

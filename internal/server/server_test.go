@@ -207,6 +207,12 @@ func TestRESP3(t *testing.T) {
 func TestJoinReplicates(t *testing.T) {
 	seed := startNode(t, config.Config{Password: "pw", PeerPassword: "peer-pw"})
 	peer := startNode(t, config.Config{Password: "pw", PeerPassword: "peer-pw", JoinAddr: seed.Addr()})
+	waitFor(t, "the seed to replicate to the peer's node, never its store", func() bool { // attach follows the announce it raced
+		r := seed.store.Replicas()
+		return len(r) == 1 && r[0] == peer.Addr()
+	})
+	c0 := dial(t, seed)
+	c0.wantErr("NOPERM", "TRITIUM.REPLICATE", "SETEX", "x", "1", "y") // clients cannot inject writes
 
 	if n := len(seed.Nodes()); n != 2 {
 		t.Fatalf("seed sees %d nodes, want 2", n)
