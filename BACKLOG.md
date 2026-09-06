@@ -12,11 +12,12 @@ node does. Check an item off with the commit that closed it.
 - [ ] Load test: a `cmd/tritium-load` or `make load` that drives SET/GET/ZADD at a rate against a node and reports p50/p99 and replication lag between two nodes
 - [x] Replication through the peer's node (`TRITIUM.REPLICATE`, peer-only) — stores bind to loopback on the mubs fleet; found and fixed on the way: a write on a dead pooled connection was dropped (now retried across every slot) — v0.7.0, 2026-09-06
 - [x] Chaos testing: `TestChaos` (3 s in CI, `make chaos` for a 30 s soak, `TRITIUM_CHAOS_SEED` replays) kills and restarts a three-node lab under writes and checks convergence — found a fan-out deadlock on detach and an invisible quick restart, both fixed — 2026-09-06
-- [ ] Chaos against the real fleet: the same actions on bazzite and the Air (reload, kill the store, drop the link), watched through `mubs fleet` — partition by SIGSTOP done 2026-09-06: found replica writes had no deadline (a frozen peer stalled writes until detach); store-kill and eviction-length partitions still to run
+- [ ] Chaos against the real fleet: the same actions on bazzite and the Air (reload, kill the store, drop the link), watched through `mubs fleet` — partition by SIGSTOP done 2026-09-06: found replica writes had no deadline (a frozen peer stalled writes until detach — fixed b28e3f4); store kill done: the node stayed up answering errors with nothing to heal it (fixed in the mubs wrapper); eviction-length partition still to run
 - [ ] Monitor: a node's `SEED` column reads false everywhere once every node lists the others as seeds; show `seeds` (what it dials) instead. Its per-store panel also can't reach loopback stores any more — proxy `INFO` through the node
 
 ## Later
 
+- [ ] Circuit-break a replica: after a batch times out, skip that peer's fan-out until gossip hears from it again — a frozen peer still costs every write its 2 s deadline for up to 15 s before the health check detaches it
 - [ ] Sync pipelining: copy keys in batches of a page instead of one round trip per key
 - [ ] Writes pay the peer round trip synchronously (SET p50 4.6 ms vs GET 161 µs on the LAN fleet): consider acknowledging after the primary write and fanning out from a queue — faster, but a write would no longer be on the peer when acked; decide with the cross-network work
 - [ ] Messenger groups; multiple devices per identity
