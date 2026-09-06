@@ -212,6 +212,7 @@ func TestJoinReplicates(t *testing.T) {
 		return len(r) == 1 && r[0] == peer.Addr()
 	})
 	c0 := dial(t, seed)
+	c0.want("OK", "AUTH", "pw")
 	c0.wantErr("NOPERM", "TRITIUM.REPLICATE", "SETEX", "x", "1", "y") // clients cannot inject writes
 
 	if n := len(seed.Nodes()); n != 2 {
