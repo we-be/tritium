@@ -1,4 +1,4 @@
-.PHONY: build dist test integration lint image cluster cluster-down clean
+.PHONY: build dist test integration chaos lint image cluster cluster-down clean
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 LDFLAGS = -s -w -X github.com/we-be/tritium/internal/server.Version=$(VERSION)
@@ -25,6 +25,11 @@ test:
 #   podman run --rm -p 6379:6379 valkey/valkey:8-alpine valkey-server --save "" --appendonly no
 integration:
 	TRITIUM_RESP_ADDR=$${TRITIUM_RESP_ADDR:-localhost:6379} go test -race -count=1 ./...
+
+# A long chaos run: nodes killed and restarted at random under writes, then convergence
+# checked. TRITIUM_CHAOS_SEED=<n> replays one.
+chaos:
+	TRITIUM_CHAOS_SECONDS=$${TRITIUM_CHAOS_SECONDS:-30} go test -race -count=1 -timeout 5m -run TestChaos -v ./internal/server/
 
 lint:
 	test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }

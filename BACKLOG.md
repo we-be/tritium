@@ -11,7 +11,8 @@ node does. Check an item off with the commit that closed it.
 - [x] `linux/arm` (GOARM=6) in `make dist` for a Pi Zero worker; `linux/arm64` already covers a Zero 2 W on a 64-bit OS — v0.6.0, 2026-09-06
 - [ ] Load test: a `cmd/tritium-load` or `make load` that drives SET/GET/ZADD at a rate against a node and reports p50/p99 and replication lag between two nodes
 - [x] Replication through the peer's node (`TRITIUM.REPLICATE`, peer-only) — stores bind to loopback on the mubs fleet; found and fixed on the way: a write on a dead pooled connection was dropped (now retried across every slot) — v0.7.0, 2026-09-06
-- [ ] Chaos testing: a script that kills and restarts nodes and stores at random, partitions them, and checks the fleet converges (presence, resync, seed re-join) — run against a three-node lab, then the real fleet
+- [x] Chaos testing: `TestChaos` (3 s in CI, `make chaos` for a 30 s soak, `TRITIUM_CHAOS_SEED` replays) kills and restarts a three-node lab under writes and checks convergence — found a fan-out deadlock on detach and an invisible quick restart, both fixed — 2026-09-06
+- [ ] Chaos against the real fleet: the same actions on bazzite and the Air (reload, kill the store, drop the link), watched through `mubs fleet`
 - [ ] Monitor: a node's `SEED` column reads false everywhere once every node lists the others as seeds; show `seeds` (what it dials) instead. Its per-store panel also can't reach loopback stores any more — proxy `INFO` through the node
 
 ## Later

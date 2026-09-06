@@ -47,15 +47,22 @@ func direct(password string) Transport {
 }
 
 // pool is a fixed-size pool of connections to one RESP server. A slot holds
-// nil after a transport error and is redialed on next use.
+// nil after a transport error and is redialed on next use. Once closed it
+// answers every get with an error at once: a fan-out that was in flight to
+// a peer as it was detached used to block on an empty pool forever, and
+// every write on the node with it (found by the chaos test).
 type pool struct {
 	addr  string
 	via   Transport
 	slots chan *conn
+	done  chan struct{}
+	once  sync.Once
 }
 
+var errPoolClosed = errors.New("connection pool closed")
+
 func newPool(addr string, size int, via Transport) (*pool, error) {
-	p := &pool{addr: addr, via: via, slots: make(chan *conn, size)}
+	p := &pool{addr: addr, via: via, slots: make(chan *conn, size), done: make(chan struct{})}
 	for range size {
 		c, err := p.dial()
 		if err != nil {
@@ -83,7 +90,12 @@ func (p *pool) dial() (*conn, error) {
 }
 
 func (p *pool) get() (*conn, error) {
-	c := <-p.slots
+	var c *conn
+	select {
+	case c = <-p.slots:
+	case <-p.done:
+		return nil, errPoolClosed
+	}
 	if c != nil {
 		return c, nil
 	}
@@ -95,16 +107,25 @@ func (p *pool) get() (*conn, error) {
 	return c, nil
 }
 
-// put returns c to the pool, or drops it if the last operation broke it.
+// put returns c to the pool, or drops it if the last operation broke it. A
+// closed pool drops it either way.
 func (p *pool) put(c *conn, err error) {
 	if err != nil {
 		c.Close()
 		c = nil
 	}
-	p.slots <- c
+	select {
+	case <-p.done:
+		if c != nil {
+			c.Close()
+		}
+	default:
+		p.slots <- c
+	}
 }
 
 func (p *pool) close() {
+	p.once.Do(func() { close(p.done) })
 	for {
 		select {
 		case c := <-p.slots:

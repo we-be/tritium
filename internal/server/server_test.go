@@ -436,3 +436,32 @@ func TestResyncAfterOutage(t *testing.T) {
 		t.Fatalf("resynced key lost its TTL: %v", ttl)
 	}
 }
+
+// A peer that restarts with an empty store faster than it can read as down
+// still gets what it missed: its new Started marks it a fresh incarnation.
+func TestQuickRestartResyncs(t *testing.T) {
+	hurry(t)
+	seed := startNode(t, config.Config{})
+	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
+	peerAddr := peer.Addr()
+	c := dial(t, seed)
+	c.want("OK", "SET", "quick:before", "v1", "EX", "60")
+	peer.Stop()
+	c.want("OK", "SET", "quick:during", "v2", "EX", "60") // the peer misses this, and is back before downAfter
+	back, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Start(peerAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { back.Stop() })
+	if err := back.Join(seed.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	bc := dial(t, back)
+	waitFor(t, "the quick restart to be resynced", func() bool {
+		n, _ := bc.do("EXISTS", "quick:before", "quick:during")
+		return n == int64(2)
+	})
+}

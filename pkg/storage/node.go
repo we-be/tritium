@@ -27,5 +27,6 @@ type NodeInfo struct {
 	State     NodeState `json:"state"`
 	LastSeen  time.Time `json:"last_seen"`
 	IsLeader  bool      `json:"is_leader"`
+	Started   time.Time `json:"started,omitzero"` // this incarnation's start: a peer that restarted has a new one
 	Stats     NodeStats `json:"stats"`
 }

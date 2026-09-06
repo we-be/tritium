@@ -49,6 +49,7 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		State:     storage.NodeStateHealthy,
 		LastSeen:  time.Now(),
 		IsLeader:  len(seeds) == 0,
+		Started:   time.Now(),
 	}
 	c := &cluster{
 		server: s,
@@ -213,12 +214,16 @@ func (c *cluster) learn(n storage.NodeInfo) {
 }
 
 // merge adopts every remote entry that is newer than ours. A peer we are
-// hearing about for the first time, or one back from the dead, gets its
-// store attached as a replica and brought up to date.
+// hearing about for the first time, one back from the dead, or one that
+// restarted since we last saw it — a new Started, even inside the window
+// where it never read as down — gets its store attached as a replica and
+// brought up to date. A restart is a fresh incarnation: its old connections
+// are dropped and, as with a return from down, our copies win there.
 func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 	type attaching struct {
-		node    storage.NodeInfo
-		wasDown bool
+		node      storage.NodeInfo
+		wasDown   bool
+		restarted bool
 	}
 	var attach []attaching
 	c.mu.Lock()
@@ -230,13 +235,17 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 		if known && !n.LastSeen.After(cur.LastSeen) {
 			continue
 		}
-		if time.Since(n.LastSeen) < downAfter && (!known || cur.State == storage.NodeStateDown) {
-			attach = append(attach, attaching{n, known})
+		restarted := known && n.Started.After(cur.Started)
+		if time.Since(n.LastSeen) < downAfter && (!known || cur.State == storage.NodeStateDown || restarted) {
+			attach = append(attach, attaching{n, known, restarted})
 		}
 		c.nodes[id] = &n
 	}
 	c.mu.Unlock()
 	for _, a := range attach {
+		if a.restarted {
+			c.server.store.RemoveReplica(a.node.Addr)
+		}
 		c.attach(a.node, a.wasDown)
 	}
 }
