@@ -17,7 +17,11 @@ import (
 // part of the wire contract: servers put it in GetReply.Error.
 var ErrNotFound = errors.New("key not found")
 
-const dialTimeout = 5 * time.Second
+const (
+	dialTimeout    = 5 * time.Second
+	primaryTimeout = 5 * time.Second // one round trip to our own store
+	replicaTimeout = 2 * time.Second // one batch to a peer: a peer that accepts and never answers must not stall our writes (chaos, 2026-09-06)
+)
 
 // conn is a pooled connection with its own buffered reader, so bytes buffered
 // past one reply can never leak to the next user of the connection.
@@ -33,13 +37,14 @@ type conn struct {
 // over TLS as the peer user and wraps writes in TRITIUM.REPLICATE, so a
 // peer's store never has to be reachable from anywhere but its own node.
 type Transport struct {
-	Dial func(addr string) (net.Conn, error)
-	Auth resp.Command
-	Wrap string
+	Dial    func(addr string) (net.Conn, error)
+	Auth    resp.Command
+	Wrap    string
+	Timeout time.Duration // per batch, write plus every reply; zero means primaryTimeout
 }
 
 func direct(password string) Transport {
-	t := Transport{Dial: func(addr string) (net.Conn, error) { return net.DialTimeout("tcp", addr, dialTimeout) }}
+	t := Transport{Dial: func(addr string) (net.Conn, error) { return net.DialTimeout("tcp", addr, dialTimeout) }, Timeout: primaryTimeout}
 	if password != "" {
 		t.Auth = resp.NewCommand("AUTH", password)
 	}
@@ -172,16 +177,25 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 		if err == nil {
 			return out, first
 		}
-		if out != nil || attempt > cap(p.slots) { // replies were read, or a fresh connection failed too
+		var ne net.Error
+		if out != nil || attempt > cap(p.slots) || (errors.As(err, &ne) && ne.Timeout()) {
+			// replies were read, a fresh connection failed too, or the server is there
+			// but not answering: retrying that would only stall the caller longer
 			return nil, err
 		}
 	}
 }
 
-// exchange writes one batch and reads its replies. out is nil when the
-// transport failed before the first reply, so the caller knows nothing
-// was applied on that connection.
+// exchange writes one batch and reads its replies under one deadline. out
+// is nil when the transport failed before the first reply, so the caller
+// knows nothing was applied on that connection.
 func (p *pool) exchange(c *conn, buf []byte, n int) (out []any, first, err error) {
+	timeout := p.via.Timeout
+	if timeout <= 0 {
+		timeout = primaryTimeout
+	}
+	c.SetDeadline(time.Now().Add(timeout))
+	defer c.SetDeadline(time.Time{})
 	if _, err := c.Write(buf); err != nil {
 		p.put(c, err)
 		return nil, nil, fmt.Errorf("write: %w", err)

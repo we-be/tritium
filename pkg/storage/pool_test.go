@@ -1,6 +1,8 @@
 package storage
 
 import (
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -48,4 +50,36 @@ func TestClosedPoolFailsFast(t *testing.T) {
 		t.Fatal("do on a closed pool blocked")
 	}
 	p.put(held, nil) // the in-flight caller returns its connection: must not block either
+}
+
+// A server that accepts and never answers costs a batch its deadline, not
+// the caller's patience: the write returns, and it is not retried.
+func TestUnansweringServerTimesOut(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() { // hold every connection open, say nothing
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close()
+		}
+	}()
+	via := direct("")
+	via.Timeout = 200 * time.Millisecond
+	p, err := newPool(ln.Addr().String(), 2, via)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.close()
+	t0 := time.Now()
+	_, err = p.do(resp.NewCommand("PING"))
+	var ne net.Error
+	if !errors.As(err, &ne) || !ne.Timeout() || time.Since(t0) > time.Second {
+		t.Fatalf("PING to a silent server: %v after %s", err, time.Since(t0))
+	}
 }

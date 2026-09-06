@@ -136,7 +136,7 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 // configured, AUTH as the peer user — and wraps every write in
 // TRITIUM.REPLICATE, which the peer applies to its own store only.
 func (s *Server) peerTransport() storage.Transport {
-	t := storage.Transport{Dial: s.dialPeer, Wrap: "TRITIUM.REPLICATE"}
+	t := storage.Transport{Dial: s.dialPeer, Wrap: "TRITIUM.REPLICATE", Timeout: 2 * time.Second}
 	if pw := s.peerPassword(); pw != "" {
 		t.Auth = resp.NewCommand("AUTH", "peer", pw)
 	}
