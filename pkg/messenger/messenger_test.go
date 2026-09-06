@@ -2,6 +2,8 @@ package messenger
 
 import (
 	"bytes"
+	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -172,8 +174,8 @@ func TestSkipTamperReplay(t *testing.T) {
 	hello := helloMailbox(bob)
 	w.raw.Do("DEL", "msg:"+hello+":"+w.ids(hello)[0])
 	w.receive(w.bob, "two", "three")
-	if _, ok := w.bob.sessions[w.alice.id.Fingerprint()].Skipped[0]; !ok {
-		t.Fatal("key for the missing message was not kept")
+	if n := len(w.bob.sessions[w.alice.id.Fingerprint()].Skipped); n != 1 {
+		t.Fatalf("%d keys kept for the missing message, want 1", n)
 	}
 	w.receive(w.bob)
 
@@ -200,9 +202,10 @@ func TestSkipTamperReplay(t *testing.T) {
 
 // Padding hides message length within a bucket.
 func TestPadding(t *testing.T) {
-	s := &Session{Send: chain{Key: make([]byte, 32)}}
-	short, _ := s.seal([]byte("x"), nil)
-	long, _ := s.seal(bytes.Repeat([]byte("x"), padBlock-9), nil)
+	w := setup(t)
+	s, _ := initiate(w.alice.id, w.bob.id.Bundle())
+	_, short, _ := s.seal([]byte("x"), nil)
+	_, long, _ := s.seal(bytes.Repeat([]byte("x"), padBlock-9), nil)
 	if len(short) != len(long) {
 		t.Fatalf("ciphertext lengths %d and %d differ within one bucket", len(short), len(long))
 	}
@@ -366,4 +369,65 @@ func TestAsk(t *testing.T) {
 	if w.bob.Prune(time.Hour) != 0 || w.bob.Prune(0) != 1 || len(w.bob.Sessions()) != 0 {
 		t.Fatal("idle session pruning went wrong")
 	}
+}
+
+// A captured session state stops reading the conversation as soon as the
+// peer has answered again: every turn mixes in a fresh Diffie-Hellman.
+func TestRatchetHeals(t *testing.T) {
+	w := setup(t)
+	bob, alice := w.lookup(w.alice, "bob"), w.lookup(w.bob, "alice")
+	w.send(w.alice, bob, "1")
+	w.receive(w.bob, "1")
+	w.send(w.bob, alice, "2")
+	w.receive(w.alice, "2")
+	stolen, _ := w.bob.State() // bob's phone is imaged here
+	w.send(w.alice, bob, "3")  // still the chain the thief knows...
+	w.receive(w.bob, "3")
+	w.send(w.bob, alice, "4") // ...until bob's next turn ratchets
+	w.receive(w.alice, "4")
+	w.send(w.alice, bob, "5")
+	thief := New(w.conn(), w.bob.id)
+	thief.Restore(stolen)
+	w.receive(w.bob, "5")
+	if msgs, _ := thief.Receive(); len(msgs) != 0 {
+		t.Fatalf("a stale state read %q after the ratchet moved on", msgs[0].Body)
+	}
+	// bob holds alice's current key (she sent last); alice holds bob's key from his last send
+	a, b := w.alice.sessions[bob.Fingerprint()], w.bob.sessions[alice.Fingerprint()]
+	if bytes.Equal(a.PeerRatchet, bob.Prekey) || !bytes.Equal(b.PeerRatchet, mustPub(a.Ratchet)) {
+		t.Fatal("ratchet keys did not advance past the prekey")
+	}
+}
+
+func mustPub(priv []byte) []byte {
+	k, err := ecdh.X25519().NewPrivateKey(priv)
+	if err != nil {
+		panic(err)
+	}
+	return k.PublicKey().Bytes()
+}
+
+// First contact reveals nothing about the sender to the node: the stored
+// envelope holds an ephemeral key and ciphertext, never the bundle.
+func TestSealedSender(t *testing.T) {
+	w := setup(t)
+	bob := w.lookup(w.alice, "bob")
+	w.send(w.alice, bob, "hi")
+	hello := helloMailbox(bob)
+	raw, _ := w.raw.Do("GET", "msg:"+hello+":"+w.ids(hello)[0])
+	stored := raw.([]byte)
+	name := w.alice.id.Name
+	if bytes.Contains(stored, []byte(name)) || bytes.Contains(stored, []byte(base64.StdEncoding.EncodeToString(w.alice.id.Bundle().Signing))) {
+		t.Fatal("the stored hello names its sender")
+	}
+	var env envelope
+	json.Unmarshal(stored, &env)
+	if env.EK == nil || env.Hello == nil {
+		t.Fatal("hello envelope lacks the ephemeral key or the sealed header")
+	}
+	// only bob's identity key opens it
+	if _, err := unsealHello(w.alice.id, env.EK, env.Hello, hello); err == nil {
+		t.Fatal("a hello opened with the wrong identity key")
+	}
+	w.receive(w.bob, "hi")
 }

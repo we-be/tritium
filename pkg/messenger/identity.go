@@ -6,14 +6,15 @@
 // never trusted to vouch for a key.
 //
 // A session starts with an X3DH-style agreement (identity, signed prekey,
-// ephemeral) whose root secret seeds two symmetric hash ratchets, one per
-// direction, so every message has its own key and a captured key reveals
-// nothing sent before it. The signed prekey rotates weekly and retired ones
-// are forgotten after a grace period, bounding what a later key compromise
-// can unlock. Mailboxes are named by secrets derived from the session, so
-// nodes cannot tell who is talking to whom; first contact goes to a mailbox
-// derived from the recipient's public identity. Plaintexts are padded so
-// message sizes leak little.
+// ephemeral) and runs a Double Ratchet from there: every message has its
+// own key, and every change of direction mixes in a fresh Diffie-Hellman,
+// so a captured state reads nothing sent before it and, once the peer has
+// answered again, nothing after it either. The signed prekey rotates weekly
+// and retired ones are forgotten after a grace period. Mailboxes are named
+// by secrets derived from the session, so nodes cannot tell who is talking
+// to whom; first contact goes to a mailbox derived from the recipient's
+// public identity, with the sender's identity sealed so the node sees only
+// an ephemeral key. Plaintexts are padded so message sizes leak little.
 //
 // Each message is a tritium key with a TTL, indexed by send time in a
 // sorted set per mailbox. Everything expires.

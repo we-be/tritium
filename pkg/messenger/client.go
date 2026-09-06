@@ -20,7 +20,7 @@ import (
 const (
 	bundleTTL  = 30 * 24 * 3600 // seconds a published bundle lives without a refresh
 	fetchBatch = 100
-	version    = 2 // envelope format: padded plaintext, hello names the prekey it used
+	version    = 3 // envelope format: ratchet header on every message, sealed hello on first contact
 )
 
 var ErrNameTaken = errors.New("messenger: name is registered to another identity")
@@ -47,12 +47,15 @@ type Message struct {
 	Body []byte
 }
 
-// envelope is the stored form of a message.
+// envelope is the stored form of a message. On first contact EK is the
+// initiator's ephemeral key and Hello the header sealed under it: a node
+// sees a fresh public key, not who is writing.
 type envelope struct {
-	V     int          `json:"v"`
-	Hello *helloHeader `json:"hello,omitempty"`
-	N     uint32       `json:"n"`
-	CT    []byte       `json:"ct"`
+	V     int           `json:"v"`
+	EK    []byte        `json:"ek,omitempty"`
+	Hello []byte        `json:"hello,omitempty"`
+	H     ratchetHeader `json:"h"`
+	CT    []byte        `json:"ct"`
 }
 
 // Publish registers the identity's bundle under id:<name>, rotating the
@@ -126,6 +129,7 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 		mailbox = helloMailbox(peer)
 	}
 
+	var err error
 	now := time.Now()
 	id := messageID(now)
 	key := "msg:" + mailbox + ":" + id
@@ -133,12 +137,17 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 	binary.BigEndian.PutUint64(plaintext, uint64(now.UnixMilli()))
 	copy(plaintext[8:], body)
 
-	env := envelope{V: version, Hello: s.Hello, N: s.Send.N}
-	ct, err := s.seal(plaintext, aad(key, env.N))
+	env := envelope{V: version}
+	if s.Hello != nil {
+		env.EK = s.Hello.Ephemeral
+		if env.Hello, err = s.Hello.seal(peer, mailbox); err != nil {
+			return err
+		}
+	}
+	env.H, env.CT, err = s.seal(plaintext, aad(key))
 	if err != nil {
 		return err
 	}
-	env.CT = ct
 	data, err := json.Marshal(env)
 	if err != nil {
 		return err
@@ -277,11 +286,15 @@ func messageKeys(mailbox string, ids []string) []string {
 // sender's opening keys, so it can start a session or repeat one.
 func (c *Client) openHello(it item) (Message, bool) {
 	var env envelope
-	if err := json.Unmarshal(it.data, &env); err != nil || env.V != version || env.Hello == nil {
+	if err := json.Unmarshal(it.data, &env); err != nil || env.V != version || env.EK == nil || env.Hello == nil {
 		slog.Warn("messenger: malformed hello", "key", it.key)
 		return Message{}, false
 	}
-	h := *env.Hello
+	h, err := unsealHello(c.id, env.EK, env.Hello, helloMailbox(c.id.Bundle()))
+	if err != nil {
+		slog.Warn("messenger: hello not for us or tampered", "key", it.key)
+		return Message{}, false
+	}
 	if err := h.Bundle.Verify(); err != nil {
 		slog.Warn("messenger: hello with bad bundle", "key", it.key)
 		return Message{}, false
@@ -318,7 +331,7 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 		slog.Warn("messenger: malformed message", "key", it.key)
 		return Message{}, false
 	}
-	pt, err := s.open(env.N, env.CT, aad(it.key, env.N))
+	pt, err := s.open(env.H, env.CT, aad(it.key))
 	if err != nil {
 		slog.Warn("messenger: dropped message", "key", it.key, "err", err)
 		return Message{}, false
@@ -363,13 +376,22 @@ func (c *Client) Restore(data []byte) error {
 	if st.Sessions == nil {
 		st.Sessions = map[string]*Session{}
 	}
-	for _, s := range st.Sessions {
+	dropped := 0
+	for fp, s := range st.Sessions {
+		if s.Root == nil { // from before the ratchet: unreadable now, and the peer will start over
+			delete(st.Sessions, fp)
+			dropped++
+			continue
+		}
 		if s.Skipped == nil {
-			s.Skipped = map[uint32][]byte{}
+			s.Skipped = map[string][]byte{}
 		}
 		if s.Touched.IsZero() { // stored before Touched existed: count from now
 			s.Touched = time.Now()
 		}
+	}
+	if dropped > 0 {
+		slog.Warn("messenger: dropped sessions from before the ratchet", "n", dropped)
 	}
 	c.sessions, c.helloSeen = st.Sessions, st.HelloSeen
 	return nil
@@ -389,6 +411,8 @@ func messageID(now time.Time) string {
 	return strconv.FormatInt(now.UnixMilli(), 10) + "-" + hex.EncodeToString(r[:])
 }
 
-func aad(key string, n uint32) []byte {
-	return []byte(key + "#" + strconv.FormatUint(uint64(n), 10))
+// aad binds a ciphertext to the key it is stored under; the session adds the
+// ratchet header to it.
+func aad(key string) []byte {
+	return []byte(key + "#")
 }

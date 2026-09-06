@@ -116,11 +116,14 @@ accept the same claim; treat it as first-come per node, not a global lock.
 library only. Identities are an Ed25519 signing key and an X25519 agreement
 key, published as a signed bundle under `id:<name>`. A session starts with an
 X3DH-style agreement, so you can message someone who is offline, and runs a
-hash ratchet in each direction so every message has its own key. The signed
-prekey rotates weekly and retired ones are forgotten after thirty days, so a
-stolen device unlocks only sessions opened in that window. Mailboxes are named
-by secrets derived from the session, so nodes can't see who is talking to
-whom; messages are padded so their sizes say little; and everything expires.
+Double Ratchet from there: every message has its own key, and every change of
+direction mixes in fresh Diffie-Hellman, so a copied device state stops
+reading the conversation as soon as the other side has answered again. The
+signed prekey rotates weekly and retired ones are forgotten after thirty days.
+Mailboxes are named by secrets derived from the session, so nodes can't see
+who is talking to whom, and first contact seals the sender's identity so a
+node sees only an ephemeral key; messages are padded so their sizes say
+little; and everything expires.
 A message is deleted from the server only by the read after the one that
 delivered it, so a client that stores its state between reads never loses one.
 
@@ -141,10 +144,10 @@ go run ./cmd/tritium-msg serve -name bob       # stdout: {"from","fp","time","bo
 echo '{"q":"lunch"}' | go run ./cmd/tritium-msg ask -fp 23FK7-ISTCB-… bob   # prints bob's reply; exit 2 on no reply, 3 on a wrong pin
 ```
 
-What it does not do yet: forward secrecy across a compromised device (there is
-no Diffie-Hellman ratchet, only the hash ratchet), sealed sender on first
-contact, groups, or multiple devices per identity. Names are first come, first
-served per node; the fingerprint is the identity, the name is a convenience.
+What it does not do yet: encrypt the ratchet header (a node can count
+messages per direction inside a mailbox), groups, or multiple devices per
+identity. Names are first come, first served per node; the fingerprint is the
+identity, the name is a convenience.
 
 ## Configuration
 
