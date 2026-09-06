@@ -33,6 +33,11 @@ valkey-server --save "" --appendonly no &
 go run ./cmd/tritium             # loads .env if present; environment overrides it
 ```
 
+Prebuilt binaries for Linux and macOS, amd64 and arm64, are on the
+[releases page](https://github.com/we-be/tritium/releases); each tarball holds
+`tritium`, `tritium-cli`, `tritium-monitor` and `tritium-msg`. `make dist` builds
+the same set locally.
+
 ## Use it
 
 Any Redis client works. From the shell:
@@ -138,7 +143,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | ------------------------ | ---------------- | ----------------------------------------------------------------------- |
 | `LISTEN_ADDRESS`         | `localhost:8080` | Where the node accepts clients and peers                                |
 | `ADVERTISE_ADDRESS`      | bound address    | Address peers dial; set it behind NAT or in containers                  |
-| `JOIN_ADDRESS`           | none             | An existing node to join; unset seeds a new cluster                     |
+| `JOIN_ADDRESS`           | none             | Nodes to join, comma-separated; dialed until they answer and again whenever one drops out, so nodes boot in any order. Unset seeds a new cluster |
 | `AUTH_PASSWORD`          | none             | Password clients must `AUTH` with                                       |
 | `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
 | `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                                    |

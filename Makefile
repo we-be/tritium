@@ -1,7 +1,22 @@
-.PHONY: build test integration lint image cluster cluster-down clean
+.PHONY: build dist test integration lint image cluster cluster-down clean
+
+VERSION ?= $(shell git describe --tags --always --dirty)
+LDFLAGS = -s -w -X github.com/we-be/tritium/internal/server.Version=$(VERSION)
+PLATFORMS = linux/amd64 linux/arm64 darwin/arm64 darwin/amd64
 
 build:
-	go build -trimpath -o bin/ ./cmd/...
+	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/ ./cmd/...
+
+# Every binary for every platform, one tarball each, in dist/. Pure Go, so no
+# cross toolchains: this is what the release workflow publishes.
+dist:
+	rm -rf dist && mkdir -p dist
+	for p in $(PLATFORMS); do \
+	  os=$${p%/*}; arch=$${p#*/}; out=dist/tritium-$(VERSION)-$$os-$$arch; \
+	  CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" -o $$out/ ./cmd/... || exit 1; \
+	  tar -C dist -czf $$out.tar.gz $$(basename $$out) && rm -r $$out; \
+	done
+	ls -l dist
 
 test:
 	go test -race -count=1 ./...
@@ -26,4 +41,4 @@ cluster-down:
 	./stop-cluster.sh
 
 clean:
-	rm -rf bin logs
+	rm -rf bin dist logs

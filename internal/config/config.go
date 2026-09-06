@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -17,7 +18,7 @@ const (
 type Config struct {
 	ListenAddr    string // LISTEN_ADDRESS: where this node accepts clients and peers
 	AdvertiseAddr string // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
-	JoinAddr      string // JOIN_ADDRESS: an existing node to join; empty seeds a new cluster
+	JoinAddr      string // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
 	Password      string // AUTH_PASSWORD: required from clients when set
 	PeerPassword  string // PEER_PASSWORD: what nodes AUTH to each other with; defaults to AUTH_PASSWORD
 	StoreAddr     string // SECURE_STORE_ADDRESS: RESP server this node writes through
@@ -31,6 +32,18 @@ type Config struct {
 
 // Load reads path as a dotenv file (empty path: none), then lets process
 // environment variables override it.
+// Seeds is JOIN_ADDRESS as a list. Each entry is dialed until it answers and
+// again whenever it drops out of the view, so nodes can boot in any order.
+func (c Config) Seeds() []string {
+	var out []string
+	for s := range strings.SplitSeq(c.JoinAddr, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func Load(path string) (Config, error) {
 	vals := map[string]string{}
 	if path != "" {

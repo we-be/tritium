@@ -312,3 +312,44 @@ func selfSigned(t *testing.T) (certFile, keyFile string, pool *x509.CertPool) {
 	pool.AppendCertsFromPEM(certPEM)
 	return certFile, keyFile, pool
 }
+
+// A node whose seed is down keeps trying, and joins when the seed comes up.
+func TestRejoinsSeed(t *testing.T) {
+	defer func(d time.Duration) { rejoinInterval = d }(rejoinInterval)
+	rejoinInterval = 100 * time.Millisecond
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedAddr := ln.Addr().String()
+	ln.Close() // reserved for the seed, which is not up yet
+
+	late, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, JoinAddr: seedAddr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := late.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { late.Stop() })
+	time.Sleep(3 * rejoinInterval)
+	if n := len(late.Nodes()); n != 1 {
+		t.Fatalf("saw %d nodes before the seed existed", n)
+	}
+
+	seed, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Start(seedAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { seed.Stop() })
+	deadline := time.Now().Add(5 * time.Second)
+	for len(late.Nodes()) != 2 || len(seed.Nodes()) != 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no rejoin: late sees %d, seed sees %d", len(late.Nodes()), len(seed.Nodes()))
+		}
+		time.Sleep(rejoinInterval)
+	}
+}

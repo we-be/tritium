@@ -83,7 +83,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	if advertise == "" {
 		advertise = ln.Addr().String()
 	}
-	s.cluster = newCluster(s, advertise, s.cfg.StoreAddr, s.cfg.JoinAddr == "")
+	s.cluster = newCluster(s, advertise, s.cfg.StoreAddr, s.cfg.Seeds())
 	go s.acceptLoop()
 	return nil
 }

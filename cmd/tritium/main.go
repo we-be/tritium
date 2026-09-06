@@ -1,4 +1,4 @@
-// Command tritium runs one node: an RPC server in front of a RESP store.
+// Command tritium runs one node: a RESP server in front of a RESP store.
 package main
 
 import (
@@ -8,13 +8,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/server"
 )
-
-const joinAttempts = 30 // one per second; covers a seed node that is still starting
 
 func main() {
 	configFile := flag.String("config", "", "dotenv file to load (default: .env if present); the environment overrides it")
@@ -43,38 +40,15 @@ func main() {
 	}
 	slog.Info("listening", "addr", srv.Addr(), "store", cfg.StoreAddr)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	if cfg.JoinAddr != "" {
-		join(ctx, srv, cfg.JoinAddr)
-	} else {
+	if len(cfg.Seeds()) == 0 {
 		slog.Info("seeding a new cluster")
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	<-ctx.Done()
 	slog.Info("shutting down")
 	if err := srv.Stop(); err != nil {
 		slog.Error("shutdown", "err", err)
-	}
-}
-
-func join(ctx context.Context, srv *server.Server, addr string) {
-	for i := 1; ; i++ {
-		err := srv.Join(addr)
-		if err == nil {
-			slog.Info("joined cluster", "via", addr)
-			return
-		}
-		if i == joinAttempts {
-			slog.Error("giving up joining; running standalone", "via", addr, "err", err)
-			return
-		}
-		slog.Warn("join failed, retrying", "via", addr, "attempt", i, "err", err)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
-		}
 	}
 }

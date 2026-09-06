@@ -21,6 +21,10 @@ const (
 	peerTimeout    = 3 * time.Second  // dial plus one round trip to a peer
 )
 
+// rejoinInterval is how often a configured seed that is not a live peer is
+// dialed again. A variable so tests can hurry it.
+var rejoinInterval = 5 * time.Second
+
 // cluster is this node's view of its peers, kept fresh by announce-on-join,
 // random-peer gossip every gossipInterval, and LastSeen-based health checks.
 // Every live peer's RESP store is attached to the local Store as a replica.
@@ -31,26 +35,33 @@ type cluster struct {
 	mu     sync.RWMutex
 	nodes  map[string]*storage.NodeInfo
 	local  *storage.NodeInfo
+	seeds  []string        // configured peers, dialed until they answer and again whenever they drop out
+	failed map[string]bool // seeds whose last attempt failed, so a retry is logged once, not every tick
 	done   chan struct{}
 }
 
-func newCluster(s *Server, addr, storeAddr string, seed bool) *cluster {
+func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 	local := &storage.NodeInfo{
 		ID:        "node-" + addr,
 		Addr:      addr,
 		StoreAddr: storeAddr,
 		State:     storage.NodeStateHealthy,
 		LastSeen:  time.Now(),
-		IsLeader:  seed,
+		IsLeader:  len(seeds) == 0,
 	}
 	c := &cluster{
 		server: s,
 		nodes:  map[string]*storage.NodeInfo{local.ID: local},
 		local:  local,
+		seeds:  seeds,
+		failed: map[string]bool{},
 		done:   make(chan struct{}),
 	}
 	go c.loop()
-	slog.Info("cluster: node registered", "id", local.ID, "store", storeAddr, "seed", seed)
+	if len(seeds) > 0 {
+		go c.seedLoop()
+	}
+	slog.Info("cluster: node registered", "id", local.ID, "store", storeAddr, "seeds", seeds)
 	return c
 }
 
@@ -73,6 +84,51 @@ func (c *cluster) loop() {
 }
 
 func (c *cluster) stop() { close(c.done) }
+
+// seedLoop keeps this node attached to its configured seeds: a seed that is
+// down at boot is joined when it comes up, and one evicted after an outage is
+// joined again when it returns, whichever side restarted.
+func (c *cluster) seedLoop() {
+	t := time.NewTicker(rejoinInterval)
+	defer t.Stop()
+	for {
+		c.rejoin()
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
+	}
+}
+
+// rejoin dials every seed that is not currently a live peer.
+func (c *cluster) rejoin() {
+	for _, addr := range c.seeds {
+		if addr == c.local.Addr || c.livePeer(addr) {
+			continue
+		}
+		if err := c.join(addr); err != nil {
+			if !c.failed[addr] {
+				slog.Warn("cluster: seed unreachable, retrying", "seed", addr, "every", rejoinInterval, "err", err)
+			}
+			c.failed[addr] = true
+			continue
+		}
+		c.failed[addr] = false
+		slog.Info("cluster: joined", "via", addr)
+	}
+}
+
+func (c *cluster) livePeer(addr string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, n := range c.nodes {
+		if n.Addr == addr && n.State != storage.NodeStateDown {
+			return true
+		}
+	}
+	return false
+}
 
 // join fetches the cluster view from a known node, adopts it, and announces
 // this node to every peer in it.
