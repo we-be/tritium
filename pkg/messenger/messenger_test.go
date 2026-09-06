@@ -431,3 +431,33 @@ func TestSealedSender(t *testing.T) {
 	}
 	w.receive(w.bob, "hi")
 }
+
+// The ratchet header is ciphertext to the node: two messages in one chain
+// look alike, and only the session's header key opens them.
+func TestHeadersAreOpaque(t *testing.T) {
+	w := setup(t)
+	bob := w.lookup(w.alice, "bob")
+	w.send(w.alice, bob, "one")
+	w.send(w.alice, bob, "two")
+	hello := helloMailbox(bob)
+	var envs []envelope
+	for _, id := range w.ids(hello) {
+		raw, _ := w.raw.Do("GET", "msg:"+hello+":"+id)
+		var env envelope
+		json.Unmarshal(raw.([]byte), &env)
+		envs = append(envs, env)
+	}
+	if len(envs) != 2 || bytes.Equal(envs[0].EH, envs[1].EH) || len(envs[0].EH) != len(envs[1].EH) {
+		t.Fatalf("headers %d/%d bytes, equal=%v", len(envs[0].EH), len(envs[1].EH), bytes.Equal(envs[0].EH, envs[1].EH))
+	}
+	s := w.alice.sessions[bob.Fingerprint()]
+	h0, ok0 := hdecrypt(s.SendHeader, envs[0].EH)
+	h1, ok1 := hdecrypt(s.SendHeader, envs[1].EH)
+	if !ok0 || !ok1 || h0.N != 0 || h1.N != 1 {
+		t.Fatalf("headers under the sending header key: %+v %v, %+v %v", h0, ok0, h1, ok1)
+	}
+	if _, ok := hdecrypt(s.NextSend, envs[0].EH); ok {
+		t.Fatal("a header opened under the wrong header key")
+	}
+	w.receive(w.bob, "one", "two")
+}

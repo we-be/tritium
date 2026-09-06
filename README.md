@@ -121,8 +121,9 @@ direction mixes in fresh Diffie-Hellman, so a copied device state stops
 reading the conversation as soon as the other side has answered again. The
 signed prekey rotates weekly and retired ones are forgotten after thirty days.
 Mailboxes are named by secrets derived from the session, so nodes can't see
-who is talking to whom, and first contact seals the sender's identity so a
-node sees only an ephemeral key; messages are padded so their sizes say
+who is talking to whom; first contact seals the sender's identity so a node
+sees only an ephemeral key; the ratchet header is encrypted too, so a node
+can't count messages per direction; messages are padded so their sizes say
 little; and everything expires.
 A message is deleted from the server only by the read after the one that
 delivered it, so a client that stores its state between reads never loses one.
@@ -144,10 +145,9 @@ go run ./cmd/tritium-msg serve -name bob       # stdout: {"from","fp","time","bo
 echo '{"q":"lunch"}' | go run ./cmd/tritium-msg ask -fp 23FK7-ISTCB-… bob   # prints bob's reply; exit 2 on no reply, 3 on a wrong pin
 ```
 
-What it does not do yet: encrypt the ratchet header (a node can count
-messages per direction inside a mailbox), groups, or multiple devices per
-identity. Names are first come, first served per node; the fingerprint is the
-identity, the name is a convenience.
+What it does not do yet: groups, or multiple devices per identity. Names are
+first come, first served per node; the fingerprint is the identity, the name
+is a convenience.
 
 ## Configuration
 

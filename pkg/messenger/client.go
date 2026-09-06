@@ -20,7 +20,7 @@ import (
 const (
 	bundleTTL  = 30 * 24 * 3600 // seconds a published bundle lives without a refresh
 	fetchBatch = 100
-	version    = 3 // envelope format: ratchet header on every message, sealed hello on first contact
+	version    = 4 // envelope format: encrypted ratchet header on every message, sealed hello on first contact
 )
 
 var ErrNameTaken = errors.New("messenger: name is registered to another identity")
@@ -51,11 +51,11 @@ type Message struct {
 // initiator's ephemeral key and Hello the header sealed under it: a node
 // sees a fresh public key, not who is writing.
 type envelope struct {
-	V     int           `json:"v"`
-	EK    []byte        `json:"ek,omitempty"`
-	Hello []byte        `json:"hello,omitempty"`
-	H     ratchetHeader `json:"h"`
-	CT    []byte        `json:"ct"`
+	V     int    `json:"v"`
+	EK    []byte `json:"ek,omitempty"`
+	Hello []byte `json:"hello,omitempty"`
+	EH    []byte `json:"eh"` // the ratchet header, encrypted
+	CT    []byte `json:"ct"`
 }
 
 // Publish registers the identity's bundle under id:<name>, rotating the
@@ -144,7 +144,7 @@ func (c *Client) Send(peer Bundle, body []byte) error {
 			return err
 		}
 	}
-	env.H, env.CT, err = s.seal(plaintext, aad(key))
+	env.EH, env.CT, err = s.seal(plaintext, aad(key))
 	if err != nil {
 		return err
 	}
@@ -331,7 +331,7 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 		slog.Warn("messenger: malformed message", "key", it.key)
 		return Message{}, false
 	}
-	pt, err := s.open(env.H, env.CT, aad(it.key))
+	pt, err := s.open(env.EH, env.CT, aad(it.key))
 	if err != nil {
 		slog.Warn("messenger: dropped message", "key", it.key, "err", err)
 		return Message{}, false
@@ -378,20 +378,20 @@ func (c *Client) Restore(data []byte) error {
 	}
 	dropped := 0
 	for fp, s := range st.Sessions {
-		if s.Root == nil { // from before the ratchet: unreadable now, and the peer will start over
+		if s.Format != sessionFormat { // an older wire format: unreadable now, and the peer will start over
 			delete(st.Sessions, fp)
 			dropped++
 			continue
 		}
 		if s.Skipped == nil {
-			s.Skipped = map[string][]byte{}
+			s.Skipped = map[string]skipped{}
 		}
 		if s.Touched.IsZero() { // stored before Touched existed: count from now
 			s.Touched = time.Now()
 		}
 	}
 	if dropped > 0 {
-		slog.Warn("messenger: dropped sessions from before the ratchet", "n", dropped)
+		slog.Warn("messenger: dropped sessions of an older format", "n", dropped)
 	}
 	c.sessions, c.helloSeen = st.Sessions, st.HelloSeen
 	return nil

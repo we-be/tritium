@@ -14,7 +14,9 @@
 // by secrets derived from the session, so nodes cannot tell who is talking
 // to whom; first contact goes to a mailbox derived from the recipient's
 // public identity, with the sender's identity sealed so the node sees only
-// an ephemeral key. Plaintexts are padded so message sizes leak little.
+// an ephemeral key; ratchet headers are encrypted, so a node cannot count
+// messages per direction either. Plaintexts are padded so message sizes
+// leak little.
 //
 // Each message is a tritium key with a TTL, indexed by send time in a
 // sorted set per mailbox. Everything expires.
