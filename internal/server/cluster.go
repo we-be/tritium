@@ -12,18 +12,17 @@ import (
 	"github.com/we-be/tritium/pkg/storage"
 )
 
-const (
+const peerTimeout = 3 * time.Second // dial plus one round trip to a peer
+
+// The cluster's clocks. Variables so tests can hurry them.
+var (
 	gossipInterval = 5 * time.Second
 	healthInterval = 5 * time.Second
 	degradedAfter  = 10 * time.Second // no word from a peer for this long: degraded
 	downAfter      = 15 * time.Second // ...for this long: down, stop replicating to it
 	evictAfter     = 60 * time.Second // ...for this long: forget it entirely
-	peerTimeout    = 3 * time.Second  // dial plus one round trip to a peer
+	rejoinInterval = 5 * time.Second  // how often a configured seed that is not a live peer is dialed again
 )
-
-// rejoinInterval is how often a configured seed that is not a live peer is
-// dialed again. A variable so tests can hurry it.
-var rejoinInterval = 5 * time.Second
 
 // cluster is this node's view of its peers, kept fresh by announce-on-join,
 // random-peer gossip every gossipInterval, and LastSeen-based health checks.
@@ -38,6 +37,7 @@ type cluster struct {
 	seeds  []string        // configured peers, dialed until they answer and again whenever they drop out
 	failed map[string]bool // seeds whose last attempt failed, so a retry is logged once, not every tick
 	done   chan struct{}
+	wg     sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
 }
 
 func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
@@ -57,9 +57,9 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		failed: map[string]bool{},
 		done:   make(chan struct{}),
 	}
-	go c.loop()
+	c.wg.Go(c.loop)
 	if len(seeds) > 0 {
-		go c.seedLoop()
+		c.wg.Go(c.seedLoop)
 	}
 	slog.Info("cluster: node registered", "id", local.ID, "store", storeAddr, "seeds", seeds)
 	return c
@@ -83,7 +83,10 @@ func (c *cluster) loop() {
 	}
 }
 
-func (c *cluster) stop() { close(c.done) }
+func (c *cluster) stop() {
+	close(c.done)
+	c.wg.Wait()
+}
 
 // seedLoop keeps this node attached to its configured seeds: a seed that is
 // down at boot is joined when it comes up, and one evicted after an outage is
@@ -210,9 +213,13 @@ func (c *cluster) learn(n storage.NodeInfo) {
 
 // merge adopts every remote entry that is newer than ours. A peer we are
 // hearing about for the first time, or one back from the dead, gets its
-// store attached as a replica.
+// store attached as a replica and brought up to date.
 func (c *cluster) merge(remote map[string]storage.NodeInfo) {
-	var attach []storage.NodeInfo
+	type attaching struct {
+		node    storage.NodeInfo
+		wasDown bool
+	}
+	var attach []attaching
 	c.mu.Lock()
 	for id, n := range remote {
 		if id == c.local.ID {
@@ -223,17 +230,22 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 			continue
 		}
 		if time.Since(n.LastSeen) < downAfter && (!known || cur.State == storage.NodeStateDown) {
-			attach = append(attach, n)
+			attach = append(attach, attaching{n, known})
 		}
 		c.nodes[id] = &n
 	}
 	c.mu.Unlock()
-	for _, n := range attach {
-		c.attach(n)
+	for _, a := range attach {
+		c.attach(a.node, a.wasDown)
 	}
 }
 
-func (c *cluster) attach(n storage.NodeInfo) {
+// attach starts replicating to a peer's store and, in the background, copies
+// what it has missed. A peer we watched go down and return is stale, so our
+// copy of every key wins there; one we are meeting for the first time keeps
+// what it holds and only has its gaps filled — it may be the survivor and we
+// the one that just started.
+func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
 	if n.StoreAddr == c.local.StoreAddr {
 		return // sharing our store; replicating to it would be a self-write
 	}
@@ -242,6 +254,14 @@ func (c *cluster) attach(n storage.NodeInfo) {
 		return
 	}
 	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
+	go func() {
+		copied, err := c.server.store.Sync(n.StoreAddr, wasDown)
+		if err != nil {
+			slog.Warn("cluster: resync incomplete", "peer", n.ID, "keys", copied, "err", err)
+			return
+		}
+		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", wasDown)
+	}()
 }
 
 func (c *cluster) detach(n storage.NodeInfo) {

@@ -21,6 +21,7 @@ import (
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/internal/resptest"
+	"github.com/we-be/tritium/pkg/storage"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
@@ -351,5 +352,69 @@ func TestRejoinsSeed(t *testing.T) {
 			t.Fatalf("no rejoin: late sees %d, seed sees %d", len(late.Nodes()), len(seed.Nodes()))
 		}
 		time.Sleep(rejoinInterval)
+	}
+}
+
+// hurry shrinks the cluster's clocks for one test.
+func hurry(t *testing.T) {
+	saved := []time.Duration{gossipInterval, healthInterval, degradedAfter, downAfter, evictAfter, rejoinInterval}
+	t.Cleanup(func() {
+		gossipInterval, healthInterval, degradedAfter, downAfter, evictAfter, rejoinInterval = saved[0], saved[1], saved[2], saved[3], saved[4], saved[5]
+	})
+	gossipInterval, healthInterval, degradedAfter, downAfter, evictAfter, rejoinInterval =
+		100*time.Millisecond, 100*time.Millisecond, 200*time.Millisecond, 300*time.Millisecond, 10*time.Second, 100*time.Millisecond
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for " + what)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A peer that was down comes back with an empty store and is brought up to
+// date: what was written while it was away is copied over on attach.
+func TestResyncAfterOutage(t *testing.T) {
+	hurry(t)
+	seed := startNode(t, config.Config{})
+	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
+	peerAddr, peerID := peer.Addr(), peer.cluster.local.ID
+	c := dial(t, seed)
+	c.want("OK", "SET", "sync:before", "v1", "EX", "60")
+	c.want(int64(1), "ZADD", "sync:z", "1", "a")
+
+	peer.Stop()
+	waitFor(t, "the seed to see the peer down", func() bool {
+		n, ok := seed.Nodes()[peerID]
+		return ok && n.State == storage.NodeStateDown
+	})
+	c.want("OK", "SET", "sync:during", "v2", "EX", "60") // the peer misses this
+
+	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()}
+	back, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Start(peerAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { back.Stop() })
+	if err := back.Join(seed.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	bc := dial(t, back)
+	waitFor(t, "the resync to land", func() bool {
+		v, _ := bc.do("GET", "sync:during")
+		b, _ := v.([]byte)
+		return string(b) == "v2"
+	})
+	bc.want("v1", "GET", "sync:before")
+	bc.want(int64(1), "ZCARD", "sync:z")
+	if ttl, _ := bc.do("TTL", "sync:during"); ttl.(int64) <= 0 || ttl.(int64) > 60 {
+		t.Fatalf("resynced key lost its TTL: %v", ttl)
 	}
 }

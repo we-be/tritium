@@ -295,6 +295,110 @@ func (s *Store) AddReplica(addr string) error {
 	return nil
 }
 
+// Sync copies every key on the primary to the store at addr — a peer back
+// from an outage missed every write made meanwhile, and a newcomer holds
+// nothing. With overwrite the primary's copy wins (the peer was down, so ours
+// is the newer one); without it only keys the peer lacks are filled, so a
+// node that just started never clobbers what the survivors hold. Best
+// effort, one key at a time: the count copied and the first error.
+func (s *Store) Sync(addr string, overwrite bool) (int, error) {
+	dst, err := newPool(addr, 1, s.password)
+	if err != nil {
+		return 0, err
+	}
+	defer dst.close()
+	n, cursor := 0, "0"
+	var first error
+	for {
+		v, err := s.primary.do(resp.NewCommand("SCAN", cursor, "COUNT", "200"))
+		if err != nil {
+			return n, err
+		}
+		page, ok := v.([]any)
+		if !ok || len(page) != 2 {
+			return n, fmt.Errorf("unexpected SCAN reply %T", v)
+		}
+		next, _ := page[0].([]byte)
+		keys, _ := page[1].([]any)
+		for _, k := range keys {
+			key, _ := k.([]byte)
+			cmds, err := s.copyCommands(string(key), overwrite)
+			if err != nil {
+				if first == nil {
+					first = err
+				}
+				continue
+			}
+			if cmds == nil {
+				continue
+			}
+			if _, err := dst.doAll(cmds); err != nil && first == nil {
+				first = err
+			}
+			n++
+		}
+		cursor = string(next)
+		if cursor == "0" {
+			return n, first
+		}
+	}
+}
+
+// copyCommands is what recreates one key elsewhere with its remaining TTL,
+// or nil when the key is gone or of a kind tritium does not write.
+func (s *Store) copyCommands(key string, overwrite bool) ([]resp.Command, error) {
+	replies, err := s.primary.doAll([]resp.Command{resp.NewCommand("TYPE", key), resp.NewCommand("TTL", key)})
+	if err != nil {
+		return nil, err
+	}
+	typ, _ := replies[0].(string)
+	ttl, _ := replies[1].(int64)
+	if ttl <= 0 { // gone, or a key without an expiry: not ours
+		return nil, nil
+	}
+	exp := strconv.FormatInt(ttl, 10)
+	switch typ {
+	case "string":
+		v, err := s.primary.do(resp.NewCommand("GET", key))
+		if err != nil {
+			return nil, err
+		}
+		val, ok := v.([]byte)
+		if !ok {
+			return nil, nil
+		}
+		args := []string{"SET", key, string(val), "EX", exp}
+		if !overwrite {
+			args = append(args, "NX")
+		}
+		return []resp.Command{resp.NewCommand(args...)}, nil
+	case "zset":
+		v, err := s.primary.do(resp.NewCommand("ZRANGEBYSCORE", key, "-inf", "+inf", "WITHSCORES"))
+		if err != nil {
+			return nil, err
+		}
+		pairs, _ := v.([]any)
+		if len(pairs) < 2 {
+			return nil, nil
+		}
+		args := []string{"ZADD", key}
+		if !overwrite {
+			args = append(args, "NX")
+		}
+		for i := 0; i+1 < len(pairs); i += 2 {
+			member, _ := pairs[i].([]byte)
+			score, _ := pairs[i+1].([]byte)
+			args = append(args, string(score), string(member))
+		}
+		expire := []string{"EXPIRE", key, exp}
+		if !overwrite {
+			expire = append(expire, "GT")
+		}
+		return []resp.Command{resp.NewCommand(args...), resp.NewCommand(expire...)}, nil
+	}
+	return nil, nil
+}
+
 // RemoveReplica stops replicating to addr and reports whether it was known.
 func (s *Store) RemoveReplica(addr string) bool {
 	s.mu.Lock()

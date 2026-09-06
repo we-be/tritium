@@ -27,7 +27,7 @@ func Addr(tb testing.TB) string {
 }
 
 // Server speaks just enough RESP to stand in for a backend store: strings
-// (SET with EX/NX, SETEX, GET, GETDEL, MGET), DEL, EXISTS, TTL, EXPIRE,
+// (SET with EX/NX, SETEX, GET, GETDEL, MGET), DEL, EXISTS, TTL, EXPIRE, SCAN, TYPE,
 // sorted sets (ZADD, ZRANGEBYSCORE, ZREM, ZREMRANGEBYSCORE, ZCARD), PING,
 // AUTH and INFO.
 type Server struct {
@@ -174,7 +174,31 @@ func (s *Server) exec(args []string) []byte {
 		}
 		e.exp = exp
 		return resp.AppendInt(nil, 1)
+	case "SCAN": // one page holds everything: enough for a sync to walk
+		keys := []any{}
+		for k := range s.kv {
+			if s.live(k) != nil {
+				keys = append(keys, []byte(k))
+			}
+		}
+		return resp.AppendValue(nil, []any{[]byte("0"), keys})
+	case "TYPE":
+		if len(args) != 2 {
+			return errArgs(cmd)
+		}
+		switch e := s.live(args[1]); {
+		case e == nil:
+			return resp.AppendSimpleString(nil, "none")
+		case e.zset != nil:
+			return resp.AppendSimpleString(nil, "zset")
+		default:
+			return resp.AppendSimpleString(nil, "string")
+		}
 	case "ZADD":
+		nx := len(args) > 2 && strings.EqualFold(args[2], "NX")
+		if nx {
+			args = append(args[:2], args[3:]...)
+		}
 		if len(args) < 4 || len(args)%2 != 0 {
 			return errArgs(cmd)
 		}
@@ -194,6 +218,8 @@ func (s *Server) exec(args []string) []byte {
 			}
 			if _, ok := e.zset[args[i+1]]; !ok {
 				added++
+			} else if nx {
+				continue
 			}
 			e.zset[args[i+1]] = score
 		}
