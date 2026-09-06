@@ -407,12 +407,12 @@ func TestResyncAfterOutage(t *testing.T) {
 		t.Fatal(err)
 	}
 	bc := dial(t, back)
-	waitFor(t, "the resync to land", func() bool {
-		v, _ := bc.do("GET", "sync:during")
-		b, _ := v.([]byte)
-		return string(b) == "v2"
+	waitFor(t, "the resync to land", func() bool { // keys arrive in scan order: wait for all of them
+		n, _ := bc.do("EXISTS", "sync:before", "sync:during", "sync:z")
+		return n == int64(3)
 	})
 	bc.want("v1", "GET", "sync:before")
+	bc.want("v2", "GET", "sync:during")
 	bc.want(int64(1), "ZCARD", "sync:z")
 	if ttl, _ := bc.do("TTL", "sync:during"); ttl.(int64) <= 0 || ttl.(int64) > 60 {
 		t.Fatalf("resynced key lost its TTL: %v", ttl)
