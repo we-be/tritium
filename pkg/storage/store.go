@@ -140,6 +140,8 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 		}
 		buf = append(buf, cmd...)
 	}
+	// every pooled connection may be dead at once (the peer restarted), and each
+	// failure retires one, so one attempt per slot plus a fresh dial covers it
 	for attempt := 1; ; attempt++ {
 		c, err := p.get()
 		if err != nil {
@@ -149,7 +151,7 @@ func (p *pool) doAll(cmds []resp.Command) ([]any, error) {
 		if err == nil {
 			return out, first
 		}
-		if out != nil || attempt == 2 { // replies were read, or the fresh connection failed too
+		if out != nil || attempt > cap(p.slots) { // replies were read, or a fresh connection failed too
 			return nil, err
 		}
 	}

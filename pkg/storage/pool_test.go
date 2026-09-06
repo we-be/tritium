@@ -11,14 +11,16 @@ import (
 // redial, not the write: the batch goes again on a fresh connection.
 func TestDeadPooledConnectionIsRetried(t *testing.T) {
 	addr := resptest.Start(t).Addr()
-	p, err := newPool(addr, 1, direct(""))
+	p, err := newPool(addr, 2, direct(""))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer p.close()
-	c := <-p.slots
-	c.Conn.Close() // dead, but still in the pool
-	p.slots <- c
+	for range 2 { // every slot dead at once, as after a peer restart
+		c := <-p.slots
+		c.Conn.Close()
+		p.slots <- c
+	}
 	if v, err := p.do(resp.NewCommand("SET", "k", "v", "EX", "10")); err != nil || v != "OK" {
 		t.Fatalf("SET over a dead connection = %v, %v", v, err)
 	}
