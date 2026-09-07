@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,8 +32,23 @@ func init() {
 		return
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
-		Version = bi.Main.Version
+		Version = shortVersion(bi.Main.Version)
 	}
+}
+
+// shortVersion turns a module pseudo-version, what a build from a checkout
+// reports (v0.9.1-0.20260907003558-86af7bd77692), into v0.9.1-dev.86af7bd;
+// anything else is returned as is.
+func shortVersion(v string) string {
+	base, rest, ok := strings.Cut(v, "-0.")
+	if !ok {
+		return v
+	}
+	stamp, hash, ok := strings.Cut(rest, "-")
+	if !ok || len(stamp) != 14 || len(hash) < 7 {
+		return v
+	}
+	return base + "-dev." + hash[:7]
 }
 
 type Server struct {

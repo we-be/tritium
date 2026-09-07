@@ -569,3 +569,16 @@ func TestInfoStoreAndView(t *testing.T) {
 		t.Fatalf("the seed's view of the peer: %+v", n)
 	}
 }
+
+// A build from a checkout reports a readable version, a release its tag.
+func TestShortVersion(t *testing.T) {
+	for in, want := range map[string]string{
+		"v0.9.1-0.20260907003558-86af7bd77692": "v0.9.1-dev.86af7bd",
+		"v0.9.0":                               "v0.9.0",
+		"dev":                                  "dev",
+	} {
+		if got := shortVersion(in); got != want {
+			t.Fatalf("shortVersion(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

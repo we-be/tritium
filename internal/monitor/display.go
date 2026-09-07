@@ -47,8 +47,8 @@ func renderSummary(w io.Writer, snap Snapshot, now time.Time) {
 		if !snap.Stores[n.ID].Healthy() {
 			storeColor, storeSymbol = BrightYellow, "!"
 		}
-		fmt.Fprintf(w, "  %s%s%s Node %s [%s%s%s Store] %s%s%s %s\n",
-			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, Dim, n.Version, Reset, replicas(n))
+		fmt.Fprintf(w, "  %s%s%s Node %s [%s%s%s Store] %s%s · %s replicas%s\n",
+			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, Dim, n.Version, replicas(n), Reset)
 	}
 	fmt.Fprintln(w, rule)
 }
