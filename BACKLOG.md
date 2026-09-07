@@ -4,15 +4,6 @@ What the loop works from, in order. One item per iteration, test-verified,
 pushed when CI is green, rolled to the mubs fleet nodes when it changes what a
 node does. Check an item off with the commit that closed it.
 
-## In flight — 2026-09-07 wave (claimed; the steward skips these)
-
-- [x] embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — lead, 2026-09-07
-- SCAN/TYPE/DBSIZE for clients, `pkg/tritium.Scan`, key browser in tritium-wails — agent
-- fleet event log in the plane (the Visibility item below) — agent
-- messenger: several devices per name, groups by pairwise fan-out — agent
-- [x] cloud node + adapter so the mubs serverless worker can join the plane with a lesser credential (`LINK_ADDRESS`/`TRITIUM.PEERLINK` reverse peering, `USER_<name>` prefix rights, `docs/cloud.md`) — agent, 2026-09-07
-- public-project polish (README, package docs, examples) — agent, after the above merge
-
 ## Now
 
 - [x] Resync a peer's store on attach — 2026-09-06
@@ -41,6 +32,11 @@ node does. Check an item off with the commit that closed it.
 - [ ] Relay through a node that both sides can reach: today `TRITIUM.REPLICATE` is applied and never fanned out again, so two nodes that cannot dial each other cannot exchange writes even when both link to the same cloud node. Needs the sender's identity on the wire (a `via` argument, so a relayed write cannot echo back or clobber a newer local write) — a change both fleet nodes must take together. Only matters once a machine leaves the LAN
 
 ## Done
+
+- [x] Embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — 2026-09-07
+- [x] SCAN/TYPE/DBSIZE for clients: `pkg/tritium.Scan`, `tritium-cli scan`, key browser in tritium-wails — 2026-09-07
+- [x] Cloud node + adapter so the mubs serverless worker can join the plane with a lesser credential (`LINK_ADDRESS`/`TRITIUM.PEERLINK` reverse peering, `USER_<name>` prefix rights, `docs/cloud.md`) — 2026-09-07
+- [x] Public-project polish: README rewritten front to back, `go doc`-quality package comments on every exported package, a `docs/README.md` index, `examples/python` and `examples/go`, `packaging/homebrew/tritium.rb`, `CONTRIBUTING.md` — 2026-09-07
 
 - [x] Asynchronous replication as a knob: `REPLICATION=async` answers once the local store has a write and feeds each peer in order from a queue (coalesced batches, one writer per peer); a peer that falls 4096 fan-outs behind is held and repaired. Default stays `sync`; the cross-network fleet decides per node — 2026-09-06
 
