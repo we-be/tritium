@@ -58,8 +58,9 @@ func TestOwnedNXIsExclusive(t *testing.T) {
 	}
 }
 
-// The owner cannot be reached: the write is done here instead and the
-// client never notices.
+// The owner cannot be reached: the write is done here instead — the forward
+// fell back, or the held peer was already passed over — and the client
+// never notices.
 func TestForwardFallsBack(t *testing.T) {
 	seed := startNode(t, config.Config{})
 	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
@@ -74,7 +75,7 @@ func TestForwardFallsBack(t *testing.T) {
 	c := dial(t, seed)
 	c.want("OK", "SET", key, "v", "EX", "60")
 	c.want("v", "GET", key)
-	if seed.fallbacks.Load() == 0 {
-		t.Fatal("the write should have fallen back to this node")
+	if seed.fallbacks.Load() == 0 && seed.ownerOf(key) != "" {
+		t.Fatal("the owner was unreachable, yet the write neither fell back nor was the owner passed over")
 	}
 }

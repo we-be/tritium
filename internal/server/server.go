@@ -68,7 +68,10 @@ type Server struct {
 	tlsPeer   *tls.Config        // nil: plaintext peer dials
 	embedded  *memstore.Listener // set when the node runs its own store
 	memstore  *memstore.Store
-	fwd       forwarder    // connections to the owners of keys written here
+	fwd       forwarder // connections to the owners of keys written here
+	connMu    sync.Mutex
+	conns     map[net.Conn]struct{} // accepted connections still being served: Stop closes them and waits, so no handler outlives the node
+	connWG    sync.WaitGroup
 	forwarded atomic.Int64 // writes carried to their owner, and writes done here because the owner was out of reach
 	fallbacks atomic.Int64
 	active    atomic.Int64
@@ -156,7 +159,20 @@ func (s *Server) acceptLoop() {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		go s.serveConn(c)
+		s.connMu.Lock()
+		if s.conns == nil {
+			s.conns = map[net.Conn]struct{}{}
+		}
+		s.conns[c] = struct{}{}
+		s.connMu.Unlock()
+		s.connWG.Go(func() {
+			defer func() {
+				s.connMu.Lock()
+				delete(s.conns, c)
+				s.connMu.Unlock()
+			}()
+			s.serveConn(c)
+		})
 	}
 }
 
@@ -239,6 +255,12 @@ func (s *Server) Stop() error {
 		if s.listener != nil {
 			err = s.listener.Close()
 		}
+		s.connMu.Lock()
+		for c := range s.conns {
+			c.Close()
+		}
+		s.connMu.Unlock()
+		s.connWG.Wait()
 		s.store.Close()
 		if s.embedded != nil {
 			s.embedded.Close()
