@@ -10,3 +10,8 @@ logs/
 *.test
 *.out
 go.work
+
+# examples/go builds to a binary named "go" (the directory's basename)
+# unless -o is given
+examples/go/go
+__pycache__/
