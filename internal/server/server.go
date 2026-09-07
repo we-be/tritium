@@ -147,7 +147,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	}
 	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
 	s.startLinks()
-	go s.acceptLoop()
+	s.connWG.Go(s.acceptLoop) // counted with the handlers it starts, so Stop never waits on an empty group one is about to join
 	return nil
 }
 
