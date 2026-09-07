@@ -294,12 +294,13 @@ func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 	}
 	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
 	go func() {
+		start := time.Now()
 		copied, err := c.server.store.Sync(n.Addr, overwrite)
 		if err != nil {
 			slog.Warn("cluster: resync incomplete", "peer", n.ID, "keys", copied, "err", err)
 			return
 		}
-		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", overwrite)
+		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", overwrite, "took", time.Since(start).Round(time.Millisecond))
 	}()
 }
 

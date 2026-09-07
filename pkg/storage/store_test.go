@@ -2,6 +2,8 @@ package storage_test
 
 import (
 	"errors"
+	"fmt"
+	"github.com/we-be/tritium/internal/resp"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -181,4 +183,47 @@ func (f flaky) Write(b []byte) (int, error) {
 		return 0, errors.New("flaky: broken")
 	}
 	return f.Conn.Write(b)
+}
+
+// A sync copies whole SCAN pages — strings and sorted sets with their TTLs —
+// and an overwrite rebuilds a sorted set exactly.
+func TestSyncCopiesPages(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot be synced to itself")
+	}
+	primary, err := storage.NewStore(resptest.Addr(t), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	replicaAddr := resptest.Addr(t)
+	replica, err := storage.NewStore(replicaAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	for i := range 450 { // more than two SCAN pages
+		if err := primary.Set(fmt.Sprintf("page:%d", i), []byte("v"), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := primary.Mutate(resp.NewCommand("ZADD", "page:z", "1", "a", "2", "b"), resp.NewCommand("EXPIRE", "page:z", "60")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replica.Mutate(resp.NewCommand("ZADD", "page:z", "9", "stale"), resp.NewCommand("EXPIRE", "page:z", "60")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := primary.Sync(replicaAddr, true)
+	if err != nil || n != 451 {
+		t.Fatalf("Sync copied %d keys, %v; want 451", n, err)
+	}
+	if got, _ := replica.Exists("page:0", "page:449"); got != 2 {
+		t.Fatalf("replica has %d of the page keys", got)
+	}
+	if ttl, _ := replica.TTL("page:449"); ttl <= 0 || ttl > 60 {
+		t.Fatalf("copied key lost its TTL: %d", ttl)
+	}
+	if v, _ := replica.Query("ZRANGEBYSCORE", "page:z", "-inf", "+inf"); fmt.Sprint(v) != "[[97] [98]]" { // a, b — stale is gone
+		t.Fatalf("sorted set after an overwrite sync: %v", v)
+	}
 }

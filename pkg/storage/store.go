@@ -501,19 +501,17 @@ func (s *Store) repair(p *pool) (int, error) {
 		p.mu.Lock()
 		keys := slices.Collect(maps.Keys(p.missed))
 		p.mu.Unlock()
-		for batch := range slices.Chunk(keys, 100) {
-			var cmds []resp.Command
-			for _, k := range batch {
-				c, err := s.replayCommands(k)
-				if err != nil {
-					return n, err
-				}
-				cmds = append(cmds, c...)
+		for batch := range slices.Chunk(keys, 200) {
+			cmds, _, err := s.copyCommands(batch, true, true)
+			if err != nil {
+				return n, err
 			}
-			if _, err := p.doAll(cmds); err != nil {
-				var se *resp.ServerError
-				if !errors.As(err, &se) {
-					return n, err
+			if len(cmds) > 0 {
+				if _, err := p.doAll(cmds); err != nil {
+					var se *resp.ServerError
+					if !errors.As(err, &se) {
+						return n, err
+					}
 				}
 			}
 			n += len(batch)
@@ -523,27 +521,6 @@ func (s *Store) repair(p *pool) (int, error) {
 		}
 	}
 	return n, nil
-}
-
-// replayCommands recreates key on a replica exactly as it is here: the
-// current value with its TTL, a sorted set rebuilt from scratch so members
-// removed here go there too, or a DEL for a key that is gone.
-func (s *Store) replayCommands(key string) ([]resp.Command, error) {
-	cmds, err := s.copyCommands(key, true)
-	if err != nil {
-		return nil, err
-	}
-	if cmds == nil {
-		n, err := s.Exists(key)
-		if err != nil || n > 0 { // still here without an expiry: not ours to touch
-			return nil, err
-		}
-		return []resp.Command{resp.NewCommand("DEL", key)}, nil
-	}
-	if len(cmds) == 2 { // ZADD then EXPIRE
-		cmds = append([]resp.Command{resp.NewCommand("DEL", key)}, cmds...)
-	}
-	return cmds, nil
 }
 
 // AddReplica starts fanning writes out to addr. Adding an address twice is a no-op.
@@ -573,7 +550,8 @@ func (s *Store) AddReplica(addr string) error {
 // nothing. With overwrite the primary's copy wins (the peer was down, so ours
 // is the newer one); without it only keys the peer lacks are filled, so a
 // node that just started never clobbers what the survivors hold. Best
-// effort, one key at a time: the count copied and the first error.
+// effort, a SCAN page at a time — three pipelined round trips per page, not
+// per key — returning the keys copied and the first error.
 func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 	s.mu.RLock()
 	via := s.via
@@ -595,24 +573,22 @@ func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 			return n, fmt.Errorf("unexpected SCAN reply %T", v)
 		}
 		next, _ := page[0].([]byte)
-		keys, _ := page[1].([]any)
-		for _, k := range keys {
+		raw, _ := page[1].([]any)
+		keys := make([]string, 0, len(raw))
+		for _, k := range raw {
 			key, _ := k.([]byte)
-			cmds, err := s.copyCommands(string(key), overwrite)
-			if err != nil {
-				if first == nil {
-					first = err
-				}
-				continue
-			}
-			if cmds == nil {
-				continue
-			}
+			keys = append(keys, string(key))
+		}
+		cmds, copied, err := s.copyCommands(keys, overwrite, false)
+		if err != nil {
+			return n, err
+		}
+		if len(cmds) > 0 {
 			if _, err := dst.doAll(cmds); err != nil && first == nil {
 				first = err
 			}
-			n++
 		}
+		n += copied
 		cursor = string(next)
 		if cursor == "0" {
 			return n, first
@@ -620,59 +596,94 @@ func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 	}
 }
 
-// copyCommands is what recreates one key elsewhere with its remaining TTL,
-// or nil when the key is gone or of a kind tritium does not write.
-func (s *Store) copyCommands(key string, overwrite bool) ([]resp.Command, error) {
-	replies, err := s.primary.doAll([]resp.Command{resp.NewCommand("TYPE", key), resp.NewCommand("TTL", key)})
+// copyCommands is what recreates keys elsewhere with their remaining TTL,
+// read in two pipelined round trips: every key's type and TTL, then every
+// value. Keys that are gone or of a kind tritium does not write are
+// skipped — or, with replay, a gone key becomes a DEL, since a replay is
+// of writes the other side missed and one of them may have been the
+// delete. With overwrite the copy is exact: a sorted set is rebuilt from
+// scratch so members removed here go there too. Returns the commands and
+// how many keys they cover.
+func (s *Store) copyCommands(keys []string, overwrite, replay bool) ([]resp.Command, int, error) {
+	if len(keys) == 0 {
+		return nil, 0, nil
+	}
+	probe := make([]resp.Command, 0, 2*len(keys))
+	for _, k := range keys {
+		probe = append(probe, resp.NewCommand("TYPE", k), resp.NewCommand("TTL", k))
+	}
+	replies, err := s.primary.doAll(probe)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	typ, _ := replies[0].(string)
-	ttl, _ := replies[1].(int64)
-	if ttl <= 0 { // gone, or a key without an expiry: not ours
-		return nil, nil
+	type want struct {
+		key, typ string
+		ttl      int64
 	}
-	exp := strconv.FormatInt(ttl, 10)
-	switch typ {
-	case "string":
-		v, err := s.primary.do(resp.NewCommand("GET", key))
-		if err != nil {
-			return nil, err
+	var wants []want
+	var reads []resp.Command
+	var out []resp.Command
+	for i, k := range keys {
+		typ, _ := replies[2*i].(string)
+		ttl, _ := replies[2*i+1].(int64)
+		switch {
+		case typ == "none" && replay:
+			out = append(out, resp.NewCommand("DEL", k))
+		case ttl <= 0: // gone, or a key without an expiry: not ours
+		case typ == "string":
+			wants = append(wants, want{k, typ, ttl})
+			reads = append(reads, resp.NewCommand("GET", k))
+		case typ == "zset":
+			wants = append(wants, want{k, typ, ttl})
+			reads = append(reads, resp.NewCommand("ZRANGEBYSCORE", k, "-inf", "+inf", "WITHSCORES"))
 		}
-		val, ok := v.([]byte)
-		if !ok {
-			return nil, nil
-		}
-		args := []string{"SET", key, string(val), "EX", exp}
-		if !overwrite {
-			args = append(args, "NX")
-		}
-		return []resp.Command{resp.NewCommand(args...)}, nil
-	case "zset":
-		v, err := s.primary.do(resp.NewCommand("ZRANGEBYSCORE", key, "-inf", "+inf", "WITHSCORES"))
-		if err != nil {
-			return nil, err
-		}
-		pairs, _ := v.([]any)
-		if len(pairs) < 2 {
-			return nil, nil
-		}
-		args := []string{"ZADD", key}
-		if !overwrite {
-			args = append(args, "NX")
-		}
-		for i := 0; i+1 < len(pairs); i += 2 {
-			member, _ := pairs[i].([]byte)
-			score, _ := pairs[i+1].([]byte)
-			args = append(args, string(score), string(member))
-		}
-		expire := []string{"EXPIRE", key, exp}
-		if !overwrite {
-			expire = append(expire, "GT")
-		}
-		return []resp.Command{resp.NewCommand(args...), resp.NewCommand(expire...)}, nil
 	}
-	return nil, nil
+	copied := len(out)
+	if len(reads) == 0 {
+		return out, copied, nil
+	}
+	values, err := s.primary.doAll(reads)
+	if err != nil {
+		return nil, 0, err
+	}
+	for i, w := range wants {
+		exp := strconv.FormatInt(w.ttl, 10)
+		switch w.typ {
+		case "string":
+			val, ok := values[i].([]byte)
+			if !ok {
+				continue // expired between the two reads
+			}
+			args := []string{"SET", w.key, string(val), "EX", exp}
+			if !overwrite {
+				args = append(args, "NX")
+			}
+			out = append(out, resp.NewCommand(args...))
+		case "zset":
+			pairs, _ := values[i].([]any)
+			if len(pairs) < 2 {
+				continue
+			}
+			args := []string{"ZADD", w.key}
+			if !overwrite {
+				args = append(args, "NX")
+			}
+			for j := 0; j+1 < len(pairs); j += 2 {
+				member, _ := pairs[j].([]byte)
+				score, _ := pairs[j+1].([]byte)
+				args = append(args, string(score), string(member))
+			}
+			expire := []string{"EXPIRE", w.key, exp}
+			if overwrite {
+				out = append(out, resp.NewCommand("DEL", w.key))
+			} else {
+				expire = append(expire, "GT")
+			}
+			out = append(out, resp.NewCommand(args...), resp.NewCommand(expire...))
+		}
+		copied++
+	}
+	return out, copied, nil
 }
 
 // RemoveReplica stops replicating to addr and reports whether it was known.

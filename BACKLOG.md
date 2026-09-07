@@ -17,12 +17,13 @@ node does. Check an item off with the commit that closed it.
 
 ## Later
 
-- [ ] Sync pipelining: copy keys in batches of a page instead of one round trip per key
 - [ ] Writes pay the peer round trip synchronously (SET p50 4.6 ms vs GET 161 µs on the LAN fleet): consider acknowledging after the primary write and fanning out from a queue — faster, but a write would no longer be on the peer when acked; decide with the cross-network work
 - [ ] Messenger groups; multiple devices per identity
 - [ ] A cloud node, so a fleet that spans networks has a member that is always up
 
 ## Done
+
+- [x] Sync pipelining: a resync and a repair read a whole SCAN page in two pipelined round trips (types and TTLs, then values) and send it to the peer in one; `cluster: resynced` logs how long it took — 2026-09-06
 
 - [x] Held replicas: a replica the transport fails to reach is held (writes note their keys instead of waiting out the 2 s deadline) and the health tick's `Store.Repair` replays exactly what it missed — current values, rebuilt sorted sets, deletions — before releasing it; past 10k keys the repair is a full copy. Closes the gap where a freeze shorter than the 15 s detach window silently lost updates on the peer — 2026-09-06
 
