@@ -191,9 +191,13 @@ is down and dropped from replication, and for 60 s is forgotten. Every live
 peer is attached and has the other's store copied over: a peer that restarted
 since it was last seen is a fresh incarnation and stale, so the survivor's keys
 win there; a newcomer, or a peer back from a partition both sides lived
-through, keeps what it holds and only has its gaps filled. A node whose own
-clock stops for longer than 15 s (stopped, asleep, starved) knows it was the
-one away and rejoins as a fresh incarnation itself. Node-to-node traffic uses
+through, keeps what it holds and only has its gaps filled — and what it
+missed while the link was down, which the other side noted while holding it,
+is replayed on top, so a key updated on one side of a partition reaches the
+other once it heals. A key written on both sides during a partition ends up
+with whichever side's replay landed last. A node whose own clock stops for
+longer than 15 s (stopped, asleep, starved) knows it was the one away and
+rejoins as a fresh incarnation itself. Node-to-node traffic uses
 the same port and TLS settings as clients, authenticated as the `peer` user.
 
 ## Security

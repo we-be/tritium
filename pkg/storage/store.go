@@ -407,6 +407,17 @@ type Store struct {
 	queue    int       // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
 	mu       sync.RWMutex
 	replicas []*pool
+	// parked is what a replica removed while held still missed, by address:
+	// a peer detached during a partition is re-attached when the link is
+	// back, and a first-meeting sync only fills its gaps — the keys written
+	// meanwhile would otherwise stay stale there until they expire.
+	parked map[string]backlog
+}
+
+// backlog is what a held replica has missed.
+type backlog struct {
+	keys    map[string]struct{}
+	spilled bool
 }
 
 // NewStore connects poolSize connections to the primary at addr, failing
@@ -421,7 +432,7 @@ func NewStore(addr string, poolSize int, password string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("primary: %w", err)
 	}
-	return &Store{primary: p, size: poolSize, via: via}, nil
+	return &Store{primary: p, size: poolSize, via: via, parked: map[string]backlog{}}, nil
 }
 
 // SetReplicaTransport is how replicas added from now on are reached.
@@ -667,6 +678,10 @@ func (s *Store) AddReplica(addr string) error {
 	if s.queue > 0 {
 		p.async(s.queue)
 	}
+	if b, ok := s.parked[addr]; ok { // back from a partition: held until its backlog is replayed
+		p.held, p.missed, p.spilled = true, b.keys, b.spilled
+		delete(s.parked, addr)
+	}
 	s.replicas = append(s.replicas, p)
 	return nil
 }
@@ -820,6 +835,11 @@ func (s *Store) RemoveReplica(addr string) bool {
 	if i >= 0 {
 		p = s.replicas[i]
 		s.replicas = slices.Delete(s.replicas, i, i+1)
+		p.mu.Lock()
+		if p.held {
+			s.parked[addr] = backlog{p.missed, p.spilled}
+		}
+		p.mu.Unlock()
 	}
 	s.mu.Unlock()
 	if p == nil {
