@@ -17,11 +17,12 @@ node does. Check an item off with the commit that closed it.
 
 ## Later
 
-- [ ] Writes pay the peer round trip synchronously (SET p50 4.6 ms vs GET 161 µs on the LAN fleet): consider acknowledging after the primary write and fanning out from a queue — faster, but a write would no longer be on the peer when acked; decide with the cross-network work
 - [ ] Messenger groups; multiple devices per identity
 - [ ] A cloud node, so a fleet that spans networks has a member that is always up
 
 ## Done
+
+- [x] Asynchronous replication as a knob: `REPLICATION=async` answers once the local store has a write and feeds each peer in order from a queue (coalesced batches, one writer per peer); a peer that falls 4096 fan-outs behind is held and repaired. Default stays `sync`; the cross-network fleet decides per node — 2026-09-06
 
 - [x] Sync pipelining: a resync and a repair read a whole SCAN page in two pipelined round trips (types and TTLs, then values) and send it to the peer in one; `cluster: resynced` logs how long it took — 2026-09-06
 

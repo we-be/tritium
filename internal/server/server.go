@@ -23,6 +23,10 @@ import (
 // in tritium expires.
 const DefaultTTL = 17600
 
+// asyncDepth is how many fan-outs an asynchronously fed peer may have
+// queued before it is held and repaired instead.
+const asyncDepth = 4096
+
 // Version is reported by INFO and HELLO. Release builds stamp it with -X;
 // a `go install ...@vX.Y.Z` build takes it from the module version instead.
 var Version = "dev"
@@ -112,6 +116,9 @@ func (s *Server) Serve(ln net.Listener) error {
 		advertise = ln.Addr().String()
 	}
 	s.store.SetReplicaTransport(s.peerTransport())
+	if s.cfg.Async {
+		s.store.SetAsync(asyncDepth)
+	}
 	s.cluster = newCluster(s, advertise, s.cfg.StoreAddr, s.cfg.Seeds())
 	go s.acceptLoop()
 	return nil

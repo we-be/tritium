@@ -25,6 +25,7 @@ type Config struct {
 	StoreAddr     string // SECURE_STORE_ADDRESS: RESP server this node writes through
 	StorePassword string // SECURE_STORE_PASSWORD: AUTH for the store and every replica
 	PoolSize      int    // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
+	Async         bool   // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
 	TLSCert       string // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
 	TLSKey        string // TLS_KEY: PEM private key
 	TLSCA         string // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
@@ -101,6 +102,14 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("MAX_SERVER_CONNECTIONS: %q is not a positive integer", raw)
 	}
 	cfg.PoolSize = n
+
+	switch raw = get("REPLICATION", "sync"); strings.ToLower(raw) {
+	case "sync":
+	case "async":
+		cfg.Async = true
+	default:
+		return Config{}, fmt.Errorf("REPLICATION: %q is not sync or async", raw)
+	}
 
 	raw = get("TLS_CLIENT_AUTH", "false")
 	if cfg.TLSClientAuth, err = strconv.ParseBool(raw); err != nil {

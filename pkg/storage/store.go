@@ -74,6 +74,19 @@ type pool struct {
 	held    bool
 	missed  map[string]struct{}
 	spilled bool // more keys than missed may hold: the repair copies everything
+
+	// Under asynchronous replication writes are queued here and sent by one
+	// writer goroutine, in order, coalesced into batches; nil means every
+	// write waits for this replica's answer.
+	queue chan job
+}
+
+// job is one fan-out on an asynchronous replica's queue, or, with no
+// commands, a flush: done is closed once everything queued before it has
+// been dealt with.
+type job struct {
+	cmds []resp.Command
+	done chan struct{}
 }
 
 // missedCap bounds what a held replica remembers; past it the repair is a
@@ -143,6 +156,99 @@ func (p *pool) put(c *conn, err error) {
 	default:
 		p.slots <- c
 	}
+}
+
+// async makes this replica's writes queue up to depth fan-outs and returns
+// to the caller at once; the writer sends them in order.
+func (p *pool) async(depth int) {
+	p.queue = make(chan job, depth)
+	go p.writer()
+}
+
+// enqueue hands a fan-out to the writer. A full queue means the peer is not
+// keeping up: the replica is held and the repair catches it up.
+func (p *pool) enqueue(cmds []resp.Command) {
+	if p.isHeld() {
+		p.hold(cmds)
+		return
+	}
+	select {
+	case p.queue <- job{cmds: cmds}:
+	default:
+		p.hold(cmds)
+		slog.Warn("replica queue full, holding writes for it until a repair", "addr", p.addr)
+	}
+}
+
+// flush waits until everything queued so far has been sent or held, so a
+// repair never lands under an older queued write.
+func (p *pool) flush() {
+	done := make(chan struct{})
+	select {
+	case p.queue <- job{done: done}:
+	case <-p.done:
+		return
+	}
+	select {
+	case <-done:
+	case <-p.done:
+	}
+}
+
+// writer drains the queue, coalescing whatever is waiting into one batch.
+// A held replica's queue is noted, not sent: the repair replays it.
+func (p *pool) writer() {
+	for {
+		var j job
+		select {
+		case <-p.done:
+			return
+		case j = <-p.queue:
+		}
+		var batch []resp.Command
+		var flushes []chan struct{}
+		for {
+			batch = append(batch, j.cmds...)
+			if j.done != nil {
+				flushes = append(flushes, j.done)
+			}
+			if len(batch) >= 256 {
+				break
+			}
+			select {
+			case j = <-p.queue:
+				continue
+			default:
+			}
+			break
+		}
+		if len(batch) > 0 {
+			if p.isHeld() {
+				p.hold(batch)
+			} else {
+				p.send(batch)
+			}
+		}
+		for _, f := range flushes {
+			close(f)
+		}
+	}
+}
+
+// send runs one fan-out on the replica. A transport failure holds it; an
+// error reply is the peer refusing this write and nothing more.
+func (p *pool) send(cmds []resp.Command) {
+	_, err := p.doAll(cmds)
+	if err == nil {
+		return
+	}
+	var se *resp.ServerError
+	if errors.As(err, &se) {
+		slog.Warn("replica rejected write", "addr", p.addr, "err", err)
+		return
+	}
+	p.hold(cmds)
+	slog.Warn("replica write failed, holding writes for it until a repair", "addr", p.addr, "err", err)
 }
 
 // isHeld reports whether writes to this replica are being noted, not sent.
@@ -298,6 +404,7 @@ type Store struct {
 	primary  *pool
 	size     int
 	via      Transport // how replicas are reached; the primary's own by default
+	queue    int       // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
 	mu       sync.RWMutex
 	replicas []*pool
 }
@@ -322,6 +429,25 @@ func (s *Store) SetReplicaTransport(t Transport) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.via = t
+}
+
+// SetAsync makes writes return once the primary has them, with replicas
+// added from now on fed in order from a queue of up to depth fan-outs;
+// zero restores waiting for every replica before answering. Over a slow
+// link a write no longer pays the round trip, at the price of a moment in
+// which a peer has not seen it yet; a peer that falls depth behind is held
+// and repaired like one that stopped answering.
+func (s *Store) SetAsync(depth int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queue = depth
+}
+
+// Async reports whether replicas are fed asynchronously.
+func (s *Store) Async() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.queue > 0
 }
 
 // Apply runs one write on the primary only — what a peer's replicated
@@ -436,22 +562,16 @@ func (s *Store) replicateAll(cmds []resp.Command) {
 
 	var wg sync.WaitGroup
 	for _, r := range replicas {
+		if r.queue != nil {
+			r.enqueue(cmds)
+			continue
+		}
 		wg.Go(func() {
 			if r.isHeld() {
 				r.hold(cmds)
 				return
 			}
-			_, err := r.doAll(cmds)
-			if err == nil {
-				return
-			}
-			var se *resp.ServerError
-			if errors.As(err, &se) {
-				slog.Warn("replica rejected write", "addr", r.addr, "err", err)
-				return
-			}
-			r.hold(cmds)
-			slog.Warn("replica write failed, holding writes for it until a repair", "addr", r.addr, "err", err)
+			r.send(cmds)
 		})
 	}
 	wg.Wait()
@@ -483,6 +603,9 @@ func (s *Store) Repair() int {
 }
 
 func (s *Store) repair(p *pool) (int, error) {
+	if p.queue != nil {
+		p.flush() // whatever was queued before the hold is noted now, never sent after the replay
+	}
 	p.mu.Lock()
 	spilled := p.spilled
 	p.mu.Unlock()
@@ -540,6 +663,9 @@ func (s *Store) AddReplica(addr string) error {
 	if slices.ContainsFunc(s.replicas, func(r *pool) bool { return r.addr == addr }) {
 		p.close()
 		return nil
+	}
+	if s.queue > 0 {
+		p.async(s.queue)
 	}
 	s.replicas = append(s.replicas, p)
 	return nil

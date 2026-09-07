@@ -440,8 +440,8 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\n",
-			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held)},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()))},
 		{"store", s.srv.storeInfo()},
 	}
 
@@ -496,6 +496,13 @@ func (s *Server) storeInfo() string {
 		}
 	}
 	return sb.String()
+}
+
+func replicationMode(async bool) string {
+	if async {
+		return "async"
+	}
+	return "sync"
 }
 
 func containsFold(list []string, s string) bool {

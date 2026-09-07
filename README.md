@@ -164,6 +164,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                                    |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
+| `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer has it. `async`: answered once this node's store has it; peers are fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
 | `TLS_CLIENT_AUTH`        | `false`          | Require client certificates: mutual TLS for clients and between nodes   |
@@ -175,7 +176,12 @@ file gives each one a replica). A write goes to the node's own primary with
 `SETEX`, then fans out to every other node's primary. Reads hit the local
 primary only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
-current value, or the deletion — until it answers again.
+current value, or the deletion — until it answers again. Every write waits
+for its peers by default, so a key read from any node right after the answer
+is there; over a slow link `REPLICATION=async` answers once the local store
+has the write and feeds peers in order from a queue, and `tritium-load -peer`
+shows the lag that buys. A peer that falls too far behind is held and
+repaired like one that stopped answering.
 
 Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
 adopts the view, and announces itself to everyone in it with

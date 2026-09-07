@@ -18,8 +18,13 @@ import (
 // writing through whichever nodes are up, then lets the fleet settle and
 // checks every node holds every key with its last value. Three seconds by
 // default; TRITIUM_CHAOS_SECONDS lengthens it and TRITIUM_CHAOS_SEED replays
-// a run. `make chaos` runs a long one.
+// a run. `make chaos` runs a long one. It runs under both replication modes.
 func TestChaos(t *testing.T) {
+	t.Run("sync", func(t *testing.T) { chaos(t, false) })
+	t.Run("async", func(t *testing.T) { chaos(t, true) })
+}
+
+func chaos(t *testing.T, async bool) {
 	hurry(t)
 	dur := 3 * time.Second
 	if s := os.Getenv("TRITIUM_CHAOS_SECONDS"); s != "" {
@@ -51,7 +56,7 @@ func TestChaos(t *testing.T) {
 				seeds = append(seeds, a)
 			}
 		}
-		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: addrs[i], PoolSize: 2, JoinAddr: seeds[0] + "," + seeds[1]}
+		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: addrs[i], PoolSize: 2, JoinAddr: seeds[0] + "," + seeds[1], Async: async}
 		s, err := New(cfg)
 		if err != nil {
 			t.Fatal(err)

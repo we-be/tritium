@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/we-be/tritium/internal/resp"
 	"net"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -225,5 +226,66 @@ func TestSyncCopiesPages(t *testing.T) {
 	}
 	if v, _ := replica.Query("ZRANGEBYSCORE", "page:z", "-inf", "+inf"); fmt.Sprint(v) != "[[97] [98]]" { // a, b — stale is gone
 		t.Fatalf("sorted set after an overwrite sync: %v", v)
+	}
+}
+
+// Under asynchronous replication a write returns once the primary has it;
+// the replica gets every write in order soon after, and a replica that
+// stops answering is held and repaired like any other.
+func TestAsyncReplication(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot lag itself")
+	}
+	primary, err := storage.NewStore(resptest.Addr(t), 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	replicaAddr := resptest.Addr(t)
+	replica, err := storage.NewStore(replicaAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	var broken atomic.Bool
+	primary.SetReplicaTransport(storage.Transport{Dial: func(addr string) (net.Conn, error) {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return flaky{c, &broken}, nil
+	}, Timeout: 500 * time.Millisecond})
+	primary.SetAsync(64)
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 300 { // one key rewritten: the replica must end on the last value
+		if err := primary.Set("async:k", []byte(strconv.Itoa(i)), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if v, _ := replica.Get("async:k"); string(v) == "299" {
+			break
+		}
+		if time.Now().After(deadline) {
+			v, _ := replica.Get("async:k")
+			t.Fatalf("replica has %q after 5 s, want 299", v)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	broken.Store(true)
+	if err := primary.Set("async:held", []byte("x"), 60); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond) // the writer meets the broken link and holds the replica
+	broken.Store(false)
+	if n := primary.Repair(); n == 0 {
+		t.Fatal("nothing repaired after the link came back")
+	}
+	if v, _ := replica.Get("async:held"); string(v) != "x" {
+		t.Fatalf("held write not repaired: %q", v)
 	}
 }
