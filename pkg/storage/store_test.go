@@ -274,6 +274,7 @@ func TestAsyncReplication(t *testing.T) {
 			t.Fatalf("replica has %q after 5 s, want 299", v)
 		}
 		time.Sleep(10 * time.Millisecond)
+		primary.Repair() // a slow box fills the queue: the replica is held, and the health tick's repair is what brings it up to date
 	}
 
 	broken.Store(true)
