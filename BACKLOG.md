@@ -15,7 +15,16 @@ node does. Check an item off with the commit that closed it.
 - [ ] Chaos against the real fleet: the same actions on bazzite and the Air (reload, kill the store, drop the link), watched through `mubs fleet` — partition by SIGSTOP done 2026-09-06: found replica writes had no deadline (a frozen peer stalled writes until detach — fixed b28e3f4); store kill done: the node stayed up answering errors with nothing to heal it (fixed in the mubs wrapper); eviction-length freeze done: the thawed peer was re-learned but never re-attached, and a same-incarnation return could overwrite the survivor — fixed 90dfcb6 (ensure-attached, incarnation-based overwrite, self-stall detection). A real network cut (both sides alive) is now tested in the lab (`TestPartitionHeals`, each node behind a cuttable TCP link): found that a held peer's missed keys died with the detach, so a key updated during a partition longer than 15 s stayed stale on the other side — fixed (backlogs are parked by address and inherited on re-attach). The same cut on the real fleet needs a firewall rule or the cross-network Mac
 - [x] Monitor: the cluster view carries each node's `version`, `seeds` (what it dials) and replica counts (held ones flagged); the node's `INFO store` proxies its loopback store's version, keys, memory and uptime, and the monitor reads every store through its node (`-store-password` gone) — 2026-09-06
 
+## Visibility (agreed 2026-09-06; the OSS steward works these after Now)
+
+- [ ] Fleet event log in the plane: each node records its cluster events — attach, detach, hold, repair (keys), stall, evict, resync (keys, took) — as a capped, TTL'd sorted set in its store, replicated like any key, so `tritium-cli`, the monitor and `mubs fleet` can show what happened in the last hours across the fleet from any node
+- [ ] Richer gossip stats: NodeStats carries writes/s, keys, memory, last repair time and the store's uptime, so every consumer gets them from the view without dialing each node
+- [ ] Small answers for the agents that operate the fleet: `CLIENT LIST` (who is connected — worker, bridge, CLI), `tritium-cli where <key>` (which nodes hold it, TTL on each), `tritium-msg status` (bridge sessions, last message, latency)
+- [ ] (mubs, not here) plane health on the Discord status board — node versions, held replicas, peer state — and a page only on a sustained condition such as a peer held for more than ten minutes
+
 ## Later
+
+- [ ] Metrics export for a Grafana stack: a Prometheus text endpoint is zero-dep; OpenTelemetry means the OTel SDK (a dependency) or a hand-rolled OTLP exporter — decide when the stack exists. Until then the plane's own event log and gossip stats are the time series
 
 - [ ] Last-writer-wins for keys written on both sides of a partition: today whichever side's replay lands last wins; a per-key write stamp carried in `TRITIUM.REPLICATE` and compared by the receiving node would make it deterministic. Only matters when both networks write the same key — mubs' presence and mailboxes are per node
 - [ ] Messenger groups; multiple devices per identity
