@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -546,4 +547,25 @@ func TestStalledNodeIsOverwritten(t *testing.T) {
 	waitFor(t, "both to be attached again", func() bool {
 		return len(seed.store.Replicas()) == 1 && len(peer.store.Replicas()) == 1
 	})
+}
+
+// INFO reports the store through the node, and the cluster view carries
+// each node's version and seeds.
+func TestInfoStoreAndView(t *testing.T) {
+	seed := startNode(t, config.Config{})
+	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
+	c := dial(t, seed)
+	info, err := c.do("INFO", "store", "tritium")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"store_status:ok", "version:", "seeds:", "held_replicas:0"} {
+		if !strings.Contains(string(info.([]byte)), want) {
+			t.Fatalf("INFO lacks %q:\n%s", want, info)
+		}
+	}
+	n, ok := seed.Nodes()[peer.cluster.local.ID]
+	if !ok || n.Version == "" || !slices.Equal(n.Seeds, []string{seed.Addr()}) {
+		t.Fatalf("the seed's view of the peer: %+v", n)
+	}
 }

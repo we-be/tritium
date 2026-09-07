@@ -1,6 +1,7 @@
 package server
 
 import (
+	"cmp"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
@@ -439,8 +440,9 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\n",
-			local.ID, local.Addr, local.StoreAddr, len(s.srv.Nodes()), len(s.srv.store.Replicas()))},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held)},
+		{"store", s.srv.storeInfo()},
 	}
 
 	all := len(args) == 0
@@ -458,6 +460,42 @@ func (s *session) info(args []string) []byte {
 		sb.WriteString("# " + strings.ToUpper(sec.name[:1]) + sec.name[1:] + "\r\n" + sec.body + "\r\n")
 	}
 	return resp.AppendBulkString(nil, sb.String())
+}
+
+// storeInfo is the primary store as seen through this node — the only way
+// to see it once stores bind to loopback — as store_* fields: whether it
+// answers, and what its own INFO says about version, uptime, memory and keys.
+func (s *Server) storeInfo() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "store_addr:%s\r\n", s.cfg.StoreAddr)
+	v, err := s.store.Query("INFO", "server", "memory", "keyspace")
+	raw, _ := v.([]byte)
+	if err != nil {
+		fmt.Fprintf(&sb, "store_status:unreachable\r\nstore_error:%s\r\n", strings.ReplaceAll(err.Error(), "\n", " "))
+		return sb.String()
+	}
+	sb.WriteString("store_status:ok\r\n")
+	fields := map[string]string{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if k, val, ok := strings.Cut(strings.TrimSpace(line), ":"); ok {
+			fields[k] = val
+		}
+	}
+	if ver := cmp.Or(fields["valkey_version"], fields["redis_version"]); ver != "" {
+		fmt.Fprintf(&sb, "store_version:%s\r\n", ver)
+	}
+	for _, f := range []string{"uptime_in_seconds", "used_memory", "maxmemory", "maxmemory_policy"} {
+		if val, ok := fields[f]; ok {
+			fmt.Fprintf(&sb, "store_%s:%s\r\n", f, val)
+		}
+	}
+	if db, ok := fields["db0"]; ok { // keys=N,expires=N,avg_ttl=N
+		if _, n, ok := strings.Cut(db, "keys="); ok {
+			n, _, _ = strings.Cut(n, ",")
+			fmt.Fprintf(&sb, "store_keys:%s\r\n", n)
+		}
+	}
+	return sb.String()
 }
 
 func containsFold(list []string, s string) bool {

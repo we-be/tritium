@@ -15,6 +15,8 @@ const (
 type NodeStats struct {
 	ActiveConnections int64 `json:"active_connections"`
 	BytesTransferred  int64 `json:"bytes_transferred"`
+	Replicas          int   `json:"replicas"`      // peers this node fans writes out to
+	Held              int   `json:"held_replicas"` // of those, ones that stopped answering and await a repair
 }
 
 // NodeInfo is one node's entry in the cluster view, exchanged as JSON over
@@ -27,6 +29,8 @@ type NodeInfo struct {
 	State     NodeState `json:"state"`
 	LastSeen  time.Time `json:"last_seen"`
 	IsLeader  bool      `json:"is_leader"`
-	Started   time.Time `json:"started,omitzero"` // this incarnation's start: a peer that restarted has a new one
+	Started   time.Time `json:"started,omitzero"`  // this incarnation's start: a peer that restarted has a new one
+	Version   string    `json:"version,omitempty"` // the tritium build it runs, so a fleet upgrade can be watched
+	Seeds     []string  `json:"seeds,omitempty"`   // the peers it dials to join and rejoin
 	Stats     NodeStats `json:"stats"`
 }

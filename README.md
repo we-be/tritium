@@ -16,7 +16,7 @@ Three nodes, each with its own Valkey primary and replica:
 
 ```sh
 podman compose up --build        # or: docker compose up --build
-go run ./cmd/tritium-monitor     # live dashboard over 8080-8082; -config node.env takes addresses and passwords from a node's env file
+go run ./cmd/tritium-monitor     # live dashboard over 8080-8082 (each store read through its node); -config node.env takes addresses and passwords from a node's env file
 ```
 
 Same thing on bare metal, with `valkey-server` on PATH (`brew install valkey`):

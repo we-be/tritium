@@ -164,6 +164,8 @@ func (s *Server) Stats() storage.NodeStats {
 	return storage.NodeStats{
 		ActiveConnections: s.active.Load(),
 		BytesTransferred:  s.bytes.Load(),
+		Replicas:          len(s.store.Replicas()),
+		Held:              len(s.store.Held()),
 	}
 }
 

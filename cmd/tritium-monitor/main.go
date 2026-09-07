@@ -17,10 +17,9 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "", "a node's dotenv file: fills -nodes, -password, -ca and -store-password from it (explicit flags win)")
+	configPath := flag.String("config", "", "a node's dotenv file: fills -nodes, -password and -ca from it (explicit flags win)")
 	nodes := flag.String("nodes", "localhost:8080,localhost:8081,localhost:8082", "comma-separated node addresses; the first that answers is used")
 	password := flag.String("password", "", "AUTH password")
-	storePassword := flag.String("store-password", os.Getenv("TRITIUM_STORE_PASSWORD"), "password of the nodes' RESP stores, which the monitor dials directly (default $TRITIUM_STORE_PASSWORD)")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
 	ca := flag.String("ca", "", "PEM bundle to verify nodes against (implies -tls)")
 	summary := flag.Bool("summary", false, "one line per node")
@@ -43,9 +42,6 @@ func main() {
 		if !set["ca"] && loc.CA != "" {
 			*ca = loc.CA
 		}
-		if !set["store-password"] {
-			*storePassword = loc.StorePassword
-		}
 	}
 
 	opts := tritium.ClientOptions{Password: *password}
@@ -61,7 +57,6 @@ func main() {
 	defer stop()
 
 	m := monitor.New(strings.Split(*nodes, ","), opts)
-	m.StorePassword = *storePassword
 	ticker := time.NewTicker(*interval)
 	defer ticker.Stop()
 	for {

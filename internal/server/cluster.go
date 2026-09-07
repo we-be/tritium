@@ -56,6 +56,8 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		LastSeen:  time.Now(),
 		IsLeader:  len(seeds) == 0,
 		Started:   time.Now(),
+		Version:   Version,
+		Seeds:     seeds,
 	}
 	c := &cluster{
 		server: s,

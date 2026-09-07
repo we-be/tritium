@@ -3,6 +3,8 @@ package monitor
 import (
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/we-be/tritium/pkg/storage"
@@ -42,11 +44,11 @@ func renderSummary(w io.Writer, snap Snapshot, now time.Time) {
 	for _, n := range snap.Nodes {
 		color, symbol := stateStyle(n.State)
 		storeColor, storeSymbol := BrightGreen, "✓"
-		if !storeHealthy(snap.Stores[n.StoreAddr]) {
+		if !snap.Stores[n.ID].Healthy() {
 			storeColor, storeSymbol = BrightYellow, "!"
 		}
-		fmt.Fprintf(w, "  %s%s%s Node %s [%s%s%s Store] %s\n",
-			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, role(n))
+		fmt.Fprintf(w, "  %s%s%s Node %s [%s%s%s Store] %s%s%s %s\n",
+			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, Dim, n.Version, Reset, replicas(n))
 	}
 	fmt.Fprintln(w, rule)
 }
@@ -56,37 +58,49 @@ func renderDetailed(w io.Writer, snap Snapshot, now time.Time) {
 	for _, n := range snap.Nodes {
 		color, symbol := stateStyle(n.State)
 		fmt.Fprintf(w, "\n%s%s%s Node %s%s\n%s\n", Bold, color, symbol, n.ID, Reset, rule)
-		field(w, "Role", BrightCyan, role(n))
 		field(w, "Address", BrightYellow, n.Addr)
-		field(w, "Store", BrightYellow, n.StoreAddr)
+		field(w, "Version", BrightCyan, n.Version)
+		field(w, "Seeds", BrightCyan, seeds(n))
+		field(w, "Replicas", BrightMagenta, replicas(n))
 		field(w, "Connections", BrightMagenta, fmt.Sprint(n.Stats.ActiveConnections))
 		field(w, "Transferred", BrightGreen, bytesString(n.Stats.BytesTransferred))
 		field(w, "Last Seen", BrightBlue, ago(now.Sub(n.LastSeen)))
-		if s, ok := snap.Stores[n.StoreAddr]; ok {
-			fmt.Fprintln(w, rule)
-			renderStore(w, s, "Primary")
-			for i, r := range s.Replicas {
-				renderStore(w, r, fmt.Sprintf("Replica %d", i+1))
-			}
-		}
+		fmt.Fprintln(w, rule)
+		renderStore(w, snap.Stores[n.ID])
 		fmt.Fprintln(w, rule)
 	}
 }
 
-func renderStore(w io.Writer, s Store, name string) {
-	if s.Info == nil {
-		fmt.Fprintf(w, "  %s%s✗ %s (%s) unreachable%s\n", Bold, Red, name, s.Addr, Reset)
+// renderStore is one node's store as the node reports it.
+func renderStore(w io.Writer, s Store) {
+	switch {
+	case s.Info == nil:
+		fmt.Fprintf(w, "  %s%s✗ Store (%s): node did not answer%s\n", Bold, Red, s.Addr, Reset)
+		return
+	case !s.Healthy():
+		fmt.Fprintf(w, "  %s%s✗ Store (%s): %s%s\n", Bold, Red, s.Addr, s.Info["store_error"], Reset)
 		return
 	}
-	color, symbol := BrightGreen, "✓"
-	if !s.Healthy() {
-		color, symbol = BrightRed, "✗"
+	fmt.Fprintf(w, "  %s✓%s Store (%s)\n", BrightGreen, Reset, s.Addr)
+	var parts []string
+	if v := s.Info["store_version"]; v != "" {
+		parts = append(parts, "v"+v)
 	}
-	fmt.Fprintf(w, "  %s%s%s %s (%s)\n", color, symbol, Reset, name, s.Addr)
-	if s.Role() == "master" {
-		fmt.Fprintf(w, "    %s%sRole:%s Primary, replicas: %s%s%s\n", Dim, White, Reset, BrightYellow, s.Info["connected_slaves"], Reset)
-	} else {
-		fmt.Fprintf(w, "    %s%sRole:%s Replica, link: %s%s%s\n", Dim, White, Reset, color, s.Info["master_link_status"], Reset)
+	if k := s.Info["store_keys"]; k != "" {
+		parts = append(parts, k+" keys")
+	}
+	if used, err := strconv.ParseInt(s.Info["store_used_memory"], 10, 64); err == nil {
+		mem := bytesString(used)
+		if max, err := strconv.ParseInt(s.Info["store_maxmemory"], 10, 64); err == nil && max > 0 {
+			mem += " of " + bytesString(max)
+		}
+		parts = append(parts, mem)
+	}
+	if up, err := strconv.ParseInt(s.Info["store_uptime_in_seconds"], 10, 64); err == nil {
+		parts = append(parts, "up "+strings.TrimSuffix(ago(time.Duration(up)*time.Second), " ago"))
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(w, "    %s%s%s\n", Dim, strings.Join(parts, " · "), Reset)
 	}
 }
 
@@ -105,23 +119,19 @@ func stateStyle(s storage.NodeState) (color, symbol string) {
 	}
 }
 
-func storeHealthy(s Store) bool {
-	if !s.Healthy() {
-		return false
+func seeds(n storage.NodeInfo) string {
+	if len(n.Seeds) == 0 {
+		return "none (seeded the cluster)"
 	}
-	for _, r := range s.Replicas {
-		if !r.Healthy() {
-			return false
-		}
-	}
-	return true
+	return strings.Join(n.Seeds, ", ")
 }
 
-func role(n storage.NodeInfo) string {
-	if n.IsLeader {
-		return "Seed"
+// replicas is "2" or, when some stopped answering, "2 (1 held)".
+func replicas(n storage.NodeInfo) string {
+	if n.Stats.Held > 0 {
+		return fmt.Sprintf("%d (%d held)", n.Stats.Replicas, n.Stats.Held)
 	}
-	return "Member"
+	return fmt.Sprint(n.Stats.Replicas)
 }
 
 func ago(d time.Duration) string {

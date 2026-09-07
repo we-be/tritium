@@ -1,16 +1,14 @@
 // Package monitor gathers a live picture of a tritium cluster: the node view
-// from any reachable node, plus replication state from every node's RESP
-// store and the replicas that store reports.
+// from any reachable node, plus each node's own store as that node reports
+// it — stores bind to loopback, so nothing else can reach them.
 package monitor
 
 import (
 	"errors"
-	"net"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 	"github.com/we-be/tritium/pkg/tritium"
 )
@@ -20,10 +18,6 @@ const dialTimeout = time.Second
 type Monitor struct {
 	addrs []string
 	opts  tritium.ClientOptions // Password and TLS are used; Address and Timeout are set per node
-	// StorePassword is presented to each node's RESP store, which the monitor
-	// dials directly for INFO replication; without it a password-gated store
-	// shows as unreachable.
-	StorePassword string
 }
 
 // New polls the given node addresses in order until one answers.
@@ -34,36 +28,26 @@ func New(addrs []string, opts tritium.ClientOptions) *Monitor {
 // Snapshot is one refresh of the cluster.
 type Snapshot struct {
 	Nodes  []storage.NodeInfo // sorted by address
-	Stores map[string]Store   // keyed by the node's RESP address
+	Stores map[string]Store   // keyed by node ID
 	Err    error              // set when no node answered
 }
 
-// Store is a RESP server's "INFO replication" view and, for a primary, the
-// replicas it reports.
+// Store is one node's store as its INFO reports it: the store_* fields, or
+// nil when the node itself did not answer.
 type Store struct {
-	Addr     string
-	Info     map[string]string // nil when unreachable
-	Replicas []Store
+	Addr string
+	Info map[string]string
 }
 
-func (s Store) Role() string { return s.Info["role"] }
-
-// Healthy is true for a reachable primary, or a replica whose link is up.
-func (s Store) Healthy() bool {
-	if s.Info == nil {
-		return false
-	}
-	return s.Role() != "slave" || s.Info["master_link_status"] == "up"
-}
+// Healthy is true when the node answered and its store did too.
+func (s Store) Healthy() bool { return s.Info != nil && s.Info["store_status"] == "ok" }
 
 func (m *Monitor) Snapshot() Snapshot {
 	nodes, err := m.nodes()
 	snap := Snapshot{Err: err, Stores: map[string]Store{}}
 	for _, n := range nodes {
 		snap.Nodes = append(snap.Nodes, n)
-		if _, seen := snap.Stores[n.StoreAddr]; !seen {
-			snap.Stores[n.StoreAddr] = inspectStore(n.StoreAddr, m.StorePassword)
-		}
+		snap.Stores[n.ID] = Store{Addr: n.StoreAddr, Info: m.info(n.Addr)}
 	}
 	slices.SortFunc(snap.Nodes, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 	return snap
@@ -71,9 +55,7 @@ func (m *Monitor) Snapshot() Snapshot {
 
 func (m *Monitor) nodes() (map[string]storage.NodeInfo, error) {
 	for _, addr := range m.addrs {
-		opts := m.opts
-		opts.Address, opts.Timeout = addr, dialTimeout
-		c, err := tritium.NewClient(&opts)
+		c, err := m.dial(addr)
 		if err != nil {
 			continue
 		}
@@ -86,29 +68,20 @@ func (m *Monitor) nodes() (map[string]storage.NodeInfo, error) {
 	return nil, errors.New("no node answered")
 }
 
-func inspectStore(addr, password string) Store {
-	s := Store{Addr: addr, Info: replicationInfo(addr, password)}
-	for _, r := range replicaAddrs(s.Info) {
-		s.Replicas = append(s.Replicas, Store{Addr: r, Info: replicationInfo(r, password)})
-	}
-	return s
+func (m *Monitor) dial(addr string) (*tritium.Client, error) {
+	opts := m.opts
+	opts.Address, opts.Timeout = addr, dialTimeout
+	return tritium.NewClient(&opts)
 }
 
-// replicationInfo parses "INFO replication" into its key:value fields.
-func replicationInfo(addr, password string) map[string]string {
-	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
+// info asks one node for its store section and parses the key:value lines.
+func (m *Monitor) info(addr string) map[string]string {
+	c, err := m.dial(addr)
 	if err != nil {
 		return nil
 	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(dialTimeout))
-	r := resp.NewReader(conn)
-	if password != "" {
-		if _, err := resp.NewCommand("AUTH", password).Do(conn, r); err != nil {
-			return nil
-		}
-	}
-	v, err := resp.NewCommand("INFO", "replication").Do(conn, r)
+	defer c.Close()
+	v, err := c.Do("INFO", "store")
 	if err != nil {
 		return nil
 	}
@@ -120,30 +93,4 @@ func replicationInfo(addr, password string) map[string]string {
 		}
 	}
 	return info
-}
-
-// replicaAddrs reads a primary's "slaveN:ip=...,port=...,state=..." fields.
-func replicaAddrs(info map[string]string) []string {
-	var addrs []string
-	for k, v := range info {
-		if !strings.HasPrefix(k, "slave") {
-			continue
-		}
-		var ip, port string
-		for field := range strings.SplitSeq(v, ",") {
-			if name, val, ok := strings.Cut(field, "="); ok {
-				switch name {
-				case "ip":
-					ip = val
-				case "port":
-					port = val
-				}
-			}
-		}
-		if ip != "" && port != "" {
-			addrs = append(addrs, net.JoinHostPort(ip, port))
-		}
-	}
-	slices.Sort(addrs)
-	return addrs
 }

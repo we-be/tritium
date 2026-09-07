@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -134,10 +135,14 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 	}, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ADDRESS\tSTORE\tSTATE\tSEED\tCONNS\tLAST SEEN")
+	fmt.Fprintln(w, "ADDRESS\tSTATE\tVERSION\tSEEDS\tREPLICAS\tCONNS\tLAST SEEN")
 	for _, n := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%d\t%s\n",
-			n.Addr, n.StoreAddr, n.State, n.IsLeader, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
+		replicas := strconv.Itoa(n.Stats.Replicas)
+		if n.Stats.Held > 0 {
+			replicas += fmt.Sprintf(" (%d held)", n.Stats.Held)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			n.Addr, n.State, n.Version, strings.Join(n.Seeds, ","), replicas, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
 	}
 	w.Flush()
 }

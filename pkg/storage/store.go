@@ -703,6 +703,19 @@ func (s *Store) Replicas() []string {
 	return out
 }
 
+// Held lists the replicas that stopped answering and are awaiting a repair.
+func (s *Store) Held() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for _, r := range s.replicas {
+		if r.isHeld() {
+			out = append(out, r.addr)
+		}
+	}
+	return out
+}
+
 func (s *Store) hasReplica(addr string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
