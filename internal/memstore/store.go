@@ -279,11 +279,18 @@ func (s *Store) exec(b []byte, args []string) []byte {
 			return resp.AppendInt(b, 0)
 		}
 		members := sorted(e)
-		start, stop = rank(start, len(members)), rank(stop, len(members))
-		if start > stop || start >= len(members) {
+		n := len(members)
+		if start < 0 {
+			start += n
+		}
+		if stop < 0 {
+			stop += n
+		}
+		start = max(start, 0) // a stop still negative means the range is empty, as on a real server
+		if start > stop || start >= n {
 			return resp.AppendInt(b, 0)
 		}
-		stop = min(stop, len(members)-1)
+		stop = min(stop, n-1)
 		for _, m := range members[start : stop+1] {
 			s.zdel(e, m)
 		}
@@ -686,14 +693,6 @@ func sortMembers(e *entry, members []string) {
 		}
 		return strings.Compare(a, b)
 	})
-}
-
-// rank resolves a ZREMRANGEBYRANK index, negative ones counting from the end.
-func rank(i, n int) int {
-	if i < 0 {
-		i += n
-	}
-	return max(i, 0)
 }
 
 func typeOf(e *entry) string {

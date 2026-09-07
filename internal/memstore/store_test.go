@@ -135,3 +135,16 @@ func TestMatch(t *testing.T) {
 		}
 	}
 }
+
+// TestZRemRangeByRank: a cap of "everything but the last N" removes nothing while under N, then the oldest.
+func TestZRemRangeByRank(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	do(t, s, "ZADD", "z", "1", "a", "2", "b", "3", "c")
+	if n := do(t, s, "ZREMRANGEBYRANK", "z", "0", "-5"); n != int64(0) {
+		t.Fatalf("removed %v under the cap", n)
+	}
+	if n := do(t, s, "ZREMRANGEBYRANK", "z", "0", "-3"); n != int64(1) || do(t, s, "ZCARD", "z") != int64(2) {
+		t.Fatalf("removed %v, want the oldest one", n)
+	}
+}
