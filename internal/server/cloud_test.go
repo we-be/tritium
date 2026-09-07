@@ -65,7 +65,7 @@ func TestCloudPeering(t *testing.T) {
 // A user may read and write only under the prefixes its entry names, and is
 // never a peer.
 func TestUserPrefixRights(t *testing.T) {
-	t.Setenv("USER_gateway", "pw:rw:node:gateway,sig:gateway;r:board:,fleet")
+	t.Setenv("TRITIUM_USER_gateway", "pw:rw:node:gateway,sig:gateway;r:board:,fleet")
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)

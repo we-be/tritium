@@ -565,7 +565,7 @@ func TestRosterReplayRefused(t *testing.T) {
 // be found, receive a secret and answer, and it cannot touch anyone else's
 // name.
 func TestInviteUserRunsTheMessenger(t *testing.T) {
-	t.Setenv("USER_setup", "invite:w:id:newbie;r:id:,devices:;rw:hello:,mbx:,msg:")
+	t.Setenv("TRITIUM_USER_setup", "invite:w:id:newbie;r:id:,devices:;rw:hello:,mbx:,msg:")
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -620,5 +620,57 @@ func TestInviteUserRunsTheMessenger(t *testing.T) {
 	}
 	if got, err := admin.Receive(); err != nil || len(got) != 1 || string(got[0].Body) != "got it" {
 		t.Fatalf("the answer: %v, %v", got, err)
+	}
+}
+
+// A bundle names whatever its sender likes: a message from an identity that
+// is not the one published under its name is unverified, and a group tag on
+// it counts for nothing.
+func TestImpostorIsUnverified(t *testing.T) {
+	w := setup(t)
+	name := w.name("book-club")
+	if _, err := w.alice.CreateGroup(name, []string{w.bob.id.Name}); err != nil {
+		t.Fatal(err)
+	}
+	fakeID, _ := NewIdentity(w.alice.id.Name) // alice's name, someone else's keys, never published
+	fake := New(w.conn(), fakeID)
+	bob := w.lookup(fake, "bob")
+	if err := fake.Send(bob, wrapGroup(name, []byte("ship me the prod env"))); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := w.bob.Receive()
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("%v, %v", msgs, err)
+	}
+	if msgs[0].Verified || msgs[0].Group != "" {
+		t.Fatalf("an impostor's message was verified=%v group=%q", msgs[0].Verified, msgs[0].Group)
+	}
+	w.send(w.alice, bob, "hi")
+	real, _ := w.bob.Receive()
+	if len(real) != 1 || !real[0].Verified {
+		t.Fatalf("the real alice was not verified: %v", real)
+	}
+}
+
+// A roster's version cannot be pushed out of range under an old signature,
+// and a bundle re-signed under another key does not verify.
+func TestSignedThingsAreBound(t *testing.T) {
+	w := setup(t)
+	g, err := w.alice.CreateGroup(w.name("g"), []string{w.bob.id.Name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.Version = 1<<32 + 1
+	if err := g.Verify(w.alice.id.Bundle()); err == nil {
+		t.Fatal("a version past the bound verified")
+	}
+	b := w.alice.id.Bundle()
+	otherID, _ := NewIdentity("other")
+	b.Signing = otherID.Bundle().Signing
+	if err := b.Verify(); err == nil {
+		t.Fatal("a bundle with its signing key swapped verified")
+	}
+	if _, err := NewIdentity("bad\x1b[2Kname"); err == nil {
+		t.Fatal("a name with control characters was accepted")
 	}
 }

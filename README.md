@@ -291,8 +291,10 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `JOIN_ADDRESS`           | none             | Nodes to join, comma-separated; dialed until they answer and again whenever one drops out, so nodes boot in any order. Unset seeds a new cluster |
 | `LINK_ADDRESS`           | none             | Peers that cannot dial us back: joined like `JOIN_ADDRESS`, but we open the connections and are served over them ([docs/cloud.md](docs/cloud.md)) |
 | `AUTH_PASSWORD`          | none             | Password clients must `AUTH` with                                       |
-| `USER_<name>`            | none             | `<password>:<rights>` — a client with only the key prefixes it names, e.g. `pw:rw:node:gateway,sig:;r:board:` |
+| `USER_<name>`            | none             | `<password>:<rights>` — a client that may touch only the keys it names, e.g. `pw:rw:node:gateway,sig:gateway:;r:board:`. A right ending in `:` or `/` covers everything under it; any other names one key exactly. In the process environment the entry is `TRITIUM_USER_<name>` |
 | `USERS_FILE`             | none             | A file of those entries, one per line, with the bare name on the left of the `=` |
+| `PEER_ALLOW`             | none             | The only addresses this node takes as peers, comma-separated; gossip naming any other is ignored. Set it on every node of a fleet that can be reached from the internet |
+| `ALLOW_NO_AUTH`          | `false`          | A node with no `AUTH_PASSWORD` refuses to listen anywhere but loopback unless this says it is meant |
 | `AUTH_USER`              | none             | Which of them a client next to this node (`-config`) authenticates as     |
 | `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
 | `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process |
@@ -317,10 +319,19 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
   `TRITIUM.GOSSIP` is refused to anyone not authenticated as `peer`, and under
   `TLS_CLIENT_AUTH` also to any connection without a verified certificate.
 - **Users with fewer rights.** `USER_<name>=<password>:<rights>` configures a
-  client that may only touch the key prefixes it names — `AUTH <name>
-  <password>`, `NOPERM` outside them, never a peer command, and never a command
-  whose keys the node cannot locate. It is how a credential lives somewhere the
-  node's own password should not. See [docs/cloud.md](docs/cloud.md).
+  client that may only touch the keys it names — `AUTH <name> <password>`,
+  `NOPERM` outside them, never a peer command, never the cluster view, and
+  never a command whose keys the node cannot locate; its keys live at most
+  the default TTL, so it cannot outlast everyone else's in the eviction
+  order. It is how a credential lives somewhere the node's own password
+  should not. See [docs/cloud.md](docs/cloud.md).
+- **Peers are trusted, so name them.** A peer can inject membership and
+  writes; `PEER_ALLOW` lists the addresses that may be members, and under
+  `TLS_CLIENT_AUTH` a peer must hold a certificate for the address it
+  announces. A node with no password refuses to listen off loopback.
+  Connections get five refused `AUTH`s, 10 s to authenticate, and an address
+  that keeps guessing is shut out for ten minutes; `MAX_CLIENTS` caps them.
+  The full review is [docs/security-review.md](docs/security-review.md).
 - **Encryption in transit.** Set `TLS_CERT` and `TLS_KEY`; add `TLS_CA` and
   `TLS_CLIENT_AUTH=true` for mutual TLS, which covers node-to-node traffic too.
 - **Encryption at rest, end to end.** Give the Go client a `Key` and every

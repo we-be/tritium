@@ -11,12 +11,16 @@
 // so a captured state reads nothing sent before it and, once the peer has
 // answered again, nothing after it either. The signed prekey rotates weekly
 // and retired ones are forgotten after a grace period. Mailboxes are named
-// by secrets derived from the session, so nodes cannot tell who is talking
-// to whom; first contact goes to a mailbox derived from the recipient's
-// public identity, with the sender's identity sealed so the node sees only
-// an ephemeral key; ratchet headers are encrypted, so a node cannot count
-// messages per direction either. Plaintexts are padded so message sizes
-// leak little.
+// by secrets derived from the session, so nodes cannot tell from the keys
+// who is talking to whom; first contact goes to a mailbox derived from the
+// recipient's public identity, with the sender's identity sealed so the
+// node sees only an ephemeral key; ratchet headers are encrypted, so a node
+// cannot count messages per direction either. Plaintexts are padded so
+// message sizes leak little. What a node can still see is the connection:
+// the one that published id:<name> is the one polling a set of mailboxes,
+// and the other end of each is polled by whoever published another name.
+// The graph of who talks to whom is in that pattern, if a node cares to
+// watch it; the contents are not.
 //
 // Each message is a tritium key with a TTL, indexed by send time in a
 // sorted set per mailbox. Everything expires.
@@ -51,6 +55,8 @@ const (
 
 var (
 	ErrBadBundle     = errors.New("messenger: bundle is malformed or its prekey signature is invalid")
+	ErrBadName       = errors.New("messenger: a name is printable text of at most 128 bytes")
+	ErrUnknownName   = errors.New("messenger: no identity published under that name")
 	ErrUnknownPrekey = errors.New("messenger: hello uses a prekey this identity no longer holds")
 )
 
@@ -77,6 +83,9 @@ func newPrekey(now time.Time) (prekey, error) {
 }
 
 func NewIdentity(name string) (*Identity, error) {
+	if !ValidName(name) {
+		return nil, ErrBadName
+	}
 	_, signing, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
@@ -131,24 +140,49 @@ func (id *Identity) prekeyFor(pub []byte) *ecdh.PrivateKey {
 // Bundle is the public half of an identity, signed, as published under
 // id:<name>.
 type Bundle struct {
+	V         int    `json:"v,omitempty"` // 2: the signature covers the signing key too; absent: the first form
 	Name      string `json:"name"`
 	Signing   []byte `json:"signing"`    // Ed25519 public key
 	Agreement []byte `json:"agreement"`  // X25519 public key
 	Prekey    []byte `json:"prekey"`     // X25519 public key
-	PrekeySig []byte `json:"prekey_sig"` // Ed25519 signature over the name and both public keys
+	PrekeySig []byte `json:"prekey_sig"` // Ed25519 signature over the name and every public key
 }
 
-// signed is what PrekeySig covers: every public field, so no key or name
-// can be swapped for another and still verify.
+// bundleVersion is what Bundle() signs now: form 2 puts the signing key
+// itself under the signature, so a bundle cannot be re-signed under another
+// key with the name and agreement keys kept. Form 1 bundles, published
+// before, still verify until they are republished.
+const bundleVersion = 2
+
+// signed is what PrekeySig covers.
 func (b Bundle) signed() []byte {
 	out := append([]byte(bundleLabel), b.Name...)
 	out = append(out, 0)
+	if b.V >= 2 {
+		out = append(out, b.Signing...)
+	}
 	out = append(out, b.Agreement...)
 	return append(out, b.Prekey...)
 }
 
+// ValidName reports whether a name can be published: printable, no
+// separators a key would misread, at most 128 bytes. A name is printed in
+// terminals and used in keys, so it must be plain text.
+func ValidName(name string) bool {
+	if name == "" || len(name) > 128 {
+		return false
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f || r == '\n' || r == '\r' {
+			return false
+		}
+	}
+	return true
+}
+
 func (id *Identity) Bundle() Bundle {
 	b := Bundle{
+		V:         bundleVersion,
 		Name:      id.Name,
 		Signing:   id.signing.Public().(ed25519.PublicKey),
 		Agreement: id.agreement.PublicKey().Bytes(),
@@ -163,7 +197,7 @@ func (id *Identity) Fingerprint() string { return id.Bundle().Fingerprint() }
 // Verify checks the bundle's shape and that its name and keys were signed
 // together by the identity it claims.
 func (b Bundle) Verify() error {
-	if b.Name == "" || len(b.Signing) != ed25519.PublicKeySize || len(b.Agreement) != 32 || len(b.Prekey) != 32 {
+	if !ValidName(b.Name) || len(b.Signing) != ed25519.PublicKeySize || len(b.Agreement) != 32 || len(b.Prekey) != 32 {
 		return ErrBadBundle
 	}
 	if !ed25519.Verify(ed25519.PublicKey(b.Signing), b.signed(), b.PrekeySig) {

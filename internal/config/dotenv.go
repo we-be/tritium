@@ -39,10 +39,18 @@ func ReadDotenv(path string) (map[string]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s:%d: expected KEY=value", path, n)
 		}
-		key, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		key, v = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(k), "export ")), strings.TrimSpace(v)
+		if strings.ContainsAny(key, " \t") {
+			return nil, fmt.Errorf("%s:%d: %q is not a variable name", path, n, key)
+		}
 		if len(v) > 0 && (v[0] == '"' || v[0] == '\'') {
 			if end := strings.IndexByte(v[1:], v[0]); end >= 0 {
-				vals[key] = v[1 : 1+end] // anything after the closing quote is a comment
+				// past the closing quote only a comment may follow: a password
+				// with a quote inside would otherwise load as its first few characters
+				if rest := strings.TrimSpace(v[2+end:]); rest != "" && rest[0] != '#' {
+					return nil, fmt.Errorf("%s:%d: text after the closing quote of %s", path, n, key)
+				}
+				vals[key] = v[1 : 1+end]
 			} else {
 				quote, quoted = v[0], v[1:]
 			}

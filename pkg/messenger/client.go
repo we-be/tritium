@@ -49,11 +49,12 @@ func New(t *tritium.Client, id *Identity) *Client {
 // message sent to you directly, or a group tag that didn't verify, leaves it
 // empty.
 type Message struct {
-	From  Bundle
-	Time  time.Time
-	Body  []byte
-	Group string
-	seq   uint32 // the message's number in its sender's chain: order within one millisecond
+	From     Bundle
+	Verified bool // From.Name is published under From's fingerprint; a bundle names whatever it likes, the plane says who holds the name
+	Time     time.Time
+	Body     []byte
+	Group    string
+	seq      uint32 // the message's number in its sender's chain: order within one millisecond
 }
 
 // envelope is the stored form of a message. On first contact EK is the
@@ -108,7 +109,7 @@ func (c *Client) Lookup(name string) (Bundle, error) {
 	}
 	raw, ok := v.([]byte)
 	if !ok {
-		return Bundle{}, fmt.Errorf("messenger: no identity named %q", name)
+		return Bundle{}, fmt.Errorf("%w: %q", ErrUnknownName, name)
 	}
 	var b Bundle
 	if err := json.Unmarshal(raw, &b); err != nil || b.Name != name {
@@ -360,12 +361,32 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 	}
 	s.Hello = nil // they answered; the private mailbox is live
 	s.Touched = time.Now()
+	c.checkName(s)
 	return Message{
-		From: s.Peer,
-		Time: time.UnixMilli(int64(binary.BigEndian.Uint64(pt))),
-		Body: pt[8:],
-		seq:  n,
+		From:     s.Peer,
+		Verified: s.Verified,
+		Time:     time.UnixMilli(int64(binary.BigEndian.Uint64(pt))),
+		Body:     pt[8:],
+		seq:      n,
 	}, true
+}
+
+// checkName settles, once per session, whether the peer's name is really
+// theirs: the bundle in a hello names whatever its sender likes, and only
+// id:<name> on the plane — first come, and refused to any other key — says
+// who holds it. A store that cannot answer leaves the question open for
+// the next message.
+func (c *Client) checkName(s *Session) {
+	if s.Checked {
+		return
+	}
+	pub, err := c.Lookup(s.Peer.Name)
+	switch {
+	case err == nil:
+		s.Verified, s.Checked = pub.Fingerprint() == s.Peer.Fingerprint(), true
+	case errors.Is(err, ErrUnknownName), errors.Is(err, ErrBadBundle):
+		s.Verified, s.Checked = false, true
+	}
 }
 
 // Sessions lists the peers we have sessions with.

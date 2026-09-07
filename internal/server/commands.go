@@ -154,6 +154,9 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	case "QUIT":
 		return replyOK, true
 	case "AUTH":
+		if s.srv.guesses.blocked(hostOf(s.conn.RemoteAddr().String())) {
+			return resp.AppendError(nil, "ERR too many failed attempts from this address; try again later"), true
+		}
 		if r := s.authenticate(args[1:]); r != nil {
 			return r, s.fails >= maxAuthFailures
 		}
@@ -248,10 +251,22 @@ const maxAuthFailures = 5
 
 func (s *session) refuse() []byte {
 	s.fails++
+	addr := s.conn.RemoteAddr().String()
+	slog.Info("AUTH refused", "client", addr, "failures_on_connection", s.fails)
+	if s.srv.guesses.note(hostOf(addr)) {
+		slog.Warn("shutting an address out after repeated AUTH failures", "client", addr, "for", guessLockout)
+	}
 	if s.fails >= maxAuthFailures {
-		slog.Warn("closing a connection after repeated AUTH failures", "client", s.conn.RemoteAddr().String())
+		slog.Warn("closing a connection after repeated AUTH failures", "client", addr)
 	}
 	return replyWrongPass
+}
+
+func hostOf(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
 }
 
 // isPeer reports whether the connection may change cluster membership: it
@@ -367,6 +382,7 @@ func (s *session) set(args []string) []byte {
 			return resp.AppendError(nil, "ERR syntax error")
 		}
 	}
+	ttl = s.userTTL(ttl)
 	if !nx {
 		return s.write(key, value, ttl)
 	}
@@ -404,7 +420,17 @@ func (s *session) setex(args []string) []byte {
 	if err != nil || ttl <= 0 {
 		return resp.AppendError(nil, "ERR invalid expire time in 'setex' command")
 	}
-	return s.write(args[0], args[2], ttl)
+	return s.write(args[0], args[2], s.userTTL(ttl))
+}
+
+// userTTL caps what a user with prefix rights may ask for: with eviction
+// ordered by expiry, a key living for years would outlast everyone else's
+// in the store and push theirs out first.
+func (s *session) userTTL(ttl int) int {
+	if s.user != nil && ttl > DefaultTTL {
+		return DefaultTTL
+	}
+	return ttl
 }
 
 func (s *session) write(key, value string, ttl int) []byte {
@@ -535,9 +561,11 @@ func (s *session) mutate(args []string) []byte {
 // expire handles EXPIRE key seconds [NX|XX|GT|LT]. Seconds must be
 // positive: keys are removed with DEL, not by expiring them into the past.
 func (s *session) expire(args []string) []byte {
-	if n, err := strconv.Atoi(args[1]); err != nil || n <= 0 {
+	n, err := strconv.Atoi(args[1])
+	if err != nil || n <= 0 {
 		return resp.AppendError(nil, "ERR invalid expire time in 'expire' command")
 	}
+	args[1] = strconv.Itoa(s.userTTL(n))
 	if len(args) == 3 {
 		switch strings.ToUpper(args[2]) {
 		case "NX", "XX", "GT", "LT":
@@ -589,6 +617,9 @@ func (s *session) info(args []string) []byte {
 	for _, sec := range sections {
 		if !all && !containsFold(args, sec.name) {
 			continue
+		}
+		if s.user != nil && (sec.name == "tritium" || sec.name == "store") {
+			continue // a user gets the node's health, not its address, its seeds, or its store
 		}
 		sb.WriteString("# " + strings.ToUpper(sec.name[:1]) + sec.name[1:] + "\r\n" + sec.body + "\r\n")
 	}
@@ -717,10 +748,13 @@ func (s *session) replicate(args []string) []byte {
 		if err != nil {
 			return resp.AppendError(nil, "ERR invalid stamp")
 		}
+		inner = strings.ToUpper(args[2])
+		if !replicatable[inner] {
+			return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[2]+"'")
+		}
 		if !s.srv.clock.observe(stamp) {
 			return resp.AppendError(nil, "ERR stamp too far ahead of this node's clock")
 		}
-		inner = strings.ToUpper(args[2])
 		if _, primary := s.srv.store.Stamps(); !primary {
 			args = args[2:]
 		}
@@ -743,14 +777,42 @@ func (s *session) peerlink(args []string) []byte {
 	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" || n.Addr == "" {
 		return resp.AppendError(nil, "ERR invalid node info")
 	}
+	if r := s.certNames(n.Addr); r != nil {
+		return r
+	}
 	s.linked = &n
 	return replyOK
+}
+
+// certNames refuses a peer that announces an address its certificate does
+// not name, under TLS_CLIENT_AUTH: with a stolen peer password alone, a
+// node could otherwise claim another member's address and be handed its
+// replication. Without client certificates there is nothing to check.
+func (s *session) certNames(addr string) []byte {
+	if !s.srv.cfg.TLSClientAuth {
+		return nil
+	}
+	tc, ok := s.conn.(*tls.Conn)
+	if !ok || len(tc.ConnectionState().PeerCertificates) == 0 {
+		return replyNoPerm
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return resp.AppendError(nil, "ERR invalid node address")
+	}
+	if err := tc.ConnectionState().PeerCertificates[0].VerifyHostname(host); err != nil {
+		return resp.AppendError(nil, "NOPERM the peer's certificate does not name "+host)
+	}
+	return nil
 }
 
 func (s *session) gossip(args []string) []byte {
 	var n storage.NodeInfo
 	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" {
 		return resp.AppendError(nil, "ERR invalid node info")
+	}
+	if r := s.certNames(n.Addr); r != nil {
+		return r
 	}
 	s.srv.cluster.learn(n)
 	return viewJSON(s.srv.cluster.snapshot())

@@ -25,6 +25,10 @@ import (
 // order and hand a key out exactly once no matter what is written meanwhile.
 const buckets = 4096
 
+// scanPageMax bounds one SCAN page, whatever COUNT asks: a page is built under
+// the store's lock, and KEYS is unsupported for the same reason.
+const scanPageMax = 10000
+
 // Charged per key and per sorted-set member beyond their own bytes: the
 // entry, the map slots, the expiry item, the string headers. Measured
 // against the live heap (TestHeapPerKey): a 64-byte value costs 274 bytes
@@ -631,6 +635,7 @@ func (s *Store) scan(b []byte, args []string) []byte {
 			if count, err = strconv.Atoi(args[i+1]); err != nil || count < 1 {
 				return resp.AppendError(b, "ERR value is not an integer or out of range")
 			}
+			count = min(count, scanPageMax) // a hint, not a way to ask for the whole keyspace under one lock
 		default:
 			return resp.AppendError(b, "ERR syntax error")
 		}

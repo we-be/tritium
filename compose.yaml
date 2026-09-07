@@ -52,7 +52,9 @@ services:
       SECURE_STORE_ADDRESS: store1:6379
       LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium1:8080
-    ports: ["8080:8080"]
+      AUTH_PASSWORD: ${TRITIUM_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+      PEER_PASSWORD: ${TRITIUM_PEER_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+    ports: ["127.0.0.1:8080:8080"]
     depends_on:
       store1: { condition: service_healthy }
 
@@ -63,7 +65,9 @@ services:
       LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium2:8080
       JOIN_ADDRESS: tritium1:8080
-    ports: ["8081:8080"]
+      AUTH_PASSWORD: ${TRITIUM_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+      PEER_PASSWORD: ${TRITIUM_PEER_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+    ports: ["127.0.0.1:8081:8080"]
     depends_on:
       store2: { condition: service_healthy }
       tritium1: { condition: service_started }
@@ -75,7 +79,9 @@ services:
       LISTEN_ADDRESS: ":8080"
       ADVERTISE_ADDRESS: tritium3:8080
       JOIN_ADDRESS: tritium1:8080
-    ports: ["8082:8080"]
+      AUTH_PASSWORD: ${TRITIUM_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+      PEER_PASSWORD: ${TRITIUM_PEER_PASSWORD:?put TRITIUM_PASSWORD and TRITIUM_PEER_PASSWORD in .env}
+    ports: ["127.0.0.1:8082:8080"]
     depends_on:
       store3: { condition: service_healthy }
       tritium1: { condition: service_started }

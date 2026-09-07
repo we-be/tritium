@@ -4,6 +4,7 @@
 # of a Valkey (or Redis) primary with one replica instead, the way the compose
 # file does.
 set -euo pipefail
+umask 077 # the node env files hold nothing secret here, but the habit is the point
 cd "$(dirname "$0")"
 
 mkdir -p logs

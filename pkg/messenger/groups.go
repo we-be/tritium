@@ -37,20 +37,19 @@ type Group struct {
 }
 
 func (g Group) signed() []byte {
-	out := append([]byte(groupLabel), g.Name...)
-	out = append(out, 0)
-	out = append(out, g.Creator...)
-	out = binary.BigEndian.AppendUint32(out, uint32(g.Version))
+	out := field([]byte(groupLabel), []byte(g.Name))
+	out = field(out, []byte(g.Creator))
+	out = binary.BigEndian.AppendUint64(out, uint64(g.Version))
+	out = binary.BigEndian.AppendUint32(out, uint32(len(g.Members)))
 	for _, m := range g.Members {
-		out = append(out, m...)
-		out = append(out, 0)
+		out = field(out, []byte(m))
 	}
 	return out
 }
 
 // Verify checks the roster was signed, unmodified, by creator's identity key.
 func (g Group) Verify(creator Bundle) error {
-	if g.Creator != creator.Name {
+	if g.Creator != creator.Name || !validVersion(g.Version) {
 		return ErrBadGroup
 	}
 	if !ed25519.Verify(ed25519.PublicKey(creator.Signing), g.signed(), g.Sig) {
@@ -206,8 +205,8 @@ func (c *Client) attributeGroup(m Message) Message {
 		return m
 	}
 	g, err := c.LookupGroup(name)
-	if err != nil || (m.From.Name != g.Creator && !slices.Contains(g.Members, m.From.Name)) {
-		return m // the creator counts as belonging even when not listed among Members
+	if err != nil || !m.Verified || (m.From.Name != g.Creator && !slices.Contains(g.Members, m.From.Name)) {
+		return m // the creator counts as belonging even when not listed among Members; an unverified name counts for nothing
 	}
 	m.Group, m.Body = name, body
 	return m

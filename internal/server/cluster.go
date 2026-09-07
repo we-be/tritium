@@ -252,9 +252,17 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 	}
 	var attach []attaching
 	replicating := c.server.store.Replicas()
+	allow := c.server.cfg.PeerAllow
 	c.mu.Lock()
 	for id, n := range remote {
 		if id == c.local.ID {
+			continue
+		}
+		if len(allow) > 0 && !slices.Contains(allow, n.Addr) {
+			if !c.failed["allow:"+n.Addr] { // a peer's word is not enough to add a member: PEER_ALLOW says who may be one
+				c.failed["allow:"+n.Addr] = true
+				slog.Warn("cluster: ignoring a node not in PEER_ALLOW", "node", id, "addr", n.Addr)
+			}
 			continue
 		}
 		cur, known := c.nodes[id]

@@ -77,7 +77,7 @@ func TestStampTooFarAheadIsRefused(t *testing.T) {
 
 // A user with prefix rights does not get the cluster view.
 func TestUsersHaveNoClusterView(t *testing.T) {
-	t.Setenv("USER_gateway", "pw:rw:node:gateway")
+	t.Setenv("TRITIUM_USER_gateway", "pw:rw:node:gateway")
 	cfg, err := config.Load("")
 	if err != nil {
 		t.Fatal(err)
@@ -90,3 +90,87 @@ func TestUsersHaveNoClusterView(t *testing.T) {
 }
 
 func strconvU(n uint64) string { return strconv.FormatUint(n, 10) }
+
+// A node with no password refuses to listen anywhere but loopback unless told to.
+func TestNoPasswordOffLoopbackIsRefused(t *testing.T) {
+	s, err := New(config.Config{PoolSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start("0.0.0.0:0"); err == nil {
+		t.Fatal("a passwordless node bound to every interface started")
+	}
+	s.Stop()
+	s, err = New(config.Config{PoolSize: 1, AllowNoAuth: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start("0.0.0.0:0"); err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+}
+
+// A user sees the node's health in INFO, not its address or its store.
+func TestUsersInfoIsTrimmed(t *testing.T) {
+	t.Setenv("TRITIUM_USER_gateway", "pw:rw:node:gateway")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Password = "boss"
+	s := startNode(t, cfg)
+	c := dial(t, s)
+	c.want("OK", "AUTH", "gateway", "pw")
+	info, err := c.do("INFO")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body := string(info.([]byte)); strings.Contains(body, "node_addr") || strings.Contains(body, "store_") || !strings.Contains(body, "server_name") {
+		t.Fatalf("a user's INFO: %s", body)
+	}
+}
+
+// An address that keeps guessing across connections is shut out.
+func TestGuessingAddressIsShutOut(t *testing.T) {
+	saved := guessLimit
+	guessLimit = 3
+	t.Cleanup(func() { guessLimit = saved })
+	s := startNode(t, config.Config{Password: "right"})
+	for range 3 {
+		c := dial(t, s)
+		c.wantErr("WRONGPASS", "AUTH", "wrong")
+	}
+	c := dial(t, s)
+	c.wantErr("ERR too many failed attempts", "AUTH", "right") // even the right one, until the lockout ends
+}
+
+// A user's keys live at most the default TTL, so it cannot pin its data past everyone else's.
+func TestUsersTTLIsCapped(t *testing.T) {
+	t.Setenv("TRITIUM_USER_gateway", "pw:rw:node:gateway")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Password = "boss"
+	s := startNode(t, cfg)
+	c := dial(t, s)
+	c.want("OK", "AUTH", "gateway", "pw")
+	c.want("OK", "SET", "node:gateway", "up", "EX", "99999999")
+	ttl, err := c.do("TTL", "node:gateway")
+	if err != nil || ttl.(int64) > DefaultTTL {
+		t.Fatalf("a user's key lives %v s", ttl)
+	}
+}
+
+// With PEER_ALLOW set, a node gossip names but the list does not is ignored.
+func TestPeerAllowIgnoresStrangers(t *testing.T) {
+	s := startNode(t, config.Config{PeerAllow: []string{"127.0.0.1:1"}})
+	c := dial(t, s)
+	if _, err := c.do("TRITIUM.GOSSIP", `{"id":"node-evil","addr":"10.9.9.9:8080","state":"healthy","last_seen":"2099-01-01T00:00:00Z"}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Nodes()["node-evil"]; ok {
+		t.Fatal("a node outside PEER_ALLOW joined the view")
+	}
+}

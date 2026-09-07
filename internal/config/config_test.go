@@ -42,3 +42,41 @@ func TestLoadLocal(t *testing.T) {
 		t.Fatalf("LoadLocal = %+v, %v", loc, err)
 	}
 }
+
+// A dotenv file written with shell habits loads as meant, or fails loudly.
+func TestDotenvExportAndQuotes(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	os.WriteFile(path, []byte("export AUTH_PASSWORD=secret\nPEER_PASSWORD='with space'\n"), 0o600)
+	vals, err := ReadDotenv(path)
+	if err != nil || vals["AUTH_PASSWORD"] != "secret" || vals["PEER_PASSWORD"] != "with space" {
+		t.Fatalf("%v, %v", vals, err)
+	}
+	os.WriteFile(path, []byte("AUTH_PASSWORD='don't-stop'\n"), 0o600)
+	if _, err := ReadDotenv(path); err == nil {
+		t.Fatal("a quote inside a quoted value loaded as a shorter password")
+	}
+}
+
+// USER_ in the process environment is not a credential; TRITIUM_USER_ is.
+func TestUsersComeFromTheRightPlace(t *testing.T) {
+	t.Setenv("USER_ID", "1000")
+	t.Setenv("TRITIUM_USER_svc", "pw:r:a:")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Users["ID"]; ok || cfg.Users["svc"].Password != "pw" {
+		t.Fatalf("users: %v", cfg.Users)
+	}
+}
+
+// A right names one key exactly unless it ends in a separator.
+func TestMayIsExactWithoutASeparator(t *testing.T) {
+	rights := []string{"fleet", "sig:", "node/"}
+	for key, want := range map[string]bool{"fleet": true, "fleet-master-key": false, "sig:x:1": true, "sig": false, "node/a": true, "nodex": false} {
+		if May(rights, key) != want {
+			t.Errorf("May(%q) = %v", key, !want)
+		}
+	}
+}

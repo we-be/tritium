@@ -75,6 +75,7 @@ type Server struct {
 	memstore  *memstore.Store
 	fwd       forwarder // connections to the owners of keys written here
 	clock     *clock    // stamps this node's writes
+	guesses   guesses   // refused AUTHs by client address
 	connMu    sync.Mutex
 	conns     map[net.Conn]struct{} // accepted connections still being served: Stop closes them and waits, so no handler outlives the node
 	connWG    sync.WaitGroup
@@ -125,6 +126,9 @@ func (s *Server) peerPassword() string {
 // Start listens on addr (":0" picks a free port), with TLS when configured,
 // and begins serving.
 func (s *Server) Start(addr string) error {
+	if s.cfg.Password == "" && !s.cfg.AllowNoAuth && !loopbackListener(addr) {
+		return errors.New("AUTH_PASSWORD is unset and the listener is not loopback: every connection would be a client and a peer; set a password, or ALLOW_NO_AUTH=true to mean it")
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -187,6 +191,19 @@ func (s *Server) acceptLoop() {
 			s.serveConn(c)
 		})
 	}
+}
+
+// loopbackListener reports whether addr binds this machine alone.
+func loopbackListener(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // dialPeer opens a connection to another node, over TLS when this node

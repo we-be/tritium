@@ -7,12 +7,15 @@ import (
 	"strings"
 )
 
-// UserPrefix marks a client credential in the environment or a dotenv file:
-// USER_<name>=<password>:<rights>. UsersFileVar names a file holding the
-// same entries one per line, with the bare name on the left of the "=".
+// UserPrefix marks a client credential in a dotenv file:
+// USER_<name>=<password>:<rights>. In the process environment the same entry
+// is TRITIUM_USER_<name>, since USER_ID and friends live there too.
+// UsersFileVar names a file holding the entries one per line, with the bare
+// name on the left of the "=".
 const (
-	UserPrefix   = "USER_"
-	UsersFileVar = "USERS_FILE"
+	UserPrefix    = "USER_"
+	EnvUserPrefix = "TRITIUM_USER_"
+	UsersFileVar  = "USERS_FILE"
 )
 
 // User is a client that gets less than AUTH_PASSWORD grants: it authenticates
@@ -21,9 +24,10 @@ const (
 //
 //	USER_gateway=s3cret:rw:node:gateway,sig:gateway;r:board:,fleet,node:,id:
 //
-// rights is ";"-separated clauses of <r|w|rw>:<prefix>[,<prefix>...]. A
-// prefix is matched against the whole key, so "fleet" grants that one key
-// and "sig:" everything under it. A password may not contain ":".
+// rights is ";"-separated clauses of <r|w|rw>:<key-or-prefix>[,...]. An
+// entry ending in ":" or "/" covers every key under it; any other entry
+// names one key exactly, so "fleet" grants that key alone and "sig:"
+// everything under it. A password may not contain ":".
 type User struct {
 	Name     string
 	Password string
@@ -50,7 +54,7 @@ func users(vals map[string]string, file string) (map[string]User, error) {
 	}
 	for _, kv := range os.Environ() {
 		k, v, _ := strings.Cut(kv, "=")
-		if name, ok := strings.CutPrefix(k, UserPrefix); ok {
+		if name, ok := strings.CutPrefix(k, EnvUserPrefix); ok {
 			raw[name] = v
 		}
 	}
@@ -110,10 +114,11 @@ func ParseUser(name, spec string) (User, error) {
 	return u, nil
 }
 
-// May reports whether key is under one of prefixes.
-func May(prefixes []string, key string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(key, p) {
+// May reports whether key is one of rights: named exactly, or under a right
+// that ends in ":" or "/".
+func May(rights []string, key string) bool {
+	for _, r := range rights {
+		if key == r || (strings.HasSuffix(r, ":") || strings.HasSuffix(r, "/")) && strings.HasPrefix(key, r) {
 			return true
 		}
 	}

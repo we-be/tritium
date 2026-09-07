@@ -2,6 +2,7 @@ package memstore
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -176,5 +177,18 @@ func TestStampedWritesSettle(t *testing.T) {
 	do(t, s, "STAMPED", "5", "ZADD", "z", "1", "a") // sorted sets are not stamped
 	if do(t, s, "ZCARD", "z") != int64(1) {
 		t.Fatal("a stamped sorted-set write was refused")
+	}
+}
+
+// TestScanPageIsBounded: COUNT is a hint up to a limit, never the whole keyspace.
+func TestScanPageIsBounded(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	for i := range 30000 {
+		do(t, s, "SET", "big:"+strconv.Itoa(i), "v")
+	}
+	page := do(t, s, "SCAN", "0", "COUNT", "2000000000").([]any)
+	if n := len(page[1].([]any)); n >= 30000 || string(page[0].([]byte)) == "0" {
+		t.Fatalf("one page held %d keys and cursor %s", n, page[0])
 	}
 }

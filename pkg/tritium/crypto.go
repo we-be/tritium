@@ -1,6 +1,7 @@
 package tritium
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/pbkdf2"
@@ -79,13 +80,16 @@ func (b *box) open(name string, data []byte) ([]byte, error) {
 
 // ParseKey decodes a KeySize key given as hex or base64.
 func ParseKey(s string) ([]byte, error) {
-	if k, err := hex.DecodeString(s); err == nil && len(k) == KeySize {
-		return k, nil
+	k, err := hex.DecodeString(s)
+	if err != nil || len(k) != KeySize {
+		if k, err = base64.StdEncoding.DecodeString(s); err != nil || len(k) != KeySize {
+			return nil, fmt.Errorf("tritium: key must be %d bytes as hex or base64", KeySize)
+		}
 	}
-	if k, err := base64.StdEncoding.DecodeString(s); err == nil && len(k) == KeySize {
-		return k, nil
+	if bytes.Equal(k, make([]byte, KeySize)) {
+		return nil, errors.New("tritium: the key is all zeros")
 	}
-	return nil, fmt.Errorf("tritium: key must be %d bytes as hex or base64", KeySize)
+	return k, nil
 }
 
 // KeyFromPassphrase derives a key with PBKDF2-SHA256. The salt need not be

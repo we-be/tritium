@@ -60,7 +60,9 @@ type Session struct {
 	Seen          []string           `json:"seen,omitempty"`    // inbox entries read by the last Receive, deleted by the next
 	Hello         *helloHeader       `json:"hello,omitempty"`   // our opening keys, sent until the peer answers
 	PeerEphemeral []byte             `json:"peer_ephemeral,omitempty"`
-	Touched       time.Time          `json:"touched,omitzero"` // last send or successful receive; Prune uses it
+	Touched       time.Time          `json:"touched,omitzero"`  // last send or successful receive; Prune uses it
+	Checked       bool               `json:"checked,omitempty"` // whether Verified has been settled against id:<name>
+	Verified      bool               `json:"verified,omitempty"`
 }
 
 // helloHeader is what first contact carries: the initiator's bundle, its

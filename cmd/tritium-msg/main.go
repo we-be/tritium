@@ -46,6 +46,7 @@ import (
 
 func main() {
 	home, _ := os.UserHomeDir()
+	var configTLS bool // the node the -config file describes serves TLS
 	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
 	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
@@ -60,6 +61,7 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
+		configTLS = loc.TLS
 		set := map[string]bool{}
 		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if !set["addr"] {
@@ -81,7 +83,7 @@ func main() {
 	}
 
 	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, User: *user, Password: *password}
-	if *useTLS || *ca != "" {
+	if *useTLS || *ca != "" || configTLS {
 		var err error
 		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
 			fail(err)
@@ -108,6 +110,7 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
+		os.Chmod(dir, 0o700) // restored from a tarball, a directory may have lost its mode
 		unlock, err := lockDir(dir)
 		if err != nil {
 			return err
@@ -172,7 +175,7 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(stateFile, st, 0o600)
+		return writeFile(stateFile, st)
 	}
 	publish := func() error { // rotation may have changed the identity
 		if err := client.Publish(); err != nil {
@@ -273,9 +276,13 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 				}
 				via := ""
 				if m.Group != "" {
-					via = " #" + m.Group
+					via = " #" + plain(m.Group)
 				}
-				fmt.Printf("[%s] %s (%s)%s: %s\n", m.Time.Local().Format("15:04:05"), m.From.Name, m.From.Fingerprint()[:11], via, m.Body)
+				who := plain(m.From.Name)
+				if !m.Verified {
+					who += " (unverified name)"
+				}
+				fmt.Printf("[%s] %s %s%s: %s\n", m.Time.Local().Format("15:04:05"), who, m.From.Fingerprint(), via, plain(string(m.Body)))
 			}
 			if len(msgs) > 0 {
 				continue // another batch may be waiting, and this one is deleted by the next call
@@ -293,6 +300,17 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// plain keeps a string from steering the terminal: control characters other
+// than a newline or tab are shown as '?'.
+func plain(s string) string {
+	return strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n' && r != '\t') || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // messageBody is what `send` carries: the words on the command line, a file
@@ -558,12 +576,38 @@ func serve(client *messenger.Client, id *messenger.Identity, idFile string, save
 	}
 }
 
+// writeJSON replaces path in one step: the new file is written beside it
+// at 0600, synced, and renamed over it, so a crash mid-write leaves the old
+// state rather than none, and a file that lost its mode gets it back.
 func writeJSON(path string, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writeFile(path, data)
+}
+
+func writeFile(path string, data []byte) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func readJSON(path string, v any) error {

@@ -35,6 +35,8 @@ type Config struct {
 	StoreMaxMemory int64           // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
 	PoolSize       int             // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
 	MaxClients     int             // MAX_CLIENTS: connections a node accepts at once; more are refused. 0: no limit
+	PeerAllow      []string        // PEER_ALLOW: the only addresses this node will take as peers, comma-separated; empty takes what gossip says
+	AllowNoAuth    bool            // ALLOW_NO_AUTH=true: run without AUTH_PASSWORD on a listener that is not loopback
 	Async          bool            // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
 	Ownership      bool            // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
 	TLSCert        string          // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
@@ -52,6 +54,7 @@ type Config struct {
 // it through -config so the one file serves the node and its clients.
 type Local struct {
 	Addr, User, Password, StorePassword, CA string
+	TLS                                     bool // the node serves TLS, whether or not TLS_CA names a private CA
 }
 
 func LoadLocal(path string) (Local, error) {
@@ -67,7 +70,7 @@ func LoadLocal(path string) (Local, error) {
 	if u, ok := cfg.Users[cfg.AuthUser]; ok {
 		password = u.Password
 	}
-	return Local{Addr: "127.0.0.1:" + port, User: cfg.AuthUser, Password: password, StorePassword: cfg.StorePassword, CA: cfg.TLSCA}, nil
+	return Local{Addr: "127.0.0.1:" + port, User: cfg.AuthUser, Password: password, StorePassword: cfg.StorePassword, CA: cfg.TLSCA, TLS: cfg.TLSCert != ""}, nil
 }
 
 // warnIfShared says so when a file holding passwords can be read by other
@@ -159,6 +162,7 @@ func Load(path string) (Config, error) {
 		AdvertiseAddr: get("ADVERTISE_ADDRESS", ""),
 		JoinAddr:      get("JOIN_ADDRESS", ""),
 		LinkAddr:      get("LINK_ADDRESS", ""),
+		PeerAllow:     list(get("PEER_ALLOW", "")),
 		Password:      get("AUTH_PASSWORD", ""),
 		AuthUser:      get("AUTH_USER", ""),
 		PeerPassword:  get("PEER_PASSWORD", ""),
@@ -210,6 +214,10 @@ func Load(path string) (Config, error) {
 	raw = get("TLS_CLIENT_AUTH", "false")
 	if cfg.TLSClientAuth, err = strconv.ParseBool(raw); err != nil {
 		return Config{}, fmt.Errorf("TLS_CLIENT_AUTH: %q is not a boolean", raw)
+	}
+	raw = get("ALLOW_NO_AUTH", "false")
+	if cfg.AllowNoAuth, err = strconv.ParseBool(raw); err != nil {
+		return Config{}, fmt.Errorf("ALLOW_NO_AUTH: %q is not a boolean", raw)
 	}
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
 		return Config{}, errors.New("TLS_CERT and TLS_KEY must be set together")

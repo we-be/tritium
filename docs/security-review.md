@@ -97,6 +97,53 @@ last section.
   the sealing. Names on the plane are still visible as keys: `id:<name>`
   says who exists, `mbx:<hex>` does not say who reads it.
 
+## The independent review
+
+A second reviewer read the messenger and the node's auth paths without
+seeing this document, demonstrating each finding in a scratch copy. What
+came of each:
+
+| Finding | Done |
+|---|---|
+| `export AUTH_PASSWORD=…` in a dotenv file loaded as no password at all, and a passwordless node treats every connection as a peer | `export` is stripped; a key with whitespace is an error; a node with no password refuses to listen off loopback unless `ALLOW_NO_AUTH=true` |
+| Any holder of `PEER_PASSWORD` could gossip a node of its own into the cluster and be sent every key, `PEER_PASSWORD` included | `PEER_ALLOW` names the addresses that may be members; under `TLS_CLIENT_AUTH` a peer must hold a certificate for the address it announces, in gossip and in a link |
+| A roster's version was signed as 32 bits and compared as more, so a replayed roster could be given a version nothing could beat | Rosters sign the version as 64 bits, reject one out of range, and put a length before every field, so no two fields read as one |
+| A bundle names whatever its sender likes; group membership was checked against that name | A session settles, once, whether `id:<name>` holds its peer's fingerprint; `Message.Verified` says so, the CLI marks the rest, and a group tag from an unverified name counts for nothing |
+| A bundle's own signing key was not under its signature | Bundles signed from now on (`v: 2`) cover it; earlier bundles verify until republished, which the workers do hourly |
+| A user could pin its keys past everyone else's in the eviction order with a long TTL | A user's TTL is capped at the default |
+| `INFO` handed a user the node's address and store | A user gets the health sections only |
+| `SCAN COUNT` could ask for the whole keyspace under the store's lock | A page is at most 10 000 keys |
+| Four guesses per connection, reconnecting, left no trace and no limit | Every refusal is logged; an address past twenty in ten minutes is shut out for ten |
+| A password holding a quote loaded as its first characters | An error |
+| A user could be planted by any `USER_*` variable in the environment | In the environment the entry is `TRITIUM_USER_<name>` |
+| `-config` dialled a node with a public certificate in the clear | `-config` carries whether the node serves TLS |
+| A stamp was observed before the command was judged | Judged first |
+| State files kept a mode they were restored with, and were truncated before rewritten | Written beside, synced, renamed; directory and files set to 0700/0600 |
+| A name could carry terminal control sequences | Refused at creation and at verification; the CLI prints the full fingerprint and no control characters |
+| A right was a bare prefix: `fleet` also granted `fleet-master-key` | A right ending in `:` or `/` is a prefix; any other names one key |
+| The quickstart compose file had no passwords on every interface | Passwords from `.env`, ports on loopback |
+| A key of all zeros parsed | Refused |
+
+Left as they are, with the reasons:
+
+- **Identity and session state are unencrypted on disk.** On the travelling
+  laptop this is what full-disk encryption is for; a passphrase over the
+  state files is on the backlog, and the playbook covers a loss meanwhile.
+- **The connection pattern shows who talks to whom.** The package doc now
+  says so. A node that can watch its own query stream can pair the
+  connection that published a name with the mailboxes it polls; the
+  contents stay sealed. Cover traffic would hide it and is not worth its
+  cost here.
+- **A sealed value can be rolled back by the store** to an earlier
+  ciphertext under the same key: nothing in the value says which write it
+  was. A version in the associated data would settle it; no client of the
+  sealing uses rotating secrets yet.
+- **Random 96-bit nonces** in the client-side sealing meet the birthday
+  bound around four billion seals under one key; rotate the key long
+  before. The messenger derives its nonces and is not affected.
+- **`MAX_CLIENTS` is checked a moment before the count moves**, so a burst
+  can overshoot it slightly. Bounded and harmless.
+
 ## Handing secrets to a new machine
 
 The messenger carries them end to end; the plane and its stores see
@@ -111,6 +158,10 @@ On a node the new machine can reach (the cloud node, or a LAN node):
 # in the node's env (or USERS_FILE), then reload the node
 USER_setup=<one-time-password>:w:id:travel;r:id:,devices:;rw:hello:,mbx:,msg:
 ```
+
+That grants writes to the one key `id:travel`, reads of every published
+identity and roster, and the mailboxes. It cannot touch another name, and
+it cannot see the cluster.
 
 On the new machine, with the node's address, its CA certificate (public)
 and the one-time password:

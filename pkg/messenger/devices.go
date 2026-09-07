@@ -53,13 +53,25 @@ type DeviceCert struct {
 }
 
 func (c DeviceCert) signed(name string) []byte {
-	out := append([]byte{}, name...)
-	out = append(out, 0)
-	out = append(out, c.Device...)
-	out = append(out, 0)
-	out = append(out, c.Signing...)
-	return append(out, c.Agreement...)
+	var out []byte
+	for _, f := range [][]byte{[]byte(name), []byte(c.Device), c.Signing, c.Agreement} {
+		out = field(out, f)
+	}
+	return out
 }
+
+// field appends f behind its length, so two fields can never be read as
+// one no matter what bytes they hold.
+func field(out, f []byte) []byte {
+	out = binary.BigEndian.AppendUint32(out, uint32(len(f)))
+	return append(out, f...)
+}
+
+// maxRosterVersion bounds a version so it cannot be pushed past what any
+// later, honest roster could beat.
+const maxRosterVersion = 1 << 31
+
+func validVersion(v int) bool { return v >= 0 && v < maxRosterVersion }
 
 // DeviceRoster is every device certified under one name, signed as a unit so
 // a change is atomic and Version orders successive publications.
@@ -71,17 +83,18 @@ type DeviceRoster struct {
 }
 
 func (r DeviceRoster) signed() []byte {
-	out := append([]byte(deviceRosterLabel), r.Name...)
-	out = binary.BigEndian.AppendUint32(out, uint32(r.Version))
+	out := field([]byte(deviceRosterLabel), []byte(r.Name))
+	out = binary.BigEndian.AppendUint64(out, uint64(r.Version))
+	out = binary.BigEndian.AppendUint32(out, uint32(len(r.Devices)))
 	for _, d := range r.Devices {
-		out = append(out, d.signed(r.Name)...)
+		out = field(out, d.signed(r.Name))
 	}
 	return out
 }
 
 // Verify checks the roster was signed, unmodified, by primary's identity key.
 func (r DeviceRoster) Verify(primary Bundle) error {
-	if r.Name != primary.Name {
+	if r.Name != primary.Name || !validVersion(r.Version) {
 		return ErrBadDeviceRoster
 	}
 	if !ed25519.Verify(ed25519.PublicKey(primary.Signing), r.signed(), r.Sig) {

@@ -99,13 +99,16 @@ separate item and not this one. It is in `BACKLOG.md`.
 A node may now configure clients that get strictly less than `AUTH_PASSWORD`:
 
 ```sh
-USER_gateway=<password>:rw:node:gateway,sig:gateway;r:board:,fleet,node:,id:
+USER_gateway=<password>:rw:node:gateway,sig:gateway,sig:gateway:;r:board:,fleet,node:,id:
 ```
 
 The shape is `USER_<name>=<password>:<rights>`, where rights is `;`-separated
-clauses of `<r|w|rw>:<prefix>[,<prefix>...]`. A prefix is matched against the
-whole key, so `fleet` grants that one key and `sig:` everything under it. A
-password may not contain `:`.
+clauses of `<r|w|rw>:<key-or-prefix>[,...]`. An entry ending in `:` or `/`
+covers everything under it; any other names one key exactly, so `fleet`
+grants that one key, `sig:gateway` the signal index and `sig:gateway:` the
+entries under it. In the process environment the entry is
+`TRITIUM_USER_<name>`, so `USER_ID` and its friends are never mistaken for
+one. A password may not contain `:`.
 
 The same entries can live in a file a human edits, one per line, with the bare
 name on the left of the `=`:

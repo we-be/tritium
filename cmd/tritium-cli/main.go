@@ -27,6 +27,7 @@ import (
 )
 
 func main() {
+	var configTLS bool // the node the -config file describes serves TLS
 	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
 	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
@@ -41,6 +42,7 @@ func main() {
 		if err != nil {
 			fail(err)
 		}
+		configTLS = loc.TLS
 		set := map[string]bool{}
 		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
 		if !set["addr"] {
@@ -68,7 +70,7 @@ func main() {
 			fail(err)
 		}
 	}
-	if *useTLS || *ca != "" {
+	if *useTLS || *ca != "" || configTLS {
 		var err error
 		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
 			fail(err)
