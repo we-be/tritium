@@ -61,8 +61,7 @@ type Server struct {
 	store     *storage.Store
 	listener  net.Listener
 	cluster   *cluster
-	links     *links    // connections peers that cannot be dialed opened for us
-	linkers   []*linker // the peers we open connections to instead
+	links     *links // connections peers that cannot be dialed opened for us
 	linkDone  chan struct{}
 	linkWG    sync.WaitGroup     // the link loops and what they serve; Stop waits for them
 	tlsServer *tls.Config        // nil: plaintext listener

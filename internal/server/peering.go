@@ -127,7 +127,6 @@ type linker struct {
 func (s *Server) startLinks() {
 	for _, addr := range s.cfg.Links() {
 		l := &linker{srv: s, addr: addr, done: s.linkDone, wake: make(chan struct{}, 1), conns: map[net.Conn]struct{}{}}
-		s.linkers = append(s.linkers, l)
 		s.linkWG.Go(func() { l.run() })
 	}
 }
