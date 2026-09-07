@@ -173,7 +173,9 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 Each node owns one RESP primary (replicate that however you like; the compose
 file gives each one a replica). A write goes to the node's own primary with
 `SETEX`, then fans out to every other node's primary. Reads hit the local
-primary only.
+primary only. A peer that stops answering is held: writes note the keys it
+missed instead of waiting on it, and every 5 s the node replays them — the
+current value, or the deletion — until it answers again.
 
 Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
 adopts the view, and announces itself to everyone in it with

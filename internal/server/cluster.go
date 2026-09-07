@@ -8,6 +8,7 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/we-be/tritium/internal/resp"
@@ -32,16 +33,17 @@ var (
 // Nodes talk to each other with TRITIUM.NODES and TRITIUM.GOSSIP, which
 // carry the view as JSON.
 type cluster struct {
-	server *Server
-	mu     sync.RWMutex
-	nodes  map[string]*storage.NodeInfo
-	local  *storage.NodeInfo
-	seeds  []string             // configured peers, dialed until they answer and again whenever they drop out
-	failed map[string]bool      // seeds whose last attempt failed, so a retry is logged once, not every tick
-	gone   map[string]time.Time // Started of every peer forgotten after an outage, so its restart still reads as one
-	tick   time.Time            // when the health check last ran; a long gap means this node was the one away
-	done   chan struct{}
-	wg     sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
+	server    *Server
+	mu        sync.RWMutex
+	nodes     map[string]*storage.NodeInfo
+	local     *storage.NodeInfo
+	seeds     []string             // configured peers, dialed until they answer and again whenever they drop out
+	failed    map[string]bool      // seeds whose last attempt failed, so a retry is logged once, not every tick
+	gone      map[string]time.Time // Started of every peer forgotten after an outage, so its restart still reads as one
+	tick      time.Time            // when the health check last ran; a long gap means this node was the one away
+	done      chan struct{}
+	wg        sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
+	repairing atomic.Bool
 }
 
 func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
@@ -86,6 +88,12 @@ func (c *cluster) loop() {
 		case <-health.C:
 			c.checkHealth()
 			c.touchLocal()
+			if c.repairing.CompareAndSwap(false, true) { // a held replica's replay may take a while; never two at once
+				c.wg.Go(func() {
+					defer c.repairing.Store(false)
+					c.server.store.Repair()
+				})
+			}
 		}
 	}
 }

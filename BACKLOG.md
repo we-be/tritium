@@ -17,12 +17,13 @@ node does. Check an item off with the commit that closed it.
 
 ## Later
 
-- [ ] Circuit-break a replica: after a batch times out, skip that peer's fan-out until gossip hears from it again — a frozen peer still costs every write its 2 s deadline for up to 15 s before the health check detaches it
 - [ ] Sync pipelining: copy keys in batches of a page instead of one round trip per key
 - [ ] Writes pay the peer round trip synchronously (SET p50 4.6 ms vs GET 161 µs on the LAN fleet): consider acknowledging after the primary write and fanning out from a queue — faster, but a write would no longer be on the peer when acked; decide with the cross-network work
 - [ ] Messenger groups; multiple devices per identity
 - [ ] A cloud node, so a fleet that spans networks has a member that is always up
 
 ## Done
+
+- [x] Held replicas: a replica the transport fails to reach is held (writes note their keys instead of waiting out the 2 s deadline) and the health tick's `Store.Repair` replays exactly what it missed — current values, rebuilt sorted sets, deletions — before releasing it; past 10k keys the repair is a full copy. Closes the gap where a freeze shorter than the 15 s detach window silently lost updates on the peer — 2026-09-06
 
 - 2026-09-06 v0.7.0: replication via the peer's node, retry across dead pooled connections · v0.6.0: resync on attach, 32-bit ARM · v0.5.0: encrypted ratchet headers · v0.4.0: Double Ratchet, sealed hello · v0.3.x: ask/serve, -config, OptionsFromEnv · v0.2.x: seed re-join, release binaries, -store-password · v0.1.0: RESP front end, encryption, TLS, peer credentials

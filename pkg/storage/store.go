@@ -1,12 +1,15 @@
 package storage
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,7 +65,20 @@ type pool struct {
 	slots chan *conn
 	done  chan struct{}
 	once  sync.Once
+
+	// A replica that failed a write is held: writes to it are noted by key
+	// and not attempted until a repair replays them. Otherwise every write
+	// waits out the deadline on a peer that is frozen or gone, and what it
+	// missed before the cluster noticed is never sent again.
+	mu      sync.Mutex
+	held    bool
+	missed  map[string]struct{}
+	spilled bool // more keys than missed may hold: the repair copies everything
 }
+
+// missedCap bounds what a held replica remembers; past it the repair is a
+// full copy instead of a replay.
+const missedCap = 10000
 
 var errPoolClosed = errors.New("connection pool closed")
 
@@ -127,6 +143,61 @@ func (p *pool) put(c *conn, err error) {
 	default:
 		p.slots <- c
 	}
+}
+
+// isHeld reports whether writes to this replica are being noted, not sent.
+func (p *pool) isHeld() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.held
+}
+
+// hold stops sending to this replica and notes the keys of cmds as missed.
+func (p *pool) hold(cmds []resp.Command) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.held = true
+	if p.spilled {
+		return
+	}
+	if p.missed == nil {
+		p.missed = map[string]struct{}{}
+	}
+	for _, c := range cmds {
+		for _, k := range keysOf(c) {
+			p.missed[k] = struct{}{}
+		}
+	}
+	if len(p.missed) > missedCap {
+		p.missed, p.spilled = nil, true
+	}
+}
+
+// forget drops keys from the missed set and releases the replica once
+// nothing is missing.
+func (p *pool) forget(keys []string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, k := range keys {
+		delete(p.missed, k)
+	}
+	if len(p.missed) == 0 && !p.spilled {
+		p.held, p.missed = false, nil
+		return true
+	}
+	return false
+}
+
+// keysOf names the keys a replicated write touches.
+func keysOf(cmd resp.Command) []string {
+	args, err := resp.NewReader(bytes.NewReader(cmd)).ReadCommand()
+	if err != nil || len(args) < 2 {
+		return nil
+	}
+	if strings.EqualFold(args[0], "DEL") {
+		return args[1:]
+	}
+	return args[1:2]
 }
 
 func (p *pool) close() {
@@ -354,7 +425,10 @@ func (s *Store) replicate(cmd resp.Command) {
 }
 
 // replicateAll runs cmds on every replica concurrently. Failures are logged,
-// not returned: the primary write already succeeded.
+// not returned: the primary write already succeeded. A replica the transport
+// fails to reach is held from then on — its keys are noted for Repair, and
+// no write waits on it — while one that answers with an error is merely
+// refusing this write.
 func (s *Store) replicateAll(cmds []resp.Command) {
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
@@ -363,12 +437,113 @@ func (s *Store) replicateAll(cmds []resp.Command) {
 	var wg sync.WaitGroup
 	for _, r := range replicas {
 		wg.Go(func() {
-			if _, err := r.doAll(cmds); err != nil {
-				slog.Warn("replica write failed", "addr", r.addr, "err", err)
+			if r.isHeld() {
+				r.hold(cmds)
+				return
 			}
+			_, err := r.doAll(cmds)
+			if err == nil {
+				return
+			}
+			var se *resp.ServerError
+			if errors.As(err, &se) {
+				slog.Warn("replica rejected write", "addr", r.addr, "err", err)
+				return
+			}
+			r.hold(cmds)
+			slog.Warn("replica write failed, holding writes for it until a repair", "addr", r.addr, "err", err)
 		})
 	}
 	wg.Wait()
+}
+
+// Repair replays, on every replica held after a failed write, the keys it
+// missed meanwhile — our current copy of each, or its deletion — and
+// releases it once nothing is missing. Meant for a periodic tick: a replica
+// that still does not answer stays held for the next one. Returns the keys
+// replayed.
+func (s *Store) Repair() int {
+	s.mu.RLock()
+	replicas := slices.Clone(s.replicas)
+	s.mu.RUnlock()
+	total := 0
+	for _, r := range replicas {
+		if !r.isHeld() {
+			continue
+		}
+		n, err := s.repair(r)
+		total += n
+		if err != nil {
+			slog.Debug("replica repair failed, still held", "addr", r.addr, "keys", n, "err", err)
+			continue
+		}
+		slog.Info("replica repaired", "addr", r.addr, "keys", n)
+	}
+	return total
+}
+
+func (s *Store) repair(p *pool) (int, error) {
+	p.mu.Lock()
+	spilled := p.spilled
+	p.mu.Unlock()
+	if spilled {
+		n, err := s.Sync(p.addr, true)
+		if err != nil {
+			return n, err
+		}
+		p.mu.Lock()
+		p.held, p.missed, p.spilled = false, nil, false
+		p.mu.Unlock()
+		return n, nil
+	}
+	n := 0
+	for range 5 { // writes noted during a round are replayed by the next; a few rounds, then the next tick
+		p.mu.Lock()
+		keys := slices.Collect(maps.Keys(p.missed))
+		p.mu.Unlock()
+		for batch := range slices.Chunk(keys, 100) {
+			var cmds []resp.Command
+			for _, k := range batch {
+				c, err := s.replayCommands(k)
+				if err != nil {
+					return n, err
+				}
+				cmds = append(cmds, c...)
+			}
+			if _, err := p.doAll(cmds); err != nil {
+				var se *resp.ServerError
+				if !errors.As(err, &se) {
+					return n, err
+				}
+			}
+			n += len(batch)
+		}
+		if p.forget(keys) {
+			return n, nil
+		}
+	}
+	return n, nil
+}
+
+// replayCommands recreates key on a replica exactly as it is here: the
+// current value with its TTL, a sorted set rebuilt from scratch so members
+// removed here go there too, or a DEL for a key that is gone.
+func (s *Store) replayCommands(key string) ([]resp.Command, error) {
+	cmds, err := s.copyCommands(key, true)
+	if err != nil {
+		return nil, err
+	}
+	if cmds == nil {
+		n, err := s.Exists(key)
+		if err != nil || n > 0 { // still here without an expiry: not ours to touch
+			return nil, err
+		}
+		return []resp.Command{resp.NewCommand("DEL", key)}, nil
+	}
+	if len(cmds) == 2 { // ZADD then EXPIRE
+		cmds = append([]resp.Command{resp.NewCommand("DEL", key)}, cmds...)
+	}
+	return cmds, nil
 }
 
 // AddReplica starts fanning writes out to addr. Adding an address twice is a no-op.

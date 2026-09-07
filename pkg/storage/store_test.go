@@ -2,7 +2,10 @@ package storage_test
 
 import (
 	"errors"
+	"net"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
@@ -86,4 +89,96 @@ func TestStoreReplicates(t *testing.T) {
 func sameServer(t *testing.T) bool {
 	t.Helper()
 	return resptest.Addr(t) == resptest.Addr(t)
+}
+
+// A replica the transport cannot reach is held — later writes no longer wait
+// on it — and Repair replays exactly what it missed: current values and
+// deletions, after which writes flow again.
+func TestHeldReplicaIsRepaired(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot miss a write")
+	}
+	primary, err := storage.NewStore(resptest.Addr(t), 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	replicaAddr := resptest.Addr(t)
+	replica, err := storage.NewStore(replicaAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replica.Close()
+	var broken atomic.Bool
+	primary.SetReplicaTransport(storage.Transport{Dial: func(addr string) (net.Conn, error) {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		return flaky{c, &broken}, nil
+	}, Timeout: 500 * time.Millisecond})
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	set := func(k, v string) {
+		t.Helper()
+		if err := primary.Set(k, []byte(v), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	set("held:a", "1")
+	set("held:b", "1")
+	if v, _ := replica.Get("held:b"); string(v) != "1" {
+		t.Fatalf("replica did not receive the write: %q", v)
+	}
+
+	broken.Store(true)
+	start := time.Now()
+	set("held:a", "2")
+	if _, err := primary.Delete("held:b"); err != nil {
+		t.Fatal(err)
+	}
+	set("held:c", "3")
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("writes waited %v on a held replica", d)
+	}
+	if v, _ := replica.Get("held:a"); string(v) != "1" {
+		t.Fatalf("a write reached the broken replica: %q", v)
+	}
+	if primary.Repair() != 0 {
+		t.Fatal("repaired a replica that is still unreachable")
+	}
+
+	broken.Store(false)
+	if n := primary.Repair(); n != 3 {
+		t.Fatalf("replayed %d keys, want 3", n)
+	}
+	if v, _ := replica.Get("held:a"); string(v) != "2" {
+		t.Fatalf("held:a on the replica = %q after repair", v)
+	}
+	if _, err := replica.Get("held:b"); err == nil {
+		t.Fatal("a delete missed by the replica was not replayed")
+	}
+	if v, _ := replica.Get("held:c"); string(v) != "3" {
+		t.Fatalf("held:c on the replica = %q after repair", v)
+	}
+	set("held:d", "4")
+	if v, _ := replica.Get("held:d"); string(v) != "4" {
+		t.Fatalf("the repaired replica is not receiving writes: %q", v)
+	}
+}
+
+// flaky is a connection whose writes fail while broken is set, as to a peer
+// that stopped answering.
+type flaky struct {
+	net.Conn
+	broken *atomic.Bool
+}
+
+func (f flaky) Write(b []byte) (int, error) {
+	if f.broken.Load() {
+		f.Conn.Close()
+		return 0, errors.New("flaky: broken")
+	}
+	return f.Conn.Write(b)
 }
