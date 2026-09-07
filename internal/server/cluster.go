@@ -46,6 +46,7 @@ type cluster struct {
 	wg        sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
 	repairing atomic.Bool
 	attaching sync.Mutex // one attach at a time, so two merges cannot both find a peer missing
+	events    *eventLog
 }
 
 func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
@@ -60,6 +61,9 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		Version:   Version,
 		Seeds:     seeds,
 	}
+	events := newEventLog(local.ID, s.store)
+	s.store.SetHoldHook(func(addr string) { events.emit("hold", addr, 0, 0) })
+	s.store.SetRepairHook(func(addr string, keys int) { events.emit("repair", addr, keys, 0) })
 	c := &cluster{
 		server: s,
 		nodes:  map[string]*storage.NodeInfo{local.ID: local},
@@ -69,7 +73,9 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		tick:   time.Now(),
 		failed: map[string]bool{},
 		done:   make(chan struct{}),
+		events: events,
 	}
+	events.emit("start", "", 0, 0)
 	c.wg.Go(c.loop)
 	if len(seeds) > 0 {
 		c.wg.Go(c.seedLoop)
@@ -105,6 +111,7 @@ func (c *cluster) loop() {
 func (c *cluster) stop() {
 	close(c.done)
 	c.wg.Wait()
+	c.events.stop()
 }
 
 // seedLoop keeps this node attached to its configured seeds: a seed that is
@@ -294,6 +301,7 @@ func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 		return
 	}
 	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
+	c.events.emit("attach", n.Addr, 0, 0)
 	go func() {
 		start := time.Now()
 		copied, err := c.server.store.Sync(n.Addr, overwrite)
@@ -301,7 +309,9 @@ func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 			slog.Warn("cluster: resync incomplete", "peer", n.ID, "keys", copied, "err", err)
 			return
 		}
-		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", overwrite, "took", time.Since(start).Round(time.Millisecond))
+		took := time.Since(start)
+		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", overwrite, "took", took.Round(time.Millisecond))
+		c.events.emit("resync", n.Addr, copied, took)
 	}()
 }
 
@@ -326,6 +336,7 @@ func private(addr string) bool {
 func (c *cluster) detach(n storage.NodeInfo) {
 	if c.server.store.RemoveReplica(n.Addr) {
 		slog.Info("cluster: peer detached", "peer", n.ID, "store", n.StoreAddr)
+		c.events.emit("detach", n.Addr, 0, 0)
 	}
 }
 
@@ -340,6 +351,7 @@ func (c *cluster) checkHealth() {
 	now := time.Now()
 	if gap := now.Sub(c.tick); gap > downAfter {
 		slog.Warn("cluster: stalled, rejoining as a new incarnation", "for", gap.Round(time.Second))
+		c.events.emit("stall", "", 0, gap)
 		c.local.Started = now
 		for id, n := range c.nodes {
 			if id != c.local.ID {
@@ -370,6 +382,7 @@ func (c *cluster) checkHealth() {
 			c.gone[id] = n.Started
 			delete(c.nodes, id)
 			slog.Info("cluster: peer evicted", "peer", id, "silent_for", age.Round(time.Second))
+			c.events.emit("evict", n.Addr, 0, age)
 		}
 	}
 	c.mu.Unlock()

@@ -51,6 +51,7 @@ func renderSummary(w io.Writer, snap Snapshot, now time.Time) {
 			color, symbol, Reset, n.Addr, storeColor, storeSymbol, Reset, Dim, n.Version, replicas(n), Reset)
 	}
 	fmt.Fprintln(w, rule)
+	renderEvents(w, snap.Events, 3)
 }
 
 func renderDetailed(w io.Writer, snap Snapshot, now time.Time) {
@@ -69,6 +70,38 @@ func renderDetailed(w io.Writer, snap Snapshot, now time.Time) {
 		renderStore(w, snap.Stores[n.ID])
 		fmt.Fprintln(w, rule)
 	}
+	renderEvents(w, snap.Events, 8)
+}
+
+// renderEvents shows the fleet's most recent events, newest first: what
+// happened across every node, read from whichever one answered.
+func renderEvents(w io.Writer, events []storage.Event, max int) {
+	fmt.Fprintf(w, "\n%s%s%sRecent Events%s\n%s\n", BgBlue, BrightWhite, Bold, Reset, rule)
+	if len(events) == 0 {
+		fmt.Fprintf(w, "  %snone in the last hour%s\n", Dim, Reset)
+		fmt.Fprintln(w, rule)
+		return
+	}
+	start := len(events) - max
+	if start < 0 {
+		start = 0
+	}
+	for i := len(events) - 1; i >= start; i-- {
+		e := events[i]
+		line := fmt.Sprintf("  %s%s%s %s%-8s%s node=%s", Dim, time.UnixMilli(e.At).Format("15:04:05"), Reset,
+			BrightCyan, e.Event, Reset, strings.TrimPrefix(e.Node, "node-"))
+		if e.Peer != "" {
+			line += " peer=" + e.Peer
+		}
+		if e.Keys > 0 {
+			line += fmt.Sprintf(" keys=%d", e.Keys)
+		}
+		if e.Took > 0 {
+			line += " took=" + (time.Duration(e.Took) * time.Millisecond).String()
+		}
+		fmt.Fprintln(w, line)
+	}
+	fmt.Fprintln(w, rule)
 }
 
 // renderStore is one node's store as the node reports it.

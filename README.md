@@ -238,6 +238,14 @@ has the write and feeds peers in order from a queue, and `tritium-load -peer`
 shows the lag that buys. A peer that falls too far behind is held and
 repaired like one that stopped answering.
 
+Each node keeps its own cluster events — attach, detach, hold, repair,
+stall, evict, resync, and its own start — in `tritium:events:<node id>`, a
+sorted set scored by time and capped at a day and a few hundred entries so a
+flapping peer can't grow it without bound. It replicates like any other key,
+so `go run ./cmd/tritium-cli events [-since 1h] [-node NAME]` shows what
+happened across the whole fleet from any one node, and the monitor's Recent
+Events panel reads the same log.
+
 Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
 adopts the view, and announces itself to everyone in it with
 `TRITIUM.GOSSIP`; after that each node swaps views with a random peer every

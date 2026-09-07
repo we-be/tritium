@@ -4,6 +4,7 @@
 package tritium
 
 import (
+	"cmp"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -248,6 +250,35 @@ func (c *Client) Nodes() (map[string]storage.NodeInfo, error) {
 		return nil, fmt.Errorf("tritium: nodes: %w", err)
 	}
 	return nodes, nil
+}
+
+// Events reads and merges every node's cluster event log — attach, detach,
+// hold, repair, stall, evict, resync, start — from this node's local store,
+// oldest first: every node's writes replicate everywhere, so one read
+// covers the whole fleet. nodeIDs, from Nodes(), names which logs to read;
+// since bounds how far back to look.
+func (c *Client) Events(nodeIDs []string, since time.Duration) ([]storage.Event, error) {
+	min := strconv.FormatInt(time.Now().Add(-since).UnixMilli(), 10)
+	var events []storage.Event
+	for _, id := range nodeIDs {
+		v, err := c.do("ZRANGEBYSCORE", storage.EventsKeyPrefix+id, min, "+inf")
+		if err != nil {
+			return nil, err
+		}
+		raw, _ := v.([]any)
+		for _, m := range raw {
+			b, ok := m.([]byte)
+			if !ok {
+				continue
+			}
+			var ev storage.Event
+			if err := json.Unmarshal(b, &ev); err == nil {
+				events = append(events, ev)
+			}
+		}
+	}
+	slices.SortFunc(events, func(a, b storage.Event) int { return cmp.Compare(a.At, b.At) })
+	return events, nil
 }
 
 func (c *Client) Ping() error {

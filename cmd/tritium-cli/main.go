@@ -7,6 +7,7 @@
 //	tritium-cli [flags] del KEY
 //	tritium-cli [flags] scan [PATTERN]
 //	tritium-cli [flags] nodes
+//	tritium-cli [flags] events [-since 1h] [-node NAME]
 package main
 
 import (
@@ -129,6 +130,26 @@ func run(client *tritium.Client, cmd string, args []string) error {
 			return err
 		}
 		printNodes(nodes)
+	case "events":
+		fs := flag.NewFlagSet("events", flag.ContinueOnError)
+		since := fs.Duration("since", 24*time.Hour, "how far back to look")
+		node := fs.String("node", "", "only a node whose id contains this")
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		nodes, err := client.Nodes()
+		if err != nil {
+			return err
+		}
+		ids := make([]string, 0, len(nodes))
+		for id := range nodes {
+			ids = append(ids, id)
+		}
+		events, err := client.Events(ids, *since)
+		if err != nil {
+			return err
+		}
+		printEvents(events, *node)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -187,8 +208,29 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 	w.Flush()
 }
 
+// printEvents prints one line per event, oldest first, filtered to nodes
+// whose ID contains node when it is set.
+func printEvents(events []storage.Event, node string) {
+	for _, e := range events {
+		if node != "" && !strings.Contains(e.Node, node) {
+			continue
+		}
+		line := fmt.Sprintf("%s  %-8s node=%s", time.UnixMilli(e.At).Format(time.RFC3339), e.Event, e.Node)
+		if e.Peer != "" {
+			line += " peer=" + e.Peer
+		}
+		if e.Keys > 0 {
+			line += fmt.Sprintf(" keys=%d", e.Keys)
+		}
+		if e.Took > 0 {
+			line += " took=" + (time.Duration(e.Took) * time.Millisecond).String()
+		}
+		fmt.Println(line)
+	}
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes | events [-since 1h] [-node NAME]")
 	flag.PrintDefaults()
 }
 

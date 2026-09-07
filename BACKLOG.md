@@ -26,7 +26,7 @@ node does. Check an item off with the commit that closed it.
 
 ## Visibility (agreed 2026-09-06; the OSS steward works these after Now)
 
-- [ ] (claimed, 2026-09-07 wave) Fleet event log in the plane: each node records its cluster events — attach, detach, hold, repair (keys), stall, evict, resync (keys, took) — as a capped, TTL'd sorted set in its store, replicated like any key, so `tritium-cli`, the monitor and `mubs fleet` can show what happened in the last hours across the fleet from any node
+- [x] Fleet event log in the plane: each node records its cluster events — attach, detach, hold, repair (keys), stall, evict, resync (keys, took), start — as a capped (500), 24h TTL'd sorted set at `tritium:events:<node id>`, replicated like any key; `tritium-cli events [-since 1h] [-node NAME]` and the monitor's Recent Events panel merge every node's log from the local store — 2026-09-07
 - [ ] Richer gossip stats: NodeStats carries writes/s, keys, memory, last repair time and the store's uptime, so every consumer gets them from the view without dialing each node
 - [ ] Small answers for the agents that operate the fleet: `CLIENT LIST` (who is connected — worker, bridge, CLI), `tritium-cli where <key>` (which nodes hold it, TTL on each), `tritium-msg status` (bridge sessions, last message, latency)
 - [ ] (mubs, not here) plane health on the Discord status board — node versions, held replicas, peer state — and a page only on a sustained condition such as a peer held for more than ten minutes

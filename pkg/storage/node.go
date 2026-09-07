@@ -34,3 +34,20 @@ type NodeInfo struct {
 	Seeds     []string  `json:"seeds,omitempty"`   // the peers it dials to join and rejoin
 	Stats     NodeStats `json:"stats"`
 }
+
+// EventsKeyPrefix plus a node's ID names the sorted set holding that node's
+// own cluster event log, replicated like any other key.
+const EventsKeyPrefix = "tritium:events:"
+
+// Event is one line of a node's cluster event log — attach, detach, hold,
+// repair, stall, evict, resync or start — stored as a member of the sorted
+// set at EventsKeyPrefix+Node, scored by At in unix milliseconds. Fields not
+// meaningful for a given Event are left zero and omitted from the JSON.
+type Event struct {
+	At    int64  `json:"at"`
+	Node  string `json:"node"`           // the node whose log this is
+	Event string `json:"event"`          // attach, detach, hold, repair, stall, evict, resync, start
+	Peer  string `json:"peer,omitempty"` // the peer address involved, when there is one
+	Keys  int    `json:"keys,omitempty"` // keys copied or replayed, for resync and repair
+	Took  int64  `json:"took,omitempty"` // milliseconds: how long the operation took, or the outage it closed
+}

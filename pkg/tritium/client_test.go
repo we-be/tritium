@@ -99,7 +99,7 @@ func TestScan(t *testing.T) {
 	if !reflect.DeepEqual(seen, want) {
 		t.Fatalf("scan saw %v, want %v", seen, want)
 	}
-	if n, err := c.DBSize(); err != nil || n != 26 {
+	if n, err := c.DBSize(); err != nil || n != 27 { // the 26 written plus the node's own event log
 		t.Fatalf("DBSize: %v, %v", n, err)
 	}
 }

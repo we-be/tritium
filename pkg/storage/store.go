@@ -79,6 +79,11 @@ type pool struct {
 	// writer goroutine, in order, coalesced into batches; nil means every
 	// write waits for this replica's answer.
 	queue chan job
+
+	// onHold, when set, is called once on the transition into held — not on
+	// every write while it stays held. It runs synchronously under mu, so it
+	// must never block: the event log's emit is a non-blocking channel send.
+	onHold func(addr string)
 }
 
 // job is one fan-out on an asynchronous replica's queue, or, with no
@@ -262,7 +267,11 @@ func (p *pool) isHeld() bool {
 func (p *pool) hold(cmds []resp.Command) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	wasHeld := p.held
 	p.held = true
+	if !wasHeld && p.onHold != nil {
+		p.onHold(p.addr)
+	}
 	if p.spilled {
 		return
 	}
@@ -407,6 +416,11 @@ type Store struct {
 	queue    int       // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
 	mu       sync.RWMutex
 	replicas []*pool
+	// holdHook and repairHook let a caller (the cluster's event log) learn
+	// of a replica newly held or fully repaired without this package
+	// depending on internal/server; see pool.onHold and Repair.
+	holdHook   func(addr string)
+	repairHook func(addr string, keys int)
 	// parked is what a replica removed while held still missed, by address:
 	// a peer detached during a partition is re-attached when the link is
 	// back, and a first-meeting sync only fills its gaps — the keys written
@@ -464,6 +478,22 @@ func (s *Store) Async() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.queue > 0
+}
+
+// SetHoldHook is called for every replica added from now on, once per
+// transition into held. See pool.onHold for the calling convention.
+func (s *Store) SetHoldHook(fn func(addr string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.holdHook = fn
+}
+
+// SetRepairHook is called after Repair fully replays a held replica's
+// backlog, with how many keys were replayed.
+func (s *Store) SetRepairHook(fn func(addr string, keys int)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.repairHook = fn
 }
 
 // Apply runs one write on the primary only — what a peer's replicated
@@ -601,6 +631,7 @@ func (s *Store) replicateAll(cmds []resp.Command) {
 func (s *Store) Repair() int {
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
+	hook := s.repairHook
 	s.mu.RUnlock()
 	total := 0
 	for _, r := range replicas {
@@ -614,6 +645,9 @@ func (s *Store) Repair() int {
 			continue
 		}
 		slog.Info("replica repaired", "addr", r.addr, "keys", n)
+		if hook != nil && n > 0 {
+			hook(r.addr, n)
+		}
 	}
 	return total
 }
@@ -680,6 +714,7 @@ func (s *Store) AddReplica(addr string) error {
 		p.close()
 		return nil
 	}
+	p.onHold = s.holdHook
 	if s.queue > 0 {
 		p.async(s.queue)
 	}

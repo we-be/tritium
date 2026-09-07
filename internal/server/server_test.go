@@ -423,7 +423,7 @@ func TestEmbeddedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"store_addr:embedded", "store_status:ok", "store_keys:1", "store_maxmemory:1048576"} {
+	for _, want := range []string{"store_addr:embedded", "store_status:ok", "store_keys:3", "store_maxmemory:1048576"} {
 		if !strings.Contains(string(info.([]byte)), want) {
 			t.Fatalf("INFO lacks %q:\n%s", want, info)
 		}

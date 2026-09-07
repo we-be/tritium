@@ -446,8 +446,8 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\n",
-			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()))},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nevents:%d\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), s.srv.eventsKept(local.ID))},
 		{"store", s.srv.storeInfo()},
 	}
 
@@ -556,7 +556,7 @@ func (s *session) nodes(args []string) []byte {
 // replicatable is what a peer may write through us: the writes our own
 // fan-out produces, nothing that reads or reaches beyond the store.
 var replicatable = map[string]bool{"SET": true, "SETEX": true, "DEL": true, "EXPIRE": true,
-	"ZADD": true, "ZREM": true, "ZREMRANGEBYSCORE": true}
+	"ZADD": true, "ZREM": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true}
 
 // replicate applies a peer's write to this node's store only. It is how a
 // peer's SET reaches us without ever dialing our store, and it never fans
