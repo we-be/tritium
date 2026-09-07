@@ -68,10 +68,10 @@ func field(out, f []byte) []byte {
 }
 
 // maxRosterVersion bounds a version so it cannot be pushed past what any
-// later, honest roster could beat.
-const maxRosterVersion = 1 << 31
+// later, honest roster could beat; int64, since int is 32 bits on a Pi Zero.
+const maxRosterVersion int64 = 1 << 31
 
-func validVersion(v int) bool { return v >= 0 && v < maxRosterVersion }
+func validVersion(v int) bool { return v >= 0 && int64(v) < maxRosterVersion }
 
 // DeviceRoster is every device certified under one name, signed as a unit so
 // a change is atomic and Version orders successive publications.

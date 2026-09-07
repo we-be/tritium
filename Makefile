@@ -34,6 +34,7 @@ chaos:
 lint:
 	test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	go vet ./...
+	GOOS=linux GOARCH=arm GOARM=6 go vet ./...   # the Pi Zero build: int is 32 bits there
 	test -z "$$(go fix -diff ./...)" || { go fix -diff ./...; exit 1; }
 
 image:
