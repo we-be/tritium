@@ -175,7 +175,7 @@ func (c *cluster) join(addr string) error {
 // so nodes joining at the same moment learn of each other right away.
 func (c *cluster) announce() {
 	local := c.localJSON()
-	for _, p := range c.peers() {
+	for _, p := range c.dialable(c.peers()) {
 		view, err := c.exchange(p.Addr, resp.NewCommand("TRITIUM.GOSSIP", local))
 		if err != nil {
 			slog.Warn("cluster: announce failed", "peer", p.ID, "err", err)
@@ -188,7 +188,7 @@ func (c *cluster) announce() {
 // gossip exchanges views with one random peer, down ones included so a
 // restarted node gets rediscovered.
 func (c *cluster) gossip() {
-	peers := c.peers()
+	peers := c.dialable(c.peers())
 	if len(peers) == 0 {
 		return
 	}
@@ -411,6 +411,19 @@ func (c *cluster) localCopy() storage.NodeInfo {
 func (c *cluster) localJSON() string {
 	b, _ := json.Marshal(c.localCopy())
 	return string(b)
+}
+
+// dialable drops the peers served over connections they opened: they gossip
+// to us on their own schedule, and their parked connections are for the
+// fan-out, not for a view exchange that would close one per round.
+func (c *cluster) dialable(peers []storage.NodeInfo) []storage.NodeInfo {
+	out := peers[:0]
+	for _, p := range peers {
+		if !c.server.links.has(p.Addr) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (c *cluster) peers() []storage.NodeInfo {

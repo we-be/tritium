@@ -61,6 +61,10 @@ type Server struct {
 	store     *storage.Store
 	listener  net.Listener
 	cluster   *cluster
+	links     *links    // connections peers that cannot be dialed opened for us
+	linkers   []*linker // the peers we open connections to instead
+	linkDone  chan struct{}
+	linkWG    sync.WaitGroup     // the link loops and what they serve; Stop waits for them
 	tlsServer *tls.Config        // nil: plaintext listener
 	tlsPeer   *tls.Config        // nil: plaintext peer dials
 	embedded  *memstore.Listener // set when the node runs its own store
@@ -78,7 +82,7 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, tlsServer: tlsServer, tlsPeer: tlsPeer}
+	s := &Server{cfg: cfg, tlsServer: tlsServer, tlsPeer: tlsPeer, links: newLinks(), linkDone: make(chan struct{})}
 	if cfg.StoreAddr == "" {
 		// The node's own store: reached over RESP like any other, through
 		// connections that never leave the process.
@@ -134,6 +138,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		s.store.SetAsync(asyncDepth)
 	}
 	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
+	s.startLinks()
 	go s.acceptLoop()
 	return nil
 }
@@ -156,6 +161,9 @@ func (s *Server) acceptLoop() {
 // dialPeer opens a connection to another node, over TLS when this node
 // serves TLS.
 func (s *Server) dialPeer(addr string) (net.Conn, error) {
+	if s.links.has(addr) {
+		return s.links.take(addr) // it cannot be dialed; it left us connections instead
+	}
 	d := net.Dialer{Timeout: peerTimeout}
 	if s.tlsPeer == nil {
 		return d.Dial("tcp", addr)
@@ -219,6 +227,9 @@ func (s *Server) Addr() string {
 func (s *Server) Stop() error {
 	var err error
 	s.stopOnce.Do(func() {
+		close(s.linkDone)
+		s.linkWG.Wait()
+		s.links.close()
 		if s.cluster != nil {
 			s.cluster.stop()
 		}

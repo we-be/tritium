@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -27,6 +28,7 @@ func ttlCommand(key string) resp.Command {
 //
 // Two identities exist: the "default" user, a client, and the "peer" user,
 // another node. Only peers may change membership with TRITIUM.GOSSIP.
+// A node may configure further users with fewer rights (see acl.go).
 type session struct {
 	srv    *Server
 	conn   net.Conn
@@ -35,6 +37,8 @@ type session struct {
 	proto  int
 	authed bool
 	peer   bool
+	user   *config.User      // nil: one of the built-in identities, with no restrictions
+	linked *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
 }
 
 var (
@@ -76,17 +80,33 @@ var commands = map[string]command{
 	"CLIENT":            {min: 1, max: -1, fn: (*session).client},
 	"COMMAND":           {min: 0, max: -1, fn: (*session).command},
 	"SELECT":            {min: 1, max: 1, fn: (*session).selectDB},
+	"ACL":               {min: 1, max: -1, fn: (*session).acl},
 	"TRITIUM.NODES":     {min: 0, max: 0, fn: (*session).nodes},
 	"TRITIUM.GOSSIP":    {min: 1, max: 1, fn: (*session).gossip},
 	"TRITIUM.REPLICATE": {min: 2, max: -1, fn: (*session).replicate},
+	"TRITIUM.PEERLINK":  {min: 1, max: 1, fn: (*session).peerlink},
 }
 
-func (s *Server) serveConn(c net.Conn) {
+// peerOnly commands change membership or write straight into the store, so
+// only another node may run them.
+var peerOnly = map[string]bool{"TRITIUM.GOSSIP": true, "TRITIUM.REPLICATE": true, "TRITIUM.PEERLINK": true}
+
+func (s *Server) serveConn(c net.Conn) { s.serveConnWith(c, resp.NewReader(c)) }
+
+// serveConnWith serves a connection whose reader may already hold buffered
+// bytes — the case for one this node opened and handed over with
+// TRITIUM.PEERLINK, where the roles on the socket have just been swapped.
+func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 	s.active.Add(1)
 	defer s.active.Add(-1)
-	defer c.Close()
+	handed := false
+	defer func() {
+		if !handed {
+			c.Close()
+		}
+	}()
 
-	sess := &session{srv: s, conn: c, r: resp.NewReader(c), id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == ""}
+	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == ""}
 	for {
 		args, err := sess.r.ReadCommand()
 		if err != nil {
@@ -100,6 +120,11 @@ func (s *Server) serveConn(c net.Conn) {
 		}
 		reply, quit := sess.dispatch(args)
 		if _, err := c.Write(reply); err != nil || quit {
+			return
+		}
+		if sess.linked != nil { // the peer serves this socket from here on
+			s.handOff(*sess.linked, c)
+			handed = true
 			return
 		}
 	}
@@ -121,8 +146,11 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	if !s.authed {
 		return replyNoAuth, false
 	}
-	if (name == "TRITIUM.GOSSIP" || name == "TRITIUM.REPLICATE") && !s.isPeer() {
+	if peerOnly[name] && !s.isPeer() {
 		return replyNoPerm, false
+	}
+	if r := s.allow(name, args[1:]); r != nil {
+		return r, false
 	}
 	cmd, ok := commands[name]
 	if !ok {
@@ -170,12 +198,18 @@ func (s *session) authenticate(args []string) []byte {
 		want = s.srv.cfg.Password
 	case "peer":
 		want = s.srv.peerPassword()
+	default:
+		u, ok := s.srv.cfg.Users[user]
+		if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(u.Password)) != 1 {
+			return replyWrongPass
+		}
+		s.authed, s.peer, s.user = true, false, &u
+		return nil
 	}
 	if want == "" || subtle.ConstantTimeCompare([]byte(password), []byte(want)) != 1 {
 		return replyWrongPass
 	}
-	s.authed = true
-	s.peer = user == "peer"
+	s.authed, s.peer, s.user = true, user == "peer", nil
 	return nil
 }
 
@@ -183,6 +217,9 @@ func (s *session) authenticate(args []string) []byte {
 // authenticated as the peer user when a password is configured, and under
 // TLS_CLIENT_AUTH it presented a certificate the listener verified.
 func (s *session) isPeer() bool {
+	if s.user != nil {
+		return false // a configured user is never a node, however the node is set up
+	}
 	if s.srv.peerPassword() != "" && !s.peer {
 		return false
 	}
@@ -571,6 +608,18 @@ func (s *session) replicate(args []string) []byte {
 		return errMsg(err)
 	}
 	return resp.AppendValue(nil, v)
+}
+
+// peerlink handles TRITIUM.PEERLINK <node-json>: the caller cannot be dialed,
+// so it opened this connection for us to send on. The reply is the last thing
+// we write as its server; serveConnWith parks the socket afterwards.
+func (s *session) peerlink(args []string) []byte {
+	var n storage.NodeInfo
+	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" || n.Addr == "" {
+		return resp.AppendError(nil, "ERR invalid node info")
+	}
+	s.linked = &n
+	return replyOK
 }
 
 func (s *session) gossip(args []string) []byte {

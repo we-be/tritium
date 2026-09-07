@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -19,7 +20,7 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{StoreAddr: "store:6379", ListenAddr: ":9001", Password: "multi\nline", PoolSize: 2, TLSClientAuth: true, TLSCA: "ca.pem"}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 

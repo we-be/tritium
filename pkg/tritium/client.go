@@ -27,6 +27,7 @@ var ErrNotFound = storage.ErrNotFound
 type ClientOptions struct {
 	Address  string        // host:port of a node; default localhost:8080
 	Timeout  time.Duration // dial timeout and per-call deadline; default 10s
+	User     string        // AUTH <user> <password> when set: a node may grant a named user fewer key prefixes than the default one
 	Password string        // sent as AUTH on every connection when set
 	TLS      *tls.Config   // connect with TLS when set; ServerName defaults to the address host
 	Key      []byte        // KeySize bytes; when set, values are encrypted client-side (see crypto.go)
@@ -52,7 +53,7 @@ func NewClient(opts *ClientOptions) (*Client, error) {
 		if opts.Timeout > 0 {
 			o.Timeout = opts.Timeout
 		}
-		o.Password, o.TLS, o.Key = opts.Password, opts.TLS, opts.Key
+		o.User, o.Password, o.TLS, o.Key = opts.User, opts.Password, opts.TLS, opts.Key
 	}
 	c := &Client{opts: o}
 	if o.Key != nil {
@@ -83,7 +84,11 @@ func (c *Client) connect() error {
 	}
 	c.conn, c.r = conn, resp.NewReader(conn)
 	if c.opts.Password != "" {
-		if _, err := c.call("AUTH", c.opts.Password); err != nil {
+		auth := []string{"AUTH", c.opts.Password}
+		if c.opts.User != "" {
+			auth = []string{"AUTH", c.opts.User, c.opts.Password}
+		}
+		if _, err := c.call(auth...); err != nil {
 			c.drop()
 			return err
 		}
