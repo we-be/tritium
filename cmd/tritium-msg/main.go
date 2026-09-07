@@ -9,10 +9,18 @@
 //	                                     send from a throwaway identity, print the reply
 //	tritium-msg [flags] serve [-name NAME]
 //	                                     JSON lines: incoming on stdout, replies on stdin
+//	tritium-msg [flags] device authorize DEVICE
+//	                                     certify a device published as NAME/DEVICE onto NAME
+//	tritium-msg [flags] device list      devices certified onto NAME
+//	tritium-msg [flags] group create/add/remove/send/list NAME ...
+//	                                     a roster this identity created (add/remove), or belongs to (send)
 //
 // Identity and session state live in the -state directory, readable only by
 // you. Guard it like a private key, because it is one. One process at a time
-// may use a state directory; the others wait on its lock.
+// may use a state directory; the others wait on its lock. A device is a
+// second identity of its own, run from its own -state directory and
+// certified onto a name with `device authorize` run from the name's own
+// state; init it the same way as any identity, with NAME/DEVICE as its name.
 package main
 
 import (
@@ -190,14 +198,21 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		if err := publish(); err != nil {
 			return err
 		}
-		peer, err := client.Lookup(args[0])
-		if err != nil {
-			return err
-		}
-		if err := client.Send(peer, []byte(strings.Join(args[1:], " "))); err != nil {
+		// fans out to every device certified under NAME, not just its primary identity
+		if err := client.SendAll(args[0], []byte(strings.Join(args[1:], " "))); err != nil {
 			return err
 		}
 		return save()
+	case "device":
+		if err := publish(); err != nil {
+			return err
+		}
+		return device(client, &id, args)
+	case "group":
+		if err := publish(); err != nil {
+			return err
+		}
+		return group(client, args)
 	case "recv":
 		fs := flag.NewFlagSet("recv", flag.ContinueOnError)
 		watch := fs.Bool("watch", false, "keep polling until interrupted")
@@ -219,7 +234,11 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 				return err
 			}
 			for _, m := range msgs {
-				fmt.Printf("[%s] %s (%s): %s\n", m.Time.Local().Format("15:04:05"), m.From.Name, m.From.Fingerprint()[:11], m.Body)
+				via := ""
+				if m.Group != "" {
+					via = " #" + m.Group
+				}
+				fmt.Printf("[%s] %s (%s)%s: %s\n", m.Time.Local().Format("15:04:05"), m.From.Name, m.From.Fingerprint()[:11], via, m.Body)
 			}
 			if len(msgs) > 0 {
 				continue // another batch may be waiting, and this one is deleted by the next call
@@ -237,6 +256,94 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// device authorizes a device published under id.Name+"/"+DEVICE, or lists
+// the devices already authorized.
+func device(client *messenger.Client, id *messenger.Identity, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: device authorize DEVICE | device list")
+	}
+	switch args[0] {
+	case "authorize":
+		if len(args) != 2 {
+			return errors.New("usage: device authorize DEVICE")
+		}
+		bundle, err := client.Lookup(id.Name + "/" + args[1])
+		if err != nil {
+			return err
+		}
+		if _, err := client.AuthorizeDevice(args[1], bundle); err != nil {
+			return err
+		}
+		fmt.Printf("authorized %s/%s  %s\n", id.Name, args[1], bundle.Fingerprint())
+		return nil
+	case "list":
+		devices, err := client.Devices(id.Name)
+		if err != nil {
+			return err
+		}
+		for _, d := range devices {
+			fmt.Printf("%s  %s\n", d.Name, d.Fingerprint())
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown device command %q", args[0])
+	}
+}
+
+// group creates, edits, sends to, or lists a group's roster.
+func group(client *messenger.Client, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: group create/add/remove/send/list NAME ...")
+	}
+	verb, args := args[0], args[1:]
+	if len(args) == 0 {
+		return errors.New("usage: group " + verb + " NAME ...")
+	}
+	name := args[0]
+	switch verb {
+	case "create":
+		g, err := client.CreateGroup(name, args[1:])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("created #%s with %d member(s)\n", g.Name, len(g.Members))
+		return nil
+	case "add", "remove":
+		if len(args) != 2 {
+			return errors.New("usage: group " + verb + " NAME MEMBER")
+		}
+		var g messenger.Group
+		var err error
+		if verb == "add" {
+			g, err = client.AddMember(name, args[1])
+		} else {
+			g, err = client.RemoveMember(name, args[1])
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Printf("#%s now has %d member(s)\n", g.Name, len(g.Members))
+		return nil
+	case "send":
+		if len(args) < 2 {
+			return errors.New("usage: group send NAME TEXT")
+		}
+		return client.SendGroup(name, []byte(strings.Join(args[1:], " ")))
+	case "list":
+		g, err := client.LookupGroup(name)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("#%s  creator=%s  version=%d\n", g.Name, g.Creator, g.Version)
+		for _, m := range g.Members {
+			fmt.Println(" ", m)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unknown group command %q", verb)
+	}
 }
 
 // ask sends from a throwaway identity and prints the reply. Exit 2 on no
@@ -296,11 +403,12 @@ func parseServe(args []string) (*serveOptions, error) {
 // inbound is one received message as serve prints it: body as text, or b64
 // when it is not valid UTF-8.
 type inbound struct {
-	From string `json:"from"`
-	FP   string `json:"fp"`
-	Time string `json:"time"`
-	Body string `json:"body,omitempty"`
-	B64  []byte `json:"b64,omitempty"`
+	From  string `json:"from"`
+	FP    string `json:"fp"`
+	Time  string `json:"time"`
+	Body  string `json:"body,omitempty"`
+	B64   []byte `json:"b64,omitempty"`
+	Group string `json:"group,omitempty"`
 }
 
 // outbound is one reply as serve reads it from stdin.
@@ -373,7 +481,7 @@ func serve(client *messenger.Client, id *messenger.Identity, idFile string, save
 			fmt.Fprintln(os.Stderr, "tritium-msg: receive:", err)
 		}
 		for _, m := range msgs {
-			in := inbound{From: m.From.Name, FP: m.From.Fingerprint(), Time: m.Time.UTC().Format(time.RFC3339Nano)}
+			in := inbound{From: m.From.Name, FP: m.From.Fingerprint(), Time: m.Time.UTC().Format(time.RFC3339Nano), Group: m.Group}
 			if utf8.Valid(m.Body) {
 				in.Body = string(m.Body)
 			} else {
@@ -413,7 +521,7 @@ func readJSON(path string, v any) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME]")
+	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE | device list | group create/add/remove/send/list NAME ...")
 	flag.PrintDefaults()
 }
 

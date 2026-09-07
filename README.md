@@ -116,8 +116,10 @@ accept the same claim; treat it as first-come per node, not a global lock.
 
 ## Messenger
 
-`pkg/messenger` is a secure one-to-one messenger on top of tritium, standard
-library only. Identities are an Ed25519 signing key and an X25519 agreement
+`pkg/messenger` is a secure messenger on top of tritium, standard library
+only, built from one-to-one sessions: a name can hold several devices and
+belong to groups, but every message travels over a pairwise Double Ratchet,
+never a shared key. Identities are an Ed25519 signing key and an X25519 agreement
 key, published as a signed bundle under `id:<name>`. A session starts with an
 X3DH-style agreement, so you can message someone who is offline, and runs a
 Double Ratchet from there: every message has its own key, and every change of
@@ -149,9 +151,49 @@ go run ./cmd/tritium-msg serve -name bob       # stdout: {"from","fp","time","bo
 echo '{"q":"lunch"}' | go run ./cmd/tritium-msg ask -fp 23FK7-ISTCB-… bob   # prints bob's reply; exit 2 on no reply, 3 on a wrong pin
 ```
 
-What it does not do yet: groups, or multiple devices per identity. Names are
-first come, first served per node; the fingerprint is the identity, the name
-is a convenience.
+Names are first come, first served per node; the fingerprint is the identity,
+the name is a convenience.
+
+### Devices
+
+A name can hold several devices. The name's own identity keeps publishing at
+`id:<name>` exactly as before, so old clients keep working against a name
+that has grown devices; each device is a second, ordinary identity of its
+own — its own fingerprint, sessions and mailboxes — published under
+`id:<name>/<device>`. What makes it a *device* rather than an unrelated name
+is a certificate: the name's identity signs the device's long-term keys, so
+nobody can attach a device to a name they don't hold. `send` fans out to the
+primary and every certified device, each over its own pairwise session; a
+message delivered to one device is not visible on another, since there is
+no state shared between them — the worker end of this is meant to pin the
+list of device fingerprints it expects, the same way it already pins one.
+
+```sh
+go run ./cmd/tritium-msg -state ~/.tritium-msg-phone init bob/phone   # the device publishes itself first
+go run ./cmd/tritium-msg device authorize phone    # run as bob: certifies bob/phone onto bob
+go run ./cmd/tritium-msg device list               # certified devices and their fingerprints
+go run ./cmd/tritium-msg send bob "hey"            # reaches bob's primary identity and bob/phone
+```
+
+The device roster shares the bundle's TTL; `device authorize` refreshes it,
+same as `Publish` does for a bundle.
+
+### Groups
+
+A group is a roster its creator signs — member names and a version — published
+under `grp:<name>`, first come like any name. There is no group key: a group
+send is a pairwise send of the same body to every member (and each of their
+devices) over the ordinary sessions, with the group's name folded into the
+encrypted plaintext so a receiver's `Receive` can attribute it — after
+checking the claim against the group's signed roster, never on the sender's
+say-so alone. Only the creator can add or remove members.
+
+```sh
+go run ./cmd/tritium-msg group create book-club bob carol
+go run ./cmd/tritium-msg group send book-club "meeting friday"
+go run ./cmd/tritium-msg group add book-club dave     # creator only
+go run ./cmd/tritium-msg group list book-club
+```
 
 ## Configuration
 

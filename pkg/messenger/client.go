@@ -40,11 +40,15 @@ func New(t *tritium.Client, id *Identity) *Client {
 	return &Client{t: t, id: id, sessions: map[string]*Session{}}
 }
 
-// Message is a decrypted message from a peer.
+// Message is a decrypted message from a peer. Group is set only once the
+// sender's claimed group has been checked against its signed roster; a
+// message sent to you directly, or a group tag that didn't verify, leaves it
+// empty.
 type Message struct {
-	From Bundle
-	Time time.Time
-	Body []byte
+	From  Bundle
+	Time  time.Time
+	Body  []byte
+	Group string
 }
 
 // envelope is the stored form of a message. On first contact EK is the
@@ -207,7 +211,7 @@ func (c *Client) Receive() ([]Message, error) {
 	}
 	for _, it := range items {
 		if m, ok := c.openHello(it); ok {
-			out = append(out, m)
+			out = append(out, c.attributeGroup(m))
 		}
 	}
 	for _, s := range c.sessions {
@@ -217,7 +221,7 @@ func (c *Client) Receive() ([]Message, error) {
 		}
 		for _, it := range items {
 			if m, ok := c.openWith(s, it); ok {
-				out = append(out, m)
+				out = append(out, c.attributeGroup(m))
 			}
 		}
 	}

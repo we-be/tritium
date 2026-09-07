@@ -36,7 +36,7 @@ node does. Check an item off with the commit that closed it.
 - [ ] Metrics export for a Grafana stack: a Prometheus text endpoint is zero-dep; OpenTelemetry means the OTel SDK (a dependency) or a hand-rolled OTLP exporter — decide when the stack exists. Until then the plane's own event log and gossip stats are the time series
 
 - [ ] Last-writer-wins for keys written on both sides of a partition: today whichever side's replay lands last wins; a per-key write stamp carried in `TRITIUM.REPLICATE` and compared by the receiving node would make it deterministic. Only matters when both networks write the same key — mubs' presence and mailboxes are per node
-- [ ] (claimed, 2026-09-07 wave) Messenger groups; multiple devices per identity
+- [x] Messenger groups; multiple devices per identity — devices are a second identity per device, certified onto a name by its primary identity (`devices:<name>`); groups are a creator-signed roster (`grp:<name>`) sent by pairwise fan-out, group name carried in the encrypted plaintext; envelope format unchanged — `msg-devices` branch, 2026-09-07
 - [ ] (claimed, 2026-09-07 wave) A cloud node, so a fleet that spans networks has a member that is always up
 
 ## Done

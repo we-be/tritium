@@ -399,6 +399,70 @@ func TestRatchetHeals(t *testing.T) {
 	}
 }
 
+// A device certified by its name's primary identity is found by fan-out; an
+// uncertified bundle published at a device key is not.
+func TestDeviceAuthorization(t *testing.T) {
+	w := setup(t)
+	phoneID, err := NewIdentity(w.alice.id.Name + "/phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	phone := New(w.conn(), phoneID)
+	if err := phone.Publish(); err != nil {
+		t.Fatal(err)
+	}
+	phoneBundle, err := w.alice.Lookup(phoneID.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.alice.AuthorizeDevice("phone", phoneBundle); err != nil {
+		t.Fatal(err)
+	}
+
+	tabletID, _ := NewIdentity(w.alice.id.Name + "/tablet")
+	tablet := New(w.conn(), tabletID)
+	if err := tablet.Publish(); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := w.bob.LookupAll(w.alice.id.Name)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("LookupAll = %v, %v; want the primary and phone only", all, err)
+	}
+
+	if err := w.bob.SendAll(w.alice.id.Name, []byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	w.receive(w.alice, "hi")
+	w.receive(phone, "hi")
+	if msgs, _ := tablet.Receive(); len(msgs) != 0 {
+		t.Fatal("an uncertified device received a fan-out send")
+	}
+}
+
+// A group send reaches every member over their own session, tagged with the
+// group's name; only the creator can change the roster.
+func TestGroupSendAndAuth(t *testing.T) {
+	w := setup(t)
+	carol := w.user("carol")
+	name := w.name("book-club")
+	if _, err := w.alice.CreateGroup(name, []string{w.bob.id.Name, carol.id.Name}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.alice.SendGroup(name, []byte("meeting friday")); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []*Client{w.bob, carol} {
+		msgs, err := c.Receive()
+		if err != nil || len(msgs) != 1 || string(msgs[0].Body) != "meeting friday" || msgs[0].Group != name {
+			t.Fatalf("member received %v, %v; want one message tagged %q", msgs, err, name)
+		}
+	}
+	if _, err := w.bob.AddMember(name, w.name("mallory")); !errors.Is(err, ErrNotCreator) {
+		t.Fatalf("non-creator changed the roster: %v", err)
+	}
+}
+
 func mustPub(priv []byte) []byte {
 	k, err := ecdh.X25519().NewPrivateKey(priv)
 	if err != nil {

@@ -20,6 +20,13 @@
 //
 // Each message is a tritium key with a TTL, indexed by send time in a
 // sorted set per mailbox. Everything expires.
+//
+// A name may hold several devices (see devices.go): each is its own
+// identity with its own sessions, certified onto the name by the name's
+// primary identity so it can be found by fan-out. A group (see groups.go) is
+// a roster its creator signs; sending to it is a pairwise send to every
+// member, no shared group key. Neither changes the envelope format: existing
+// clients keep working against a name with devices.
 package messenger
 
 import (
