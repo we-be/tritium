@@ -166,6 +166,76 @@ func (c *Client) Delete(key string) (bool, error) {
 	return n > 0, nil
 }
 
+// Scan walks the keyspace one page at a time: start with cursor 0 and keep
+// calling with the next it returns until that comes back 0. match is a glob
+// pattern ("" scans everything); count is a hint for page size (0 uses the
+// store's default). The cursor is opaque to the caller — hold whatever
+// comes back and pass it straight through.
+func (c *Client) Scan(cursor uint64, match string, count int) (keys []string, next uint64, err error) {
+	args := []string{"SCAN", strconv.FormatUint(cursor, 10)}
+	if match != "" {
+		args = append(args, "MATCH", match)
+	}
+	if count > 0 {
+		args = append(args, "COUNT", strconv.Itoa(count))
+	}
+	v, err := c.do(args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	page, ok := v.([]any)
+	if !ok || len(page) != 2 {
+		return nil, 0, fmt.Errorf("tritium: SCAN: unexpected reply %T", v)
+	}
+	rawCursor, ok := page[0].([]byte)
+	if !ok {
+		return nil, 0, fmt.Errorf("tritium: SCAN: unexpected cursor %T", page[0])
+	}
+	if next, err = strconv.ParseUint(string(rawCursor), 10, 64); err != nil {
+		return nil, 0, fmt.Errorf("tritium: SCAN: invalid cursor %q", rawCursor)
+	}
+	raw, ok := page[1].([]any)
+	if !ok {
+		return nil, 0, fmt.Errorf("tritium: SCAN: unexpected keys %T", page[1])
+	}
+	keys = make([]string, 0, len(raw))
+	for _, k := range raw {
+		b, ok := k.([]byte)
+		if !ok {
+			return nil, 0, fmt.Errorf("tritium: SCAN: unexpected key %T", k)
+		}
+		keys = append(keys, string(b))
+	}
+	return keys, next, nil
+}
+
+// Type returns the store's type name for key: "string", "zset", or "none"
+// if it doesn't exist.
+func (c *Client) Type(key string) (string, error) {
+	v, err := c.do("TYPE", key)
+	if err != nil {
+		return "", err
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", fmt.Errorf("tritium: TYPE: unexpected reply %T", v)
+	}
+	return s, nil
+}
+
+// DBSize returns how many keys the node's local store currently holds.
+func (c *Client) DBSize() (int64, error) {
+	v, err := c.do("DBSIZE")
+	if err != nil {
+		return 0, err
+	}
+	n, ok := v.(int64)
+	if !ok {
+		return 0, fmt.Errorf("tritium: DBSIZE: unexpected reply %T", v)
+	}
+	return n, nil
+}
+
 // Nodes returns the node's view of the cluster, keyed by node ID.
 func (c *Client) Nodes() (map[string]storage.NodeInfo, error) {
 	v, err := c.do("TRITIUM.NODES")

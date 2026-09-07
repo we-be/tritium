@@ -80,13 +80,14 @@ opts, err := tritium.OptionsFromEnv(".env")          // or reach the node next d
 nodes, err := client.Nodes()                         // the cluster view
 ```
 
-`tritium-cli` wraps that client for the shell and adds `nodes`:
+`tritium-cli` wraps that client for the shell and adds `scan` and `nodes`:
 
 ```sh
 export TRITIUM_KEY=$(openssl rand -hex 32)
 go run ./cmd/tritium-cli set hello world      # sealed with $TRITIUM_KEY
 go run ./cmd/tritium-cli get hello            # world
 valkey-cli -p 8080 get hello                  # "TE1..." ciphertext
+go run ./cmd/tritium-cli scan 'hel*'          # every matching key, its type and TTL
 go run ./cmd/tritium-cli nodes
 ```
 
@@ -103,6 +104,7 @@ go run ./cmd/tritium-cli nodes
 | `EXPIRE key seconds [NX \| XX \| GT \| LT]` | Seconds must be positive; use `DEL` to remove a key   |
 | `ZADD key score member [...]`               | Plain form only; the set's TTL is refreshed to the default |
 | `ZRANGEBYSCORE`, `ZREM`, `ZREMRANGEBYSCORE`, `ZCARD` | Passed through; writes replicate                |
+| `SCAN cursor [MATCH pattern] [COUNT n] [TYPE t]`, `TYPE key`, `DBSIZE` | Read the local primary, like `GET`; the cursor is opaque. `KEYS` stays unsupported — it has no cursor |
 | `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
 | `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |

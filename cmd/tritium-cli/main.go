@@ -5,6 +5,7 @@
 //	tritium-cli [flags] get KEY
 //	tritium-cli [flags] set [-ttl SECONDS] KEY VALUE
 //	tritium-cli [flags] del KEY
+//	tritium-cli [flags] scan [PATTERN]
 //	tritium-cli [flags] nodes
 package main
 
@@ -113,6 +114,15 @@ func run(client *tritium.Client, cmd string, args []string) error {
 			return err
 		}
 		fmt.Println(map[bool]string{true: "deleted", false: "not found"}[ok])
+	case "scan":
+		if len(args) > 1 {
+			return errors.New("usage: scan [PATTERN]")
+		}
+		pattern := "*"
+		if len(args) == 1 {
+			pattern = args[0]
+		}
+		return scanKeys(client, pattern)
 	case "nodes":
 		nodes, err := client.Nodes()
 		if err != nil {
@@ -123,6 +133,36 @@ func run(client *tritium.Client, cmd string, args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// scanKeys walks every SCAN page for pattern and prints each key with its
+// type and TTL — what KEYS would show, without the O(n) footgun.
+func scanKeys(client *tritium.Client, pattern string) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "KEY\tTYPE\tTTL")
+	var cursor uint64
+	for {
+		keys, next, err := client.Scan(cursor, pattern, 200)
+		if err != nil {
+			return err
+		}
+		for _, k := range keys {
+			typ, err := client.Type(k)
+			if err != nil {
+				return err
+			}
+			ttl, err := client.Do("TTL", k)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "%s\t%s\t%v\n", k, typ, ttl)
+		}
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	return w.Flush()
 }
 
 func printNodes(nodes map[string]storage.NodeInfo) {
@@ -148,7 +188,7 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | nodes")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes")
 	flag.PrintDefaults()
 }
 

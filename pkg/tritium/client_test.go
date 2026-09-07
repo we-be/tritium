@@ -3,8 +3,10 @@ package tritium_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/we-be/tritium/internal/config"
@@ -43,6 +45,90 @@ func TestClient(t *testing.T) {
 	}
 	if nodes, err := c.Nodes(); err != nil || len(nodes) != 1 {
 		t.Fatalf("nodes: %v, %v", nodes, err)
+	}
+}
+
+// A page walk with MATCH visits every live key exactly once, regardless of
+// how COUNT chops it up, and skips what MATCH excludes.
+func TestScan(t *testing.T) {
+	srv, err := server.New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Stop() })
+
+	c, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	want := map[string]bool{}
+	for i := range 25 {
+		k := fmt.Sprintf("scan:%02d", i)
+		want[k] = true
+		if err := c.Set(k, []byte("v"), new(60)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := c.Set("other:key", []byte("v"), new(60)); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := map[string]bool{}
+	var cursor uint64
+	for {
+		keys, next, err := c.Scan(cursor, "scan:*", 5)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range keys {
+			if seen[k] {
+				t.Fatalf("key %q seen twice", k)
+			}
+			seen[k] = true
+		}
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("scan saw %v, want %v", seen, want)
+	}
+	if n, err := c.DBSize(); err != nil || n != 26 {
+		t.Fatalf("DBSize: %v, %v", n, err)
+	}
+}
+
+// TYPE on a key that doesn't exist is "none", not an error.
+func TestType(t *testing.T) {
+	srv, err := server.New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start("127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Stop() })
+
+	c, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	if err := c.Set("type:k", []byte("v"), new(60)); err != nil {
+		t.Fatal(err)
+	}
+	if typ, err := c.Type("type:k"); err != nil || typ != "string" {
+		t.Fatalf("Type: %q, %v", typ, err)
+	}
+	if typ, err := c.Type("type:missing"); err != nil || typ != "none" {
+		t.Fatalf("Type of missing key: %q, %v", typ, err)
 	}
 }
 

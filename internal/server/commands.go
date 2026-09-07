@@ -69,6 +69,9 @@ var commands = map[string]command{
 	"ZREM":              {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
 	"ZREMRANGEBYSCORE":  {min: 3, max: 3, fn: (*session).mutate, passthrough: true},
 	"ZCARD":             {min: 1, max: 1, fn: (*session).query, passthrough: true},
+	"SCAN":              {min: 1, max: -1, fn: (*session).query, passthrough: true},
+	"TYPE":              {min: 1, max: 1, fn: (*session).query, passthrough: true},
+	"DBSIZE":            {min: 0, max: 0, fn: (*session).query, passthrough: true},
 	"INFO":              {min: 0, max: -1, fn: (*session).info},
 	"CLIENT":            {min: 1, max: -1, fn: (*session).client},
 	"COMMAND":           {min: 0, max: -1, fn: (*session).command},
@@ -381,7 +384,10 @@ func (s *session) zadd(args []string) []byte {
 }
 
 // query passes a read-only command through to the primary. The command name
-// is args[0] when called directly by dispatch.
+// is args[0] when called directly by dispatch. SCAN, TYPE and DBSIZE go
+// through here too, reading the local primary like GET; the cursor SCAN
+// hands back is the store's own, opaque to us. KEYS stays unsupported: it
+// has no cursor and is O(n) on a real store.
 func (s *session) query(args []string) []byte {
 	v, err := s.srv.store.Query(args...)
 	if err != nil {
