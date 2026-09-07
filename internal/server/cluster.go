@@ -44,6 +44,7 @@ type cluster struct {
 	done      chan struct{}
 	wg        sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
 	repairing atomic.Bool
+	attaching sync.Mutex // one attach at a time, so two merges cannot both find a peer missing
 }
 
 func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
@@ -279,6 +280,11 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 	if n.StoreAddr == c.local.StoreAddr && !loopback(c.local.StoreAddr) {
 		return // sharing our store; replicating to it would be a self-write (a loopback store is never shared)
+	}
+	c.attaching.Lock()
+	defer c.attaching.Unlock()
+	if !overwrite && slices.Contains(c.server.store.Replicas(), n.Addr) {
+		return // a gossip and a join learned of it at once: one attach, one resync
 	}
 	if err := c.server.store.AddReplica(n.Addr); err != nil {
 		slog.Warn("cluster: attach replica failed", "peer", n.ID, "err", err)
