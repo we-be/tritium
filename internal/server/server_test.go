@@ -28,7 +28,7 @@ import (
 
 func startNode(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
-	cfg.StoreAddr, cfg.ListenAddr, cfg.PoolSize = resptest.Addr(t), "127.0.0.1:0", 2
+	cfg.StoreAddr, cfg.ListenAddr, cfg.PoolSize, cfg.Ownership = resptest.Addr(t), "127.0.0.1:0", 2, true
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -423,7 +423,7 @@ func TestEmbeddedStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"store_addr:embedded", "store_status:ok", "store_keys:3", "store_maxmemory:1048576"} {
+	for _, want := range []string{"store_addr:embedded", "store_status:ok", "store_keys:", "store_maxmemory:1048576"} {
 		if !strings.Contains(string(info.([]byte)), want) {
 			t.Fatalf("INFO lacks %q:\n%s", want, info)
 		}

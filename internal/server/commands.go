@@ -30,15 +30,16 @@ func ttlCommand(key string) resp.Command {
 // another node. Only peers may change membership with TRITIUM.GOSSIP.
 // A node may configure further users with fewer rights (see acl.go).
 type session struct {
-	srv    *Server
-	conn   net.Conn
-	r      *resp.Reader
-	id     int64
-	proto  int
-	authed bool
-	peer   bool
-	user   *config.User      // nil: one of the built-in identities, with no restrictions
-	linked *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
+	srv       *Server
+	conn      net.Conn
+	r         *resp.Reader
+	id        int64
+	proto     int
+	authed    bool
+	peer      bool
+	user      *config.User      // nil: one of the built-in identities, with no restrictions
+	linked    *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
+	forwarded bool              // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
 }
 
 var (
@@ -87,9 +88,15 @@ var commands = map[string]command{
 	"TRITIUM.PEERLINK":  {min: 1, max: 1, fn: (*session).peerlink},
 }
 
+// TRITIUM.FORWARD dispatches the command it carries, so it joins the table
+// at init rather than in the literal that dispatch reads.
+func init() {
+	commands["TRITIUM.FORWARD"] = command{min: 2, max: -1, fn: (*session).forwardHandler}
+}
+
 // peerOnly commands change membership or write straight into the store, so
 // only another node may run them.
-var peerOnly = map[string]bool{"TRITIUM.GOSSIP": true, "TRITIUM.REPLICATE": true, "TRITIUM.PEERLINK": true}
+var peerOnly = map[string]bool{"TRITIUM.GOSSIP": true, "TRITIUM.REPLICATE": true, "TRITIUM.PEERLINK": true, "TRITIUM.FORWARD": true}
 
 func (s *Server) serveConn(c net.Conn) { s.serveConnWith(c, resp.NewReader(c)) }
 
@@ -158,6 +165,13 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	}
 	if n := len(args) - 1; n < cmd.min || (cmd.max >= 0 && n > cmd.max) {
 		return errArity(name), false
+	}
+	if owned[name] && !s.forwarded {
+		if owner := s.srv.ownerOf(args[1]); owner != "" {
+			if reply, ok := s.forwardTo(owner, args); ok {
+				return reply, false
+			}
+		}
 	}
 	if cmd.passthrough {
 		return cmd.fn(s, append([]string{name}, args[1:]...)), false
@@ -398,8 +412,40 @@ func (s *session) mget(args []string) []byte {
 	return s.query(append([]string{"MGET"}, args...))
 }
 
+// del removes keys, each through its owner: the keys of one DEL may belong
+// to several nodes, so they are grouped and the counts added up.
 func (s *session) del(args []string) []byte {
-	return integer(s.srv.store.Delete(args...))
+	if s.forwarded || !s.srv.cfg.Ownership {
+		return integer(s.srv.store.Delete(args...))
+	}
+	byOwner := map[string][]string{}
+	for _, k := range args {
+		owner := s.srv.ownerOf(k)
+		byOwner[owner] = append(byOwner[owner], k)
+	}
+	var total int64
+	for owner, keys := range byOwner {
+		if owner != "" {
+			v, err := s.srv.forward(owner, append([]string{"DEL"}, keys...))
+			var se *resp.ServerError
+			if errors.As(err, &se) {
+				return resp.AppendError(nil, se.Msg)
+			}
+			if err == nil {
+				n, _ := v.(int64)
+				total += n
+				s.srv.forwarded.Add(1)
+				continue
+			}
+			s.srv.fallbacks.Add(1)
+		}
+		n, err := s.srv.store.Delete(keys...)
+		if err != nil {
+			return errMsg(err)
+		}
+		total += n
+	}
+	return resp.AppendInt(nil, total)
 }
 
 // zadd handles ZADD key score member [score member ...], plain form only,
@@ -483,8 +529,8 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nevents:%d\r\n",
-			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), s.srv.eventsKept(local.ID))},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nkey_ownership:%s\r\nforwarded:%d\r\nforward_fallbacks:%d\r\nevents:%d\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), onOff(s.srv.cfg.Ownership), s.srv.forwarded.Load(), s.srv.fallbacks.Load(), s.srv.eventsKept(local.ID))},
 		{"store", s.srv.storeInfo()},
 	}
 
@@ -539,6 +585,13 @@ func (s *Server) storeInfo() string {
 		}
 	}
 	return sb.String()
+}
+
+func onOff(b bool) string {
+	if b {
+		return "on"
+	}
+	return "off"
 }
 
 func replicationMode(async bool) string {

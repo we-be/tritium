@@ -68,6 +68,9 @@ type Server struct {
 	tlsPeer   *tls.Config        // nil: plaintext peer dials
 	embedded  *memstore.Listener // set when the node runs its own store
 	memstore  *memstore.Store
+	fwd       forwarder    // connections to the owners of keys written here
+	forwarded atomic.Int64 // writes carried to their owner, and writes done here because the owner was out of reach
+	fallbacks atomic.Int64
 	active    atomic.Int64
 	bytes     atomic.Int64
 	clientSeq atomic.Int64
@@ -229,6 +232,7 @@ func (s *Server) Stop() error {
 		close(s.linkDone)
 		s.linkWG.Wait()
 		s.links.close()
+		s.fwd.close()
 		if s.cluster != nil {
 			s.cluster.stop()
 		}

@@ -408,6 +408,9 @@ func (c *cluster) localCopy() storage.NodeInfo {
 	return n
 }
 
+// addr is this node's advertised address; set once, so no lock.
+func (c *cluster) addr() string { return c.local.Addr }
+
 func (c *cluster) localJSON() string {
 	b, _ := json.Marshal(c.localCopy())
 	return string(b)

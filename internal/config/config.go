@@ -33,6 +33,7 @@ type Config struct {
 	StoreMaxMemory int64           // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
 	PoolSize       int             // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
 	Async          bool            // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
+	Ownership      bool            // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
 	TLSCert        string          // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
 	TLSKey         string          // TLS_KEY: PEM private key
 	TLSCA          string          // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
@@ -169,6 +170,14 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("MAX_SERVER_CONNECTIONS: %q is not a positive integer", raw)
 	}
 	cfg.PoolSize = n
+
+	switch raw = get("KEY_OWNERSHIP", "on"); strings.ToLower(raw) {
+	case "on", "true", "1":
+		cfg.Ownership = true
+	case "off", "false", "0":
+	default:
+		return Config{}, fmt.Errorf("KEY_OWNERSHIP: %q is not on or off", raw)
+	}
 
 	switch raw = get("REPLICATION", "sync"); strings.ToLower(raw) {
 	case "sync":

@@ -20,6 +20,9 @@ import (
 // default; TRITIUM_CHAOS_SECONDS lengthens it and TRITIUM_CHAOS_SEED replays
 // a run. `make chaos` runs a long one. It runs under both replication modes.
 func TestChaos(t *testing.T) {
+	if os.Getenv("TRITIUM_RESP_ADDR") != "" {
+		t.Skip("chaos needs a store per node: over one shared store every node reads the same last write, and the whole suite is writing to it")
+	}
 	t.Run("sync", func(t *testing.T) { chaos(t, false) })
 	t.Run("async", func(t *testing.T) { chaos(t, true) })
 }

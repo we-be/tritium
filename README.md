@@ -113,8 +113,9 @@ go run ./cmd/tritium-cli nodes
 | `ACL WHOAMI`                                | Which identity the connection carries                   |
 
 Every key expires; the default TTL is 17600 seconds. `XX` and `KEEPTTL` are
-not supported. `NX` is decided by the node's own store, so two nodes can each
-accept the same claim; treat it as first-come per node, not a global lock.
+not supported. Every key has one owner among the live nodes, and its writes
+are carried out there (see below), so `NX` is decided in one place: two
+nodes racing the same claim get one `OK` between them.
 
 ## Messenger
 
@@ -219,6 +220,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
 | `STORE_MAX_MEMORY`       | none             | Bytes the embedded store keeps (`256M`, `1G`); past it the soonest-expiring keys are evicted, and a write with nothing left to evict is refused |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
+| `KEY_OWNERSHIP`          | `on`             | Each key's writes go through its owner node, so `NX` and write order hold cluster-wide; `off` writes locally first and fans out from there |
 | `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer has it. `async`: answered once this node's store has it; peers are fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
@@ -233,8 +235,17 @@ holds strings and sorted sets, expires keys on time, walks `SCAN` without
 ever handing a key out twice, and is reached over RESP through connections
 that never leave the process, so it behaves exactly like an external store
 would — a node restart empties it, and the peers fill it back on rejoin. A
-write goes to the node's own primary with `SETEX`, then fans out to every
-other node's primary. Reads hit the local
+write is carried out by the key's owner — the live node that rendezvous
+hashing picks for that key, the same on every node that agrees on the
+members — which applies it to its own primary with `SETEX` and fans it out
+to every other node's primary, the node that took the client's command
+included, before answering. A node handed a write for a key it does not own
+forwards it as `TRITIUM.FORWARD`; if the owner cannot be reached it applies
+the write itself and fans it out, as every node did before ownership, and a
+held or gone peer stops being picked. So the writes to one key are ordered
+in one place and `NX` holds cluster-wide, except in the moment two nodes
+disagree about the members — a replication timeout, not a key's lifetime.
+`KEY_OWNERSHIP=off` restores local-first writes. Reads hit the local
 primary only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
 current value, or the deletion — until it answers again. Every write waits
