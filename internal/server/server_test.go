@@ -465,3 +465,85 @@ func TestQuickRestartResyncs(t *testing.T) {
 		return n == int64(2)
 	})
 }
+
+// A peer that was forgotten during an outage and restarts on the store it
+// had still reads as a fresh incarnation: what it holds is stale and the
+// survivor's copy wins.
+func TestRestartAfterEvictionIsOverwritten(t *testing.T) {
+	hurry(t)
+	evictAfter = 400 * time.Millisecond
+	seed := startNode(t, config.Config{})
+	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
+	if seed.cluster.local.StoreAddr == peer.cluster.local.StoreAddr {
+		t.Skip("a shared store cannot diverge")
+	}
+	peerAddr, peerStore, peerID := peer.Addr(), peer.cluster.local.StoreAddr, peer.cluster.local.ID
+	c := dial(t, seed)
+	c.want("OK", "SET", "evict:k", "old", "EX", "60")
+	waitFor(t, "the write to replicate", func() bool {
+		v, _ := dial(t, peer).do("GET", "evict:k")
+		return string(v.([]byte)) == "old"
+	})
+	peer.Stop()
+	waitFor(t, "the seed to forget the peer", func() bool {
+		_, ok := seed.Nodes()[peerID]
+		return !ok
+	})
+	c.want("OK", "SET", "evict:k", "new", "EX", "60")
+
+	back, err := New(config.Config{StoreAddr: peerStore, ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := back.Start(peerAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { back.Stop() })
+	if err := back.Join(seed.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	bc := dial(t, back)
+	waitFor(t, "the survivor's copy to win", func() bool {
+		v, _ := bc.do("GET", "evict:k")
+		return string(v.([]byte)) == "new"
+	})
+	c.want("new", "GET", "evict:k")
+}
+
+// A node that notices it was away — its own clock did not tick for longer
+// than peers wait before writing a node off — comes back as a fresh
+// incarnation: peers re-attach and overwrite what it holds.
+func TestStalledNodeIsOverwritten(t *testing.T) {
+	hurry(t)
+	seed := startNode(t, config.Config{})
+	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
+	if seed.cluster.local.StoreAddr == peer.cluster.local.StoreAddr {
+		t.Skip("a shared store cannot diverge")
+	}
+	c, pc := dial(t, seed), dial(t, peer)
+	c.want("OK", "SET", "stall:k", "fresh", "EX", "60")
+	waitFor(t, "the write to replicate", func() bool {
+		v, _ := pc.do("GET", "stall:k")
+		return string(v.([]byte)) == "fresh"
+	})
+	store, err := net.Dial("tcp", peer.cluster.local.StoreAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := resp.NewCommand("SET", "stall:k", "stale", "EX", "60").Do(store, resp.NewReader(store)); err != nil {
+		t.Fatal(err) // straight into the peer's store: the copy it would hold after missing a write
+	}
+	was := peer.cluster.localCopy().Started
+	peer.cluster.mu.Lock()
+	peer.cluster.tick = time.Now().Add(-2 * downAfter)
+	peer.cluster.mu.Unlock()
+	waitFor(t, "the peer to notice its stall", func() bool { return peer.cluster.localCopy().Started.After(was) })
+	waitFor(t, "the seed's copy to win", func() bool {
+		v, _ := pc.do("GET", "stall:k")
+		return string(v.([]byte)) == "fresh"
+	})
+	waitFor(t, "both to be attached again", func() bool {
+		return len(seed.store.Replicas()) == 1 && len(peer.store.Replicas()) == 1
+	})
+}

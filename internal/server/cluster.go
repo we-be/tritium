@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -35,8 +36,10 @@ type cluster struct {
 	mu     sync.RWMutex
 	nodes  map[string]*storage.NodeInfo
 	local  *storage.NodeInfo
-	seeds  []string        // configured peers, dialed until they answer and again whenever they drop out
-	failed map[string]bool // seeds whose last attempt failed, so a retry is logged once, not every tick
+	seeds  []string             // configured peers, dialed until they answer and again whenever they drop out
+	failed map[string]bool      // seeds whose last attempt failed, so a retry is logged once, not every tick
+	gone   map[string]time.Time // Started of every peer forgotten after an outage, so its restart still reads as one
+	tick   time.Time            // when the health check last ran; a long gap means this node was the one away
 	done   chan struct{}
 	wg     sync.WaitGroup // the loops; stop waits for them so nothing gossips after Stop returns
 }
@@ -56,6 +59,8 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		nodes:  map[string]*storage.NodeInfo{local.ID: local},
 		local:  local,
 		seeds:  seeds,
+		gone:   map[string]time.Time{},
+		tick:   time.Now(),
 		failed: map[string]bool{},
 		done:   make(chan struct{}),
 	}
@@ -213,19 +218,21 @@ func (c *cluster) learn(n storage.NodeInfo) {
 	c.merge(map[string]storage.NodeInfo{n.ID: n})
 }
 
-// merge adopts every remote entry that is newer than ours. A peer we are
-// hearing about for the first time, one back from the dead, or one that
-// restarted since we last saw it — a new Started, even inside the window
-// where it never read as down — gets its store attached as a replica and
-// brought up to date. A restart is a fresh incarnation: its old connections
-// are dropped and, as with a return from down, our copies win there.
+// merge adopts every remote entry that is newer than ours and makes sure
+// every live peer is attached as a replica. A peer that restarted since we
+// last saw it — a newer Started, whether it read as down meanwhile, was
+// forgotten, or never left the window — is a fresh incarnation: its old
+// connections are dropped and our copy of every key wins there. Any other
+// peer we are not replicating to yet, met for the first time or back from a
+// partition both of us lived through, keeps what it holds and only has its
+// gaps filled.
 func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 	type attaching struct {
 		node      storage.NodeInfo
-		wasDown   bool
 		restarted bool
 	}
 	var attach []attaching
+	replicating := c.server.store.Replicas()
 	c.mu.Lock()
 	for id, n := range remote {
 		if id == c.local.ID {
@@ -235,10 +242,15 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 		if known && !n.LastSeen.After(cur.LastSeen) {
 			continue
 		}
-		restarted := known && n.Started.After(cur.Started)
-		if time.Since(n.LastSeen) < downAfter && (!known || cur.State == storage.NodeStateDown || restarted) {
-			attach = append(attach, attaching{n, known, restarted})
+		prev := c.gone[id]
+		if known {
+			prev = cur.Started
 		}
+		restarted := !prev.IsZero() && n.Started.After(prev)
+		if time.Since(n.LastSeen) < downAfter && (restarted || !slices.Contains(replicating, n.Addr)) {
+			attach = append(attach, attaching{n, restarted})
+		}
+		delete(c.gone, id)
 		c.nodes[id] = &n
 	}
 	c.mu.Unlock()
@@ -246,17 +258,17 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 		if a.restarted {
 			c.server.store.RemoveReplica(a.node.Addr)
 		}
-		c.attach(a.node, a.wasDown)
+		c.attach(a.node, a.restarted)
 	}
 }
 
 // attach starts replicating to a peer — through its node, which applies our
 // writes to its own store — and, in the background, copies what it has
-// missed. A peer we watched go down and return is stale, so our copy of
-// every key wins there; one we are meeting for the first time keeps what it
-// holds and only has its gaps filled — it may be the survivor and we the one
-// that just started.
-func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
+// missed. With overwrite our copy of every key wins there: the peer is a
+// fresh incarnation that missed whatever we wrote while it was away. Without
+// it the peer keeps what it holds and only has its gaps filled — it may be
+// the survivor and we the one that just started.
+func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 	if n.StoreAddr == c.local.StoreAddr && !loopback(c.local.StoreAddr) {
 		return // sharing our store; replicating to it would be a self-write (a loopback store is never shared)
 	}
@@ -266,12 +278,12 @@ func (c *cluster) attach(n storage.NodeInfo, wasDown bool) {
 	}
 	slog.Info("cluster: peer attached", "peer", n.ID, "store", n.StoreAddr)
 	go func() {
-		copied, err := c.server.store.Sync(n.Addr, wasDown)
+		copied, err := c.server.store.Sync(n.Addr, overwrite)
 		if err != nil {
 			slog.Warn("cluster: resync incomplete", "peer", n.ID, "keys", copied, "err", err)
 			return
 		}
-		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", wasDown)
+		slog.Info("cluster: resynced", "peer", n.ID, "keys", copied, "overwrite", overwrite)
 	}()
 }
 
@@ -295,10 +307,26 @@ func (c *cluster) detach(n storage.NodeInfo) {
 	}
 }
 
+// checkHealth ages every peer by when it last spoke. It also notices when
+// this node was the one away — stopped, asleep, or starved past the point
+// where peers write a node off: whatever they wrote meanwhile is newer than
+// our copy, so we come back as a fresh incarnation (peers re-attach and
+// overwrite us) and meet every peer anew, filling only its gaps.
 func (c *cluster) checkHealth() {
 	var detach []storage.NodeInfo
 	c.mu.Lock()
 	now := time.Now()
+	if gap := now.Sub(c.tick); gap > downAfter {
+		slog.Warn("cluster: stalled, rejoining as a new incarnation", "for", gap.Round(time.Second))
+		c.local.Started = now
+		for id, n := range c.nodes {
+			if id != c.local.ID {
+				detach = append(detach, *n)
+				delete(c.nodes, id)
+			}
+		}
+	}
+	c.tick = now
 	for id, n := range c.nodes {
 		if id == c.local.ID {
 			continue
@@ -317,6 +345,7 @@ func (c *cluster) checkHealth() {
 			detach = append(detach, *n)
 		}
 		if age > evictAfter {
+			c.gone[id] = n.Started
 			delete(c.nodes, id)
 			slog.Info("cluster: peer evicted", "peer", id, "silent_for", age.Round(time.Second))
 		}
@@ -334,10 +363,14 @@ func (c *cluster) touchLocal() {
 	c.local.LastSeen = time.Now()
 }
 
+// localCopy is this node as peers should see it: a node answering right now
+// was last seen right now, whatever its clocks have been through.
 func (c *cluster) localCopy() storage.NodeInfo {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return *c.local
+	n := *c.local
+	n.LastSeen = time.Now()
+	return n
 }
 
 func (c *cluster) localJSON() string {

@@ -179,12 +179,14 @@ Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
 adopts the view, and announces itself to everyone in it with
 `TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
 5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
-is down and dropped from replication, and for 60 s is forgotten. A peer that
-returns, or a node meeting one for the first time, has the other's store copied
-over on attach: a returning peer is stale, so the survivor's keys win there; a
-newcomer keeps what it holds and only has its gaps filled. Node-to-node
-traffic uses the same port and TLS settings as clients, authenticated as the
-`peer` user.
+is down and dropped from replication, and for 60 s is forgotten. Every live
+peer is attached and has the other's store copied over: a peer that restarted
+since it was last seen is a fresh incarnation and stale, so the survivor's keys
+win there; a newcomer, or a peer back from a partition both sides lived
+through, keeps what it holds and only has its gaps filled. A node whose own
+clock stops for longer than 15 s (stopped, asleep, starved) knows it was the
+one away and rejoins as a fresh incarnation itself. Node-to-node traffic uses
+the same port and TLS settings as clients, authenticated as the `peer` user.
 
 ## Security
 
