@@ -344,16 +344,32 @@ func (s *session) set(args []string) []byte {
 		return s.write(key, value, ttl)
 	}
 	// NX is decided by the primary; replicas only hear about it if it won.
-	v, err := s.srv.store.Query("SET", key, value, "EX", strconv.Itoa(ttl), "NX")
+	q, rep := s.stampedPair([]string{"SET", key, value, "EX", strconv.Itoa(ttl), "NX"}, []string{"SETEX", key, strconv.Itoa(ttl), value})
+	v, err := s.srv.store.Query(q...)
 	if err != nil {
 		return errMsg(err)
 	}
 	if v == nil {
 		return s.null()
 	}
-	s.srv.store.Replicate(resp.NewCommand("SETEX", key, strconv.Itoa(ttl), value))
+	s.srv.store.Replicate(resp.NewCommand(rep...))
 	s.srv.bytes.Add(int64(len(value)))
 	return replyOK
+}
+
+// stampedPair stamps a write the primary runs itself and the form its
+// replicas get, with one stamp for both; without stamps they pass through.
+func (s *session) stampedPair(local, remote []string) ([]string, []string) {
+	on, primary := s.srv.store.Stamps()
+	if !on {
+		return local, remote
+	}
+	n := strconv.FormatUint(s.srv.clock.next(), 10)
+	remote = append([]string{"STAMPED", n}, remote...)
+	if primary {
+		local = append([]string{"STAMPED", n}, local...)
+	}
+	return local, remote
 }
 
 func (s *session) setex(args []string) []byte {
@@ -395,14 +411,15 @@ func (s *session) get(args []string) []byte {
 // getdel reads and removes a key in one step on the primary, then tells
 // the replicas to drop it.
 func (s *session) getdel(args []string) []byte {
-	v, err := s.srv.store.Query("GETDEL", args[0])
+	q, rep := s.stampedPair([]string{"GETDEL", args[0]}, []string{"DEL", args[0]})
+	v, err := s.srv.store.Query(q...)
 	if err != nil {
 		return errMsg(err)
 	}
 	if v == nil {
 		return s.null()
 	}
-	s.srv.store.Replicate(resp.NewCommand("DEL", args[0]))
+	s.srv.store.Replicate(resp.NewCommand(rep...))
 	b, _ := v.([]byte)
 	s.srv.bytes.Add(int64(len(b)))
 	return resp.AppendBulk(nil, b)
@@ -529,8 +546,8 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nkey_ownership:%s\r\nforwarded:%d\r\nforward_fallbacks:%d\r\nevents:%d\r\n",
-			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), onOff(s.srv.cfg.Ownership), s.srv.forwarded.Load(), s.srv.fallbacks.Load(), s.srv.eventsKept(local.ID))},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nkey_ownership:%s\r\nforwarded:%d\r\nforward_fallbacks:%d\r\nstamps:%s\r\nevents:%d\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), onOff(s.srv.cfg.Ownership), s.srv.forwarded.Load(), s.srv.fallbacks.Load(), stampsMode(s.srv.store.Stamps()), s.srv.eventsKept(local.ID))},
 		{"store", s.srv.storeInfo()},
 	}
 
@@ -585,6 +602,18 @@ func (s *Server) storeInfo() string {
 		}
 	}
 	return sb.String()
+}
+
+// stampsMode is how INFO reports write stamps: kept by this node's own
+// store, or minted for peers only because an external store keeps none.
+func stampsMode(on, primary bool) string {
+	switch {
+	case on && primary:
+		return "kept"
+	case on:
+		return "pass-through"
+	}
+	return "off"
 }
 
 func onOff(b bool) string {
@@ -653,10 +682,24 @@ var replicatable = map[string]bool{"SET": true, "SETEX": true, "DEL": true, "EXP
 // out again: the peer already sent it to everyone.
 func (s *session) replicate(args []string) []byte {
 	inner := strings.ToUpper(args[0])
+	if inner == "STAMPED" { // a stamped write: our clock moves past it, and a store that keeps no stamps gets it plain
+		if len(args) < 3 {
+			return errArity("TRITIUM.REPLICATE")
+		}
+		stamp, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			return resp.AppendError(nil, "ERR invalid stamp")
+		}
+		s.srv.clock.observe(stamp)
+		inner = strings.ToUpper(args[2])
+		if _, primary := s.srv.store.Stamps(); !primary {
+			args = args[2:]
+		}
+	}
 	if !replicatable[inner] {
 		return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[0]+"'")
 	}
-	v, err := s.srv.store.Apply(resp.NewCommand(append([]string{inner}, args[1:]...)...))
+	v, err := s.srv.store.Apply(resp.NewCommand(args...))
 	if err != nil {
 		return errMsg(err)
 	}

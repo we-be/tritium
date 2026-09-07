@@ -290,3 +290,44 @@ func TestAsyncReplication(t *testing.T) {
 		t.Fatalf("held write not repaired: %q", v)
 	}
 }
+
+// Two stores holding different writes of one key both end with the later
+// one after syncing either way.
+func TestSyncMergesByStamp(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot disagree with itself")
+	}
+	var n uint64
+	next := func() uint64 { n++; return n }
+	aAddr, bAddr := resptest.Addr(t), resptest.Addr(t)
+	a, err := storage.NewStore(aAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	b, err := storage.NewStore(bAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	a.SetStamper(next, true)
+	b.SetStamper(next, true)
+	if err := a.Set("merge:k", []byte("first"), 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set("merge:k", []byte("later"), 60); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Sync(bAddr, true); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := b.Get("merge:k"); string(v) != "later" {
+		t.Fatalf("an older write overwrote the newer one on sync: %q", v)
+	}
+	if _, err := b.Sync(aAddr, false); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := a.Get("merge:k"); string(v) != "later" {
+		t.Fatalf("the newer write did not reach the store holding the older one: %q", v)
+	}
+}

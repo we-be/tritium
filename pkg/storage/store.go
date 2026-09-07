@@ -306,7 +306,13 @@ func (p *pool) forget(keys []string) bool {
 // keysOf names the keys a replicated write touches.
 func keysOf(cmd resp.Command) []string {
 	args, err := resp.NewReader(bytes.NewReader(cmd)).ReadCommand()
-	if err != nil || len(args) < 2 {
+	if err != nil {
+		return nil
+	}
+	if len(args) > 2 && strings.EqualFold(args[0], "STAMPED") { // the stamp is not a key
+		args = args[2:]
+	}
+	if len(args) < 2 {
 		return nil
 	}
 	if strings.EqualFold(args[0], "DEL") {
@@ -421,6 +427,13 @@ type Store struct {
 	// depending on internal/server; see pool.onHold and Repair.
 	holdHook   func(addr string)
 	repairHook func(addr string, keys int)
+	// stamp, when set, marks every string write with STAMPED <n> so it
+	// settles the same way on every store (the memstore's rule: the higher
+	// stamp wins, a delete leaves a tombstone). Replicas always get the
+	// stamped form; the primary only if it understands it — an external
+	// store takes the plain write and keeps no stamps.
+	stamp         func() uint64
+	primaryStamps bool
 	// parked is what a replica removed while held still missed, by address:
 	// a peer detached during a partition is re-attached when the link is
 	// back, and a first-meeting sync only fills its gaps — the keys written
@@ -496,6 +509,38 @@ func (s *Store) SetRepairHook(fn func(addr string, keys int)) {
 	s.repairHook = fn
 }
 
+// SetStamper makes every string write carry a stamp from next; primary
+// says whether this store's own primary keeps stamps.
+func (s *Store) SetStamper(next func() uint64, primary bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stamp, s.primaryStamps = next, primary
+}
+
+// Stamps reports whether writes are stamped, and whether the primary keeps
+// the stamps (an external store does not).
+func (s *Store) Stamps() (on, primary bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.stamp != nil, s.primaryStamps
+}
+
+// stamped returns a write as the primary and the replicas should see it.
+func (s *Store) stamped(args ...string) (local, remote resp.Command) {
+	s.mu.RLock()
+	next, primary := s.stamp, s.primaryStamps
+	s.mu.RUnlock()
+	plain := resp.NewCommand(args...)
+	if next == nil {
+		return plain, plain
+	}
+	stamped := resp.NewCommand(append([]string{"STAMPED", strconv.FormatUint(next(), 10)}, args...)...)
+	if primary {
+		return stamped, stamped
+	}
+	return plain, stamped
+}
+
 // Apply runs one write on the primary only — what a peer's replicated
 // write becomes here, never fanned out again.
 func (s *Store) Apply(cmd resp.Command) (any, error) {
@@ -504,15 +549,15 @@ func (s *Store) Apply(cmd resp.Command) (any, error) {
 
 // Set stores value under key for ttl seconds, then replicates the write.
 func (s *Store) Set(key string, value []byte, ttl int) error {
-	cmd := resp.NewCommand("SETEX", key, strconv.Itoa(ttl), string(value))
-	v, err := s.primary.do(cmd)
+	local, remote := s.stamped("SETEX", key, strconv.Itoa(ttl), string(value))
+	v, err := s.primary.do(local)
 	if err != nil {
 		return fmt.Errorf("primary: %w", err)
 	}
 	if v != "OK" {
 		return fmt.Errorf("primary: unexpected reply %v", v)
 	}
-	s.replicate(cmd)
+	s.replicate(remote)
 	return nil
 }
 
@@ -534,12 +579,12 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Delete removes keys and returns how many existed, then replicates.
 func (s *Store) Delete(keys ...string) (int64, error) {
-	cmd := resp.NewCommand(append([]string{"DEL"}, keys...)...)
-	n, err := s.primary.integer(cmd)
+	local, remote := s.stamped(append([]string{"DEL"}, keys...)...)
+	n, err := s.primary.integer(local)
 	if err != nil {
 		return 0, err
 	}
-	s.replicate(cmd)
+	s.replicate(remote)
 	return n, nil
 }
 
@@ -789,9 +834,17 @@ func (s *Store) copyCommands(keys []string, overwrite, replay bool) ([]resp.Comm
 	if len(keys) == 0 {
 		return nil, 0, nil
 	}
-	probe := make([]resp.Command, 0, 2*len(keys))
+	_, stamps := s.Stamps()
+	per := 2
+	if stamps {
+		per = 3
+	}
+	probe := make([]resp.Command, 0, per*len(keys))
 	for _, k := range keys {
 		probe = append(probe, resp.NewCommand("TYPE", k), resp.NewCommand("TTL", k))
+		if stamps {
+			probe = append(probe, resp.NewCommand("STAMPOF", k))
+		}
 	}
 	replies, err := s.primary.doAll(probe)
 	if err != nil {
@@ -800,22 +853,33 @@ func (s *Store) copyCommands(keys []string, overwrite, replay bool) ([]resp.Comm
 	type want struct {
 		key, typ string
 		ttl      int64
+		stamp    uint64
 	}
 	var wants []want
 	var reads []resp.Command
 	var out []resp.Command
 	for i, k := range keys {
-		typ, _ := replies[2*i].(string)
-		ttl, _ := replies[2*i+1].(int64)
+		typ, _ := replies[per*i].(string)
+		ttl, _ := replies[per*i+1].(int64)
+		var stamp uint64
+		if stamps {
+			n, _ := replies[per*i+2].(int64)
+			stamp = uint64(n)
+		}
 		switch {
 		case typ == "none" && replay:
-			out = append(out, resp.NewCommand("DEL", k))
+			// a delete the other side missed: with its stamp, so it also beats an older write that reaches there later
+			if stamp > 0 {
+				out = append(out, resp.NewCommand("STAMPED", strconv.FormatUint(stamp, 10), "DEL", k))
+			} else {
+				out = append(out, resp.NewCommand("DEL", k))
+			}
 		case ttl <= 0: // gone, or a key without an expiry: not ours
 		case typ == "string":
-			wants = append(wants, want{k, typ, ttl})
+			wants = append(wants, want{k, typ, ttl, stamp})
 			reads = append(reads, resp.NewCommand("GET", k))
 		case typ == "zset":
-			wants = append(wants, want{k, typ, ttl})
+			wants = append(wants, want{k, typ, ttl, 0})
 			reads = append(reads, resp.NewCommand("ZRANGEBYSCORE", k, "-inf", "+inf", "WITHSCORES"))
 		}
 	}
@@ -836,7 +900,10 @@ func (s *Store) copyCommands(keys []string, overwrite, replay bool) ([]resp.Comm
 				continue // expired between the two reads
 			}
 			args := []string{"SET", w.key, string(val), "EX", exp}
-			if !overwrite {
+			switch {
+			case w.stamp > 0: // the stamp decides there, whichever side wrote last
+				args = append([]string{"STAMPED", strconv.FormatUint(w.stamp, 10)}, args...)
+			case !overwrite:
 				args = append(args, "NX")
 			}
 			out = append(out, resp.NewCommand(args...))

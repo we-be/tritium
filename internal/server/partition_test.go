@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resptest"
@@ -149,4 +150,63 @@ func reserve(t *testing.T) string {
 	}
 	defer ln.Close()
 	return ln.Addr().String()
+}
+
+// Both sides of a partition write the same key; once it heals every node
+// holds the later write, and a stale write or delete that turns up
+// afterwards changes nothing.
+func TestPartitionSettlesConflicts(t *testing.T) {
+	hurry(t)
+	realA, realB := reserve(t), reserve(t)
+	linkA, linkB := newLink(t, realA), newLink(t, realB)
+	a, err := New(config.Config{ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2}) // embedded stores keep stamps
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(realA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Stop() })
+	b, err := New(config.Config{ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(realB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Stop() })
+	if err := b.Join(linkA.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	ca, cb := dial(t, a), dial(t, b)
+	aID, bID := a.cluster.local.ID, b.cluster.local.ID
+	waitFor(t, "both attached", func() bool { return len(a.store.Replicas()) == 1 && len(b.store.Replicas()) == 1 })
+	ca.want("OK", "SET", "part:c", "0", "EX", "60")
+	ca.want("OK", "SET", "part:d", "0", "EX", "60")
+	waitFor(t, "the first writes to replicate", func() bool { v, _ := cb.do("GET", "part:d"); return string(v.([]byte)) == "0" })
+
+	linkA.Cut()
+	linkB.Cut()
+	ca.want("OK", "SET", "part:c", "a-side", "EX", "60")
+	ca.want(int64(1), "DEL", "part:d")
+	time.Sleep(3 * time.Millisecond) // b writes later: the clocks are one machine's
+	cb.want("OK", "SET", "part:c", "b-side", "EX", "60")
+	cb.want("OK", "SET", "part:d", "b-side", "EX", "60")
+	waitFor(t, "both to read each other as down", func() bool {
+		return a.Nodes()[bID].State == storage.NodeStateDown && b.Nodes()[aID].State == storage.NodeStateDown
+	})
+	linkA.Heal()
+	linkB.Heal()
+	for _, key := range []string{"part:c", "part:d"} {
+		waitFor(t, key+" to settle on both sides", func() bool {
+			va, _ := ca.do("GET", key)
+			vb, _ := cb.do("GET", key)
+			return va != nil && vb != nil && string(va.([]byte)) == "b-side" && string(vb.([]byte)) == "b-side"
+		})
+	}
+
+	pa := dial(t, a)
+	pa.want("OK", "TRITIUM.REPLICATE", "STAMPED", "1", "SETEX", "part:c", "60", "stale")
+	pa.want(int64(0), "TRITIUM.REPLICATE", "STAMPED", "1", "DEL", "part:c")
+	ca.want("b-side", "GET", "part:c")
 }

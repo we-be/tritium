@@ -43,6 +43,7 @@ type Store struct {
 	gen     uint64
 	used    int64
 	max     int64
+	tomb    map[string]tombstone // stamps of deleted strings, so an older write arriving late cannot bring one back
 	version string
 	started time.Time
 	now     func() time.Time
@@ -51,15 +52,25 @@ type Store struct {
 }
 
 type entry struct {
-	val  []byte
-	zset map[string]float64 // set for a sorted set; val is nil then
-	exp  time.Time
-	gen  uint64 // bumped when the expiry changes, so an older heap item is ignored
-	size int64
+	val   []byte
+	zset  map[string]float64 // set for a sorted set; val is nil then
+	exp   time.Time
+	gen   uint64 // bumped when the expiry changes, so an older heap item is ignored
+	size  int64
+	stamp uint64 // the write stamp a string was last set under; 0 for an unstamped write or a sorted set
+}
+
+// A tombstone outlives its key by this long: a write stamped before the
+// delete can arrive that late from a partition's replay, no later.
+const tombstoneTTL = 24 * time.Hour
+
+type tombstone struct {
+	stamp uint64
+	at    time.Time
 }
 
 func New(o Options) *Store {
-	s := &Store{kv: map[string]*entry{}, seed: maphash.MakeSeed(), max: o.MaxMemory, version: o.Version, now: time.Now, stop: make(chan struct{})}
+	s := &Store{kv: map[string]*entry{}, tomb: map[string]tombstone{}, seed: maphash.MakeSeed(), max: o.MaxMemory, version: o.Version, now: time.Now, stop: make(chan struct{})}
 	s.started = s.now()
 	go s.sweeper()
 	return s
@@ -131,6 +142,11 @@ func (s *Store) exec(b []byte, args []string) []byte {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep(16)
+	return s.run(b, args)
+}
+
+// run answers one command; the caller holds mu.
+func (s *Store) run(b []byte, args []string) []byte {
 	cmd := strings.ToUpper(args[0])
 	switch cmd {
 	case "PING":
@@ -145,6 +161,13 @@ func (s *Store) exec(b []byte, args []string) []byte {
 		return resp.AppendBulkString(b, args[1])
 	case "AUTH", "SELECT", "QUIT":
 		return resp.AppendSimpleString(b, "OK")
+	case "STAMPED":
+		return s.stamped(b, args)
+	case "STAMPOF":
+		if len(args) != 2 {
+			return errArgs(b, cmd)
+		}
+		return resp.AppendInt(b, int64(s.stampOf(args[1])))
 	case "SET":
 		return s.set(b, args)
 	case "SETEX":
@@ -227,6 +250,9 @@ func (s *Store) exec(b []byte, args []string) []byte {
 		for k, e := range s.kv {
 			s.remove(k, e)
 		}
+		for k := range s.tomb {
+			s.untomb(k)
+		}
 		s.exp = s.exp[:0]
 		return resp.AppendSimpleString(b, "OK")
 	case "ZADD":
@@ -308,6 +334,86 @@ func (s *Store) exec(b []byte, args []string) []byte {
 		return resp.AppendBulkString(b, s.info())
 	}
 	return resp.AppendError(b, "ERR unknown command '"+args[0]+"'")
+}
+
+// stamped runs STAMPED <stamp> <write...>: the write is applied only if its
+// stamp is newer than the one the key was last written under — or deleted
+// under, while its tombstone lives — and the key then carries that stamp.
+// So writes to one key from anywhere settle the same way everywhere,
+// whichever order they arrive in. Only strings are stamped: a sorted set's
+// members are written independently, so its writes apply as they come.
+func (s *Store) stamped(b []byte, args []string) []byte {
+	if len(args) < 3 {
+		return errArgs(b, "STAMPED")
+	}
+	n, err := strconv.ParseUint(args[1], 10, 64)
+	if err != nil {
+		return resp.AppendError(b, "ERR invalid stamp")
+	}
+	inner := args[2:]
+	switch strings.ToUpper(inner[0]) {
+	case "SET", "SETEX":
+		if len(inner) < 3 {
+			return errArgs(b, inner[0])
+		}
+		if n <= s.stampOf(inner[1]) {
+			return resp.AppendSimpleString(b, "OK") // an older write, already superseded here
+		}
+		out := s.run(b, inner)
+		if e := s.kv[inner[1]]; e != nil && e.zset == nil {
+			e.stamp = n
+			s.untomb(inner[1])
+		}
+		return out
+	case "DEL":
+		var count int64
+		for _, k := range inner[1:] {
+			if n <= s.stampOf(k) {
+				continue
+			}
+			if e := s.live(k); e != nil {
+				s.remove(k, e)
+				count++
+			}
+			s.entomb(k, n)
+		}
+		return resp.AppendInt(b, count)
+	case "GETDEL":
+		if len(inner) != 2 || n <= s.stampOf(inner[1]) {
+			return resp.AppendNull(b)
+		}
+		out := s.run(b, inner)
+		s.entomb(inner[1], n)
+		return out
+	default:
+		return s.run(b, inner) // sorted-set writes and the rest: the stamp is not theirs to keep
+	}
+}
+
+// stampOf is the stamp a key was last written under: its entry's, its
+// tombstone's, or 0 for a key never written with one.
+func (s *Store) stampOf(k string) uint64 {
+	if e := s.live(k); e != nil {
+		return e.stamp
+	}
+	if t, ok := s.tomb[k]; ok {
+		return t.stamp
+	}
+	return 0
+}
+
+func (s *Store) entomb(k string, stamp uint64) {
+	if _, ok := s.tomb[k]; !ok {
+		s.used += keyOverhead + int64(len(k))
+	}
+	s.tomb[k] = tombstone{stamp: stamp, at: s.now()}
+}
+
+func (s *Store) untomb(k string) {
+	if _, ok := s.tomb[k]; ok {
+		s.used -= keyOverhead + int64(len(k))
+		delete(s.tomb, k)
+	}
 }
 
 func (s *Store) set(b []byte, args []string) []byte {
@@ -545,8 +651,8 @@ func (s *Store) info() string {
 	return fmt.Sprintf("# Server\r\ntritium_version:%s\r\nuptime_in_seconds:%d\r\n"+
 		"# Memory\r\nused_memory:%d\r\nmaxmemory:%d\r\nmaxmemory_policy:volatile-ttl\r\n"+
 		"# Replication\r\nrole:master\r\nconnected_slaves:0\r\n"+
-		"# Keyspace\r\ndb0:keys=%d,expires=%d,avg_ttl=0\r\n",
-		s.version, int64(s.now().Sub(s.started)/time.Second), s.used, s.max, len(s.kv), expiring)
+		"# Keyspace\r\ndb0:keys=%d,expires=%d,avg_ttl=0\r\ntombstones:%d\r\n",
+		s.version, int64(s.now().Sub(s.started)/time.Second), s.used, s.max, len(s.kv), expiring, len(s.tomb))
 }
 
 // ── keys ──────────────────────────────────────────────────────────────────
@@ -615,7 +721,8 @@ func (s *Store) setExpiry(k string, e *entry, exp time.Time) {
 	}
 }
 
-// sweep removes up to limit expired keys, soonest first.
+// sweep removes up to limit expired keys, soonest first, and tombstones
+// past their time.
 func (s *Store) sweep(limit int) {
 	now := s.now().UnixNano()
 	for limit > 0 && len(s.exp) > 0 && s.exp[0].at <= now {
@@ -623,6 +730,14 @@ func (s *Store) sweep(limit int) {
 		if e := s.kv[it.key]; e != nil && e.gen == it.gen {
 			s.remove(it.key, e)
 			limit--
+		}
+	}
+	if limit > 1000 { // the full sweep, once a second: tombstones are few and unindexed
+		cutoff := s.now().Add(-tombstoneTTL)
+		for k, t := range s.tomb {
+			if t.at.Before(cutoff) {
+				s.untomb(k)
+			}
 		}
 	}
 }

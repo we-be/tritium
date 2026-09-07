@@ -148,3 +148,27 @@ func TestZRemRangeByRank(t *testing.T) {
 		t.Fatalf("removed %v, want the oldest one", n)
 	}
 }
+
+// TestStampedWritesSettle: the newer stamp wins whichever order writes arrive, a delete keeps an older write from returning, and a set overrides an older delete.
+func TestStampedWritesSettle(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	do(t, s, "STAMPED", "20", "SET", "k", "new", "EX", "60")
+	do(t, s, "STAMPED", "10", "SET", "k", "old", "EX", "60")
+	if v := do(t, s, "GET", "k"); string(v.([]byte)) != "new" || do(t, s, "STAMPOF", "k") != int64(20) {
+		t.Fatalf("older write landed: %s", v)
+	}
+	do(t, s, "STAMPED", "30", "DEL", "k")
+	do(t, s, "STAMPED", "25", "SET", "k", "late", "EX", "60")
+	if do(t, s, "GET", "k") != nil || do(t, s, "STAMPOF", "k") != int64(30) {
+		t.Fatal("a write older than the delete came back")
+	}
+	do(t, s, "STAMPED", "40", "SET", "k", "again", "EX", "60")
+	if v := do(t, s, "GET", "k"); string(v.([]byte)) != "again" || len(s.tomb) != 0 {
+		t.Fatalf("a newer write after the delete: %v, %d tombstones", v, len(s.tomb))
+	}
+	do(t, s, "STAMPED", "5", "ZADD", "z", "1", "a") // sorted sets are not stamped
+	if do(t, s, "ZCARD", "z") != int64(1) {
+		t.Fatal("a stamped sorted-set write was refused")
+	}
+}

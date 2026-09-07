@@ -142,8 +142,17 @@ the write itself and fans it out, as every node did before ownership, and a
 held or gone peer stops being picked. So the writes to one key are ordered
 in one place and `NX` holds cluster-wide, except in the moment two nodes
 disagree about the members — a replication timeout, not a key's lifetime.
-`KEY_OWNERSHIP=off` restores local-first writes. Reads hit the local
-primary only. A peer that stops answering is held: writes note the keys it
+`KEY_OWNERSHIP=off` restores local-first writes. Every string write also
+carries a stamp — a hybrid clock: the millisecond, a count within it, the
+node — and the embedded store applies a write only if its stamp is newer
+than the key's last, keeping a tombstone after a delete so an older write
+arriving late cannot bring the key back. So whatever order writes reach a
+node, in that disagreement window or across a partition, every node ends
+with the same value: the later write as far as the fleet's clocks agree.
+Sorted sets are not stamped; their members are written independently and
+apply as they come. An external store keeps no stamps, so a node in front
+of one settles by arrival order, as before. Reads hit the local primary
+only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
 current value, or the deletion — until it answers again. Every write waits
 for its peers by default, so a key read from any node right after the answer
@@ -171,8 +180,8 @@ win there; a newcomer, or a peer back from a partition both sides lived
 through, keeps what it holds and only has its gaps filled — and what it
 missed while the link was down, which the other side noted while holding it,
 is replayed on top, so a key updated on one side of a partition reaches the
-other once it heals. A key written on both sides during a partition ends up
-with whichever side's replay landed last. A node whose own clock stops for
+other once it heals, and a key written on both sides ends up, on both, with
+the later write by its stamp. A node whose own clock stops for
 longer than 15 s (stopped, asleep, starved) knows it was the one away and
 rejoins as a fresh incarnation itself. Node-to-node traffic uses
 the same port and TLS settings as clients, authenticated as the `peer` user.

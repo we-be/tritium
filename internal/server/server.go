@@ -69,6 +69,7 @@ type Server struct {
 	embedded  *memstore.Listener // set when the node runs its own store
 	memstore  *memstore.Store
 	fwd       forwarder // connections to the owners of keys written here
+	clock     *clock    // stamps this node's writes
 	connMu    sync.Mutex
 	conns     map[net.Conn]struct{} // accepted connections still being served: Stop closes them and waits, so no handler outlives the node
 	connWG    sync.WaitGroup
@@ -139,6 +140,8 @@ func (s *Server) Serve(ln net.Listener) error {
 		advertise = ln.Addr().String()
 	}
 	s.store.SetReplicaTransport(s.peerTransport())
+	s.clock = newClock(advertise)
+	s.store.SetStamper(s.clock.next, s.cfg.StoreAddr == "")
 	if s.cfg.Async {
 		s.store.SetAsync(asyncDepth)
 	}
