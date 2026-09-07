@@ -11,6 +11,7 @@ import (
 	"hash/maphash"
 	"math"
 	"net"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -24,9 +25,13 @@ import (
 // order and hand a key out exactly once no matter what is written meanwhile.
 const buckets = 4096
 
+// Charged per key and per sorted-set member beyond their own bytes: the
+// entry, the map slots, the expiry item, the string headers. Measured
+// against the live heap (TestHeapPerKey): a 64-byte value costs 274 bytes
+// live, so the charge is what STORE_MAX_MEMORY really bounds.
 const (
-	keyOverhead    = 64 // charged per key beyond its bytes: the entry, the map slots
-	memberOverhead = 24 // per sorted-set member beyond its bytes
+	keyOverhead    = 200
+	memberOverhead = 48
 )
 
 type Options struct {
@@ -72,6 +77,12 @@ type tombstone struct {
 func New(o Options) *Store {
 	s := &Store{kv: map[string]*entry{}, tomb: map[string]tombstone{}, seed: maphash.MakeSeed(), max: o.MaxMemory, version: o.Version, now: time.Now, stop: make(chan struct{})}
 	s.started = s.now()
+	if o.MaxMemory > 0 {
+		// The runtime keeps garbage up to the live heap by default, so a store
+		// at its cap would sit at twice it in RSS; a soft limit above the cap
+		// makes the collector work harder before that.
+		debug.SetMemoryLimit(o.MaxMemory + o.MaxMemory/2)
+	}
 	go s.sweeper()
 	return s
 }

@@ -3,7 +3,9 @@ package messenger
 import (
 	"bytes"
 	"crypto/ecdh"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -20,13 +22,14 @@ import (
 type world struct {
 	t          *testing.T
 	addr       string
+	run        string // this run's suffix on every name
 	alice, bob *Client
 	raw        *tritium.Client
 }
 
-// name scopes a user name to the test, since a real TRITIUM_RESP_ADDR is
-// shared by every test and names are first come, first served.
-func (w *world) name(base string) string { return base + "." + w.t.Name() }
+// name scopes a user name to the test and the run: a real TRITIUM_RESP_ADDR
+// is shared by every test and outlives the run, and names are first come.
+func (w *world) name(base string) string { return base + "." + w.t.Name() + "." + w.run }
 
 func setup(t *testing.T) *world {
 	t.Helper()
@@ -38,7 +41,9 @@ func setup(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { srv.Stop() })
-	w := &world{t: t, addr: srv.Addr()}
+	var r [4]byte
+	rand.Read(r[:])
+	w := &world{t: t, addr: srv.Addr(), run: hex.EncodeToString(r[:])}
 	w.alice = w.user("alice")
 	w.bob = w.user("bob")
 	w.raw = w.conn()

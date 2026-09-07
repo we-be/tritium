@@ -44,9 +44,10 @@ func NewCommand(args ...string) Command {
 		n += 1 + len(strconv.Itoa(len(a))) + 2 + len(a) + 2 // $<len>\r\n<data>\r\n
 	}
 	cmd := make(Command, 0, n)
-	cmd = fmt.Appendf(cmd, "*%d\r\n", len(args))
+	cmd = append(strconv.AppendInt(append(cmd, '*'), int64(len(args)), 10), '\r', '\n')
 	for _, a := range args {
-		cmd = fmt.Appendf(cmd, "$%d\r\n%s\r\n", len(a), a)
+		cmd = append(strconv.AppendInt(append(cmd, '$'), int64(len(a)), 10), '\r', '\n')
+		cmd = append(append(cmd, a...), '\r', '\n')
 	}
 	return cmd
 }
