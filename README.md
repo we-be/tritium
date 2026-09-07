@@ -170,13 +170,16 @@ list of device fingerprints it expects, the same way it already pins one.
 
 ```sh
 go run ./cmd/tritium-msg -state ~/.tritium-msg-phone init bob/phone   # the device publishes itself first
-go run ./cmd/tritium-msg device authorize phone    # run as bob: certifies bob/phone onto bob
+go run ./cmd/tritium-msg -state ~/.tritium-msg-phone me                # its fingerprint, read on the device
+go run ./cmd/tritium-msg device authorize phone <FINGERPRINT>          # run as bob: certifies bob/phone onto bob
 go run ./cmd/tritium-msg device list               # certified devices and their fingerprints
 go run ./cmd/tritium-msg send bob "hey"            # reaches bob's primary identity and bob/phone
 ```
 
-The device roster shares the bundle's TTL; `device authorize` refreshes it,
-same as `Publish` does for a bundle.
+The device roster shares the bundle's TTL and is refreshed whenever the name
+republishes. A roster's version only moves forward on any client that has
+seen a newer one, so a copy replayed into the store cannot bring back a
+device, or a group member, since removed.
 
 ### Groups
 

@@ -311,7 +311,7 @@ func (s *Session) seal(plaintext, aad []byte) (encHeader, ct []byte, err error) 
 // state moves on a copy and is committed only when the ciphertext
 // verifies: a forged header must never leave a real session unable to
 // read its peer.
-func (s *Session) open(encHeader, ct, aad []byte) ([]byte, error) {
+func (s *Session) open(encHeader, ct, aad []byte) (pt []byte, n uint32, err error) {
 	aad = append(aad, encHeader...)
 	// a message skipped earlier: its header opens under a header key we set a key aside for
 	tried := map[string]bool{}
@@ -331,44 +331,46 @@ func (s *Session) open(encHeader, ct, aad []byte) ([]byte, error) {
 		}
 		pt, err := aead(e.MK, ct, aad, false)
 		if err != nil {
-			return nil, ErrDecrypt
+			return nil, 0, ErrDecrypt
 		}
 		delete(s.Skipped, skipKey(sk.HK, h.N))
-		return unpad(pt)
+		pt, err = unpad(pt)
+		return pt, h.N, err
 	}
 	t := *s
 	pending := map[string]skipped{}
 	h, ok := hdecrypt(t.RecvHeader, encHeader)
 	if ok {
 		if h.N < t.Nr {
-			return nil, ErrReplay
+			return nil, 0, ErrReplay
 		}
 	} else {
 		if h, ok = hdecrypt(t.NextRecv, encHeader); !ok {
-			return nil, ErrDecrypt
+			return nil, 0, ErrDecrypt
 		}
 		if t.RecvChain != nil { // finish the peer's previous chain first
 			if err := t.skipTo(h.PN, pending); err != nil {
-				return nil, err
+				return nil, 0, err
 			}
 		}
 		if err := t.dhRatchet(h.DH); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	if err := t.skipTo(h.N, pending); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	mk := kdfChain(&t.RecvChain)
 	t.Nr++
-	pt, err := aead(mk, ct, aad, false)
+	pt, err = aead(mk, ct, aad, false)
 	if err != nil {
-		return nil, ErrDecrypt
+		return nil, 0, ErrDecrypt
 	}
 	*s = t
 	maps.Copy(s.Skipped, pending)
 	s.pruneSkipped()
-	return unpad(pt)
+	pt, err = unpad(pt)
+	return pt, h.N, err
 }
 
 // skipTo derives and sets aside the keys for messages Nr..n-1 of the current

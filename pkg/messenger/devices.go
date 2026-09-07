@@ -26,7 +26,20 @@ const deviceRosterLabel = "tritium-messenger-v1 device-roster"
 var (
 	ErrBadDeviceRoster = errors.New("messenger: device roster is malformed or its signature is invalid")
 	ErrNotDevice       = errors.New("messenger: bundle's name or keys do not match the device being authorized")
+	ErrStaleRoster     = errors.New("messenger: roster is older than one already seen")
 )
+
+// current records a roster version and reports whether it is at least the
+// newest this client has seen under key. A roster is a signed value anyone
+// can write back to the store, so without this an old copy — one that still
+// lists a device or member since removed — could be replayed by whoever kept it.
+func (c *Client) current(key string, version int) bool {
+	if version < c.rosters[key] {
+		return false
+	}
+	c.rosters[key] = version
+	return true
+}
 
 // DeviceCert is one device's long-term keys as certified by the name's
 // primary identity. The device's own bundle (published separately, and
@@ -106,7 +119,8 @@ func (c *Client) AuthorizeDevice(device string, bundle Bundle) (DeviceRoster, er
 	if !replaced {
 		roster.Devices = append(roster.Devices, cert)
 	}
-	roster.Version++
+	roster.Version = max(roster.Version, c.rosters["devices:"+c.id.Name]) + 1 // past anything a receiver has seen, even if the store holds an older copy
+	c.rosters["devices:"+c.id.Name] = roster.Version
 	roster.Sig = ed25519.Sign(c.id.signing, roster.signed())
 	data, err := json.Marshal(roster)
 	if err != nil {
@@ -152,8 +166,8 @@ func (c *Client) LookupAll(name string) ([]Bundle, error) {
 		return out, nil // no devices registered
 	}
 	var roster DeviceRoster
-	if err := json.Unmarshal(raw, &roster); err != nil || roster.Verify(primary) != nil {
-		return out, nil // malformed or not signed by this name's identity: ignore, primary still works
+	if err := json.Unmarshal(raw, &roster); err != nil || roster.Verify(primary) != nil || !c.current("devices:"+name, roster.Version) {
+		return out, nil // malformed, not signed by this name's identity, or older than one seen: the primary still works
 	}
 	for _, cert := range roster.Devices {
 		b, err := c.Lookup(name + "/" + cert.Device)

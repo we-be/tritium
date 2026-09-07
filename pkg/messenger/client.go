@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/we-be/tritium/pkg/tritium"
@@ -25,6 +26,8 @@ const (
 
 var ErrNameTaken = errors.New("messenger: name is registered to another identity")
 
+var seq atomic.Uint32 // messages sent by this process, for messageID
+
 // Client is one user's messenger: their identity, their sessions, and a
 // tritium connection. The tritium client must not have its own Key set;
 // the messenger does its own sealing.
@@ -34,10 +37,11 @@ type Client struct {
 	TTL       int                 // seconds a message lives on the server; 0 uses the node's default
 	sessions  map[string]*Session // by peer fingerprint
 	helloSeen []string            // hello mailbox entries read by the last Receive, deleted by the next
+	rosters   map[string]int      // highest version seen per device or group roster: an older one replayed is refused
 }
 
 func New(t *tritium.Client, id *Identity) *Client {
-	return &Client{t: t, id: id, sessions: map[string]*Session{}}
+	return &Client{t: t, id: id, sessions: map[string]*Session{}, rosters: map[string]int{}}
 }
 
 // Message is a decrypted message from a peer. Group is set only once the
@@ -49,6 +53,7 @@ type Message struct {
 	Time  time.Time
 	Body  []byte
 	Group string
+	seq   uint32 // the message's number in its sender's chain: order within one millisecond
 }
 
 // envelope is the stored form of a message. On first contact EK is the
@@ -87,8 +92,11 @@ func (c *Client) Publish() error {
 	if existing.Fingerprint() != c.id.Fingerprint() {
 		return ErrNameTaken
 	}
-	_, err = c.t.Do("SET", key, string(b), "EX", strconv.Itoa(bundleTTL))
-	return err
+	if _, err = c.t.Do("SET", key, string(b), "EX", strconv.Itoa(bundleTTL)); err != nil {
+		return err
+	}
+	c.t.Do("EXPIRE", "devices:"+c.id.Name, strconv.Itoa(bundleTTL)) // the roster lives as long as the name that signed it
+	return nil
 }
 
 // Lookup fetches and verifies the bundle published under name. Verify the
@@ -225,7 +233,14 @@ func (c *Client) Receive() ([]Message, error) {
 			}
 		}
 	}
-	slices.SortFunc(out, func(a, b Message) int { return a.Time.Compare(b.Time) })
+	// The mailbox index is by millisecond; two messages sent within one
+	// come back in key order, so the sender's own count breaks the tie.
+	slices.SortStableFunc(out, func(a, b Message) int {
+		if c := a.Time.Compare(b.Time); c != 0 {
+			return c
+		}
+		return int(a.seq) - int(b.seq)
+	})
 	return out, nil
 }
 
@@ -335,7 +350,7 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 		slog.Warn("messenger: malformed message", "key", it.key)
 		return Message{}, false
 	}
-	pt, err := s.open(env.EH, env.CT, aad(it.key))
+	pt, n, err := s.open(env.EH, env.CT, aad(it.key))
 	if err != nil {
 		slog.Warn("messenger: dropped message", "key", it.key, "err", err)
 		return Message{}, false
@@ -349,6 +364,7 @@ func (c *Client) openWith(s *Session, it item) (Message, bool) {
 		From: s.Peer,
 		Time: time.UnixMilli(int64(binary.BigEndian.Uint64(pt))),
 		Body: pt[8:],
+		seq:  n,
 	}, true
 }
 
@@ -364,12 +380,13 @@ func (c *Client) Sessions() []Bundle {
 type state struct {
 	Sessions  map[string]*Session `json:"sessions"`
 	HelloSeen []string            `json:"hello_seen,omitempty"`
+	Rosters   map[string]int      `json:"rosters,omitempty"`
 }
 
 // State serializes sessions and read positions for storage. It contains
 // chain keys; keep it as secret as the identity.
 func (c *Client) State() ([]byte, error) {
-	return json.Marshal(state{c.sessions, c.helloSeen})
+	return json.Marshal(state{c.sessions, c.helloSeen, c.rosters})
 }
 
 func (c *Client) Restore(data []byte) error {
@@ -379,6 +396,9 @@ func (c *Client) Restore(data []byte) error {
 	}
 	if st.Sessions == nil {
 		st.Sessions = map[string]*Session{}
+	}
+	if st.Rosters != nil {
+		c.rosters = st.Rosters
 	}
 	dropped := 0
 	for fp, s := range st.Sessions {
@@ -409,10 +429,12 @@ func helloMailbox(b Bundle) string {
 	return "hello:" + hex.EncodeToString(sum[:16])
 }
 
+// messageID orders a sender's messages in the mailbox: by millisecond, then
+// by a counter, so two sent within one millisecond keep their order there.
 func messageID(now time.Time) string {
 	var r [4]byte
 	rand.Read(r[:])
-	return strconv.FormatInt(now.UnixMilli(), 10) + "-" + hex.EncodeToString(r[:])
+	return fmt.Sprintf("%d-%08x-%s", now.UnixMilli(), seq.Add(1), hex.EncodeToString(r[:]))
 }
 
 // aad binds a ciphertext to the key it is stored under; the session adds the

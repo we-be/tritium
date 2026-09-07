@@ -9,8 +9,8 @@
 //	                                     send from a throwaway identity, print the reply
 //	tritium-msg [flags] serve [-name NAME]
 //	                                     JSON lines: incoming on stdout, replies on stdin
-//	tritium-msg [flags] device authorize DEVICE
-//	                                     certify a device published as NAME/DEVICE onto NAME
+//	tritium-msg [flags] device authorize DEVICE FINGERPRINT
+//	                                     certify a device published as NAME/DEVICE onto NAME; the fingerprint is read on the device itself
 //	tritium-msg [flags] device list      devices certified onto NAME
 //	tritium-msg [flags] group create/add/remove/send/list NAME ...
 //	                                     a roster this identity created (add/remove), or belongs to (send)
@@ -262,16 +262,19 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 // the devices already authorized.
 func device(client *messenger.Client, id *messenger.Identity, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: device authorize DEVICE | device list")
+		return errors.New("usage: device authorize DEVICE FINGERPRINT | device list")
 	}
 	switch args[0] {
 	case "authorize":
-		if len(args) != 2 {
-			return errors.New("usage: device authorize DEVICE")
+		if len(args) != 3 {
+			return errors.New("usage: device authorize DEVICE FINGERPRINT   (the fingerprint from `me` on the device)")
 		}
 		bundle, err := client.Lookup(id.Name + "/" + args[1])
 		if err != nil {
 			return err
+		}
+		if bundle.Fingerprint() != args[2] { // the device key is first come like any name: never certify whatever squats there
+			return fmt.Errorf("%s/%s is published by %s, not the fingerprint given", id.Name, args[1], bundle.Fingerprint())
 		}
 		if _, err := client.AuthorizeDevice(args[1], bundle); err != nil {
 			return err
@@ -521,7 +524,7 @@ func readJSON(path string, v any) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE | device list | group create/add/remove/send/list NAME ...")
+	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE FINGERPRINT | device list | group create/add/remove/send/list NAME ...")
 	flag.PrintDefaults()
 }
 

@@ -100,6 +100,9 @@ func (c *Client) LookupGroup(name string) (Group, error) {
 	if err := g.Verify(creator); err != nil {
 		return Group{}, err
 	}
+	if !c.current("grp:"+name, g.Version) {
+		return Group{}, ErrStaleRoster
+	}
 	return g, nil
 }
 
@@ -129,7 +132,8 @@ func (c *Client) editGroup(name string, edit func(*Group)) (Group, error) {
 		return Group{}, ErrNotCreator
 	}
 	edit(&g)
-	g.Version++
+	g.Version = max(g.Version, c.rosters["grp:"+name]) + 1
+	c.rosters["grp:"+name] = g.Version
 	g.Sig = ed25519.Sign(c.id.signing, g.signed())
 	data, err := json.Marshal(g)
 	if err != nil {

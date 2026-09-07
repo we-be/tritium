@@ -525,3 +525,31 @@ func TestHeadersAreOpaque(t *testing.T) {
 	}
 	w.receive(w.bob, "one", "two")
 }
+
+// A roster replayed from before a device was removed is refused by a client
+// that has seen the newer one.
+func TestRosterReplayRefused(t *testing.T) {
+	w := setup(t)
+	phoneID, _ := NewIdentity(w.alice.id.Name + "/phone")
+	phone := New(w.conn(), phoneID)
+	if err := phone.Publish(); err != nil {
+		t.Fatal(err)
+	}
+	bundle, _ := w.alice.Lookup(phoneID.Name)
+	if _, err := w.alice.AuthorizeDevice("phone", bundle); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := w.raw.Do("GET", "devices:"+w.alice.id.Name)
+	tabletID, _ := NewIdentity(w.alice.id.Name + "/tablet")
+	tablet := New(w.conn(), tabletID)
+	tablet.Publish()
+	tb, _ := w.alice.Lookup(tabletID.Name)
+	w.alice.AuthorizeDevice("tablet", tb)
+	if all, _ := w.bob.LookupAll(w.alice.id.Name); len(all) != 3 {
+		t.Fatalf("bob sees %d bundles, want the primary and two devices", len(all))
+	}
+	w.raw.Do("SET", "devices:"+w.alice.id.Name, string(old.([]byte)))
+	if all, _ := w.bob.LookupAll(w.alice.id.Name); len(all) != 1 {
+		t.Fatalf("bob sees %d bundles after the replay, want the primary alone", len(all))
+	}
+}
