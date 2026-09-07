@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -556,5 +557,68 @@ func TestRosterReplayRefused(t *testing.T) {
 	w.raw.Do("SET", "devices:"+w.alice.id.Name, string(old.([]byte)))
 	if all, _ := w.bob.LookupAll(w.alice.id.Name); len(all) != 1 {
 		t.Fatalf("bob sees %d bundles after the replay, want the primary alone", len(all))
+	}
+}
+
+// A machine being set up runs the messenger as a user with rights over its
+// own name, the hello and mailbox keys and nothing else: it can publish,
+// be found, receive a secret and answer, and it cannot touch anyone else's
+// name.
+func TestInviteUserRunsTheMessenger(t *testing.T) {
+	t.Setenv("USER_setup", "invite:w:id:newbie;r:id:,devices:;rw:hello:,mbx:,msg:")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.StoreAddr, cfg.ListenAddr, cfg.PoolSize, cfg.Password = resptest.Addr(t), "127.0.0.1:0", 2, "boss"
+	srv, err := server.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(cfg.ListenAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Stop() })
+
+	invited, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr(), User: "setup", Password: "invite"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer invited.Close()
+	newID, _ := NewIdentity("newbie")
+	newbie := New(invited, newID)
+	if err := newbie.Publish(); err != nil {
+		t.Fatalf("the invited machine could not publish itself: %v", err)
+	}
+	if _, err := invited.Do("SET", "id:bazzite", "squat", "EX", "60"); err == nil || !strings.Contains(err.Error(), "NOPERM") {
+		t.Fatalf("the invite could write another name: %v", err)
+	}
+
+	full, err := tritium.NewClient(&tritium.ClientOptions{Address: srv.Addr(), Password: "boss"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer full.Close()
+	adminID, _ := NewIdentity("admin")
+	admin := New(full, adminID)
+	if err := admin.Publish(); err != nil {
+		t.Fatal(err)
+	}
+	b, err := admin.Lookup("newbie")
+	if err != nil || b.Fingerprint() != newID.Fingerprint() {
+		t.Fatalf("lookup of the invited name: %v, %v", b, err)
+	}
+	if err := admin.Send(b, []byte("AUTH_PASSWORD=the-real-one")); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := newbie.Receive()
+	if err != nil || len(msgs) != 1 || string(msgs[0].Body) != "AUTH_PASSWORD=the-real-one" {
+		t.Fatalf("the invited machine received %v, %v", msgs, err)
+	}
+	if err := newbie.Send(msgs[0].From, []byte("got it")); err != nil {
+		t.Fatalf("the invited machine could not answer: %v", err)
+	}
+	if got, err := admin.Receive(); err != nil || len(got) != 1 || string(got[0].Body) != "got it" {
+		t.Fatalf("the answer: %v, %v", got, err)
 	}
 }

@@ -48,7 +48,8 @@ func main() {
 	home, _ := os.UserHomeDir()
 	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
-	password := flag.String("password", "", "AUTH password")
+	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
+	user := flag.String("user", os.Getenv("TRITIUM_USER"), "AUTH as this user instead of the default one (default $TRITIUM_USER)")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
 	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
 	dir := flag.String("state", filepath.Join(home, ".tritium-msg"), "directory holding identity and session state")
@@ -67,6 +68,9 @@ func main() {
 		if !set["password"] {
 			*password = loc.Password
 		}
+		if !set["user"] && *user == "" {
+			*user = loc.User
+		}
 		if !set["ca"] && loc.CA != "" {
 			*ca = loc.CA
 		}
@@ -76,7 +80,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, Password: *password}
+	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, User: *user, Password: *password}
 	if *useTLS || *ca != "" {
 		var err error
 		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
@@ -192,18 +196,37 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		}
 		fmt.Printf("%s  %s\n", b.Name, b.Fingerprint())
 	case "send":
-		if len(args) < 2 {
-			return errors.New("usage: send NAME TEXT | send NAME -file PATH | send NAME -   (stdin)")
+		fs := flag.NewFlagSet("send", flag.ContinueOnError)
+		fp := fs.String("fp", "", "refuse unless NAME's published fingerprint is exactly this; the message then goes to that identity alone")
+		if err := fs.Parse(args); err != nil {
+			return err
 		}
-		body, err := messageBody(args[1:])
+		if fs.NArg() < 2 {
+			return errors.New("usage: send [-fp FP] NAME TEXT | send [-fp FP] NAME -file PATH | send [-fp FP] NAME -   (stdin)")
+		}
+		name := fs.Arg(0)
+		body, err := messageBody(fs.Args()[1:])
 		if err != nil {
 			return err
 		}
 		if err := publish(); err != nil {
 			return err
 		}
+		if *fp != "" { // a secret goes to the fingerprint read on the other machine, whatever the store says
+			b, err := client.Lookup(name)
+			if err != nil {
+				return err
+			}
+			if b.Fingerprint() != *fp {
+				return fmt.Errorf("%s is published by %s, not %s: refusing to send", name, b.Fingerprint(), *fp)
+			}
+			if err := client.Send(b, body); err != nil {
+				return err
+			}
+			return save()
+		}
 		// fans out to every device certified under NAME, not just its primary identity
-		if err := client.SendAll(args[0], body); err != nil {
+		if err := client.SendAll(name, body); err != nil {
 			return err
 		}
 		return save()
@@ -221,6 +244,8 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		fs := flag.NewFlagSet("recv", flag.ContinueOnError)
 		watch := fs.Bool("watch", false, "keep polling until interrupted")
 		every := fs.Duration("every", 2*time.Second, "poll interval with -watch")
+		raw := fs.Bool("raw", false, "print each body alone, nothing else — a received file lands as sent")
+		fromFP := fs.String("fp", "", "with -raw: print only what this fingerprint sent, so a secret is taken from the sender you expect")
 		if err := fs.Parse(args); err != nil {
 			return err
 		}
@@ -238,6 +263,14 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 				return err
 			}
 			for _, m := range msgs {
+				if *raw {
+					if *fromFP == "" || m.From.Fingerprint() == *fromFP {
+						os.Stdout.Write(m.Body)
+					} else {
+						fmt.Fprintf(os.Stderr, "tritium-msg: dropped a message from %s (%s), not the pinned sender\n", m.From.Name, m.From.Fingerprint())
+					}
+					continue
+				}
 				via := ""
 				if m.Group != "" {
 					via = " #" + m.Group

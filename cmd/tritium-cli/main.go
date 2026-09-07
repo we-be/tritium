@@ -29,7 +29,8 @@ import (
 func main() {
 	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
 	addr := flag.String("addr", "localhost:8080", "node address")
-	password := flag.String("password", "", "AUTH password")
+	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
+	user := flag.String("user", os.Getenv("TRITIUM_USER"), "AUTH as this user instead of the default one (default $TRITIUM_USER)")
 	useTLS := flag.Bool("tls", false, "connect with TLS")
 	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
 	key := flag.String("key", os.Getenv("TRITIUM_KEY"), "32-byte encryption key as hex or base64; values are sealed client-side (default $TRITIUM_KEY)")
@@ -48,6 +49,9 @@ func main() {
 		if !set["password"] {
 			*password = loc.Password
 		}
+		if !set["user"] && *user == "" {
+			*user = loc.User
+		}
 		if !set["ca"] && loc.CA != "" {
 			*ca = loc.CA
 		}
@@ -57,7 +61,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, Password: *password}
+	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, User: *user, Password: *password}
 	if *key != "" {
 		var err error
 		if opts.Key, err = tritium.ParseKey(*key); err != nil {

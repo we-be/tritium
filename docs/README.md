@@ -9,3 +9,4 @@ security. What's here goes deeper on one topic each:
   per-user key-prefix ACLs (`USER_<name>`) for a client that should get less
   than a node's own password, and what it costs to host one.
 - [benchmarks.md](benchmarks.md) — what a node, the embedded store and the fleet measure, and what the memory cap really bounds
+- [security-review.md](security-review.md) — the threat model, what the 2026-09-07 sweep found and changed, handing secrets to a new machine, a node on a travelling laptop, the cloud node, and what to do when a machine is lost

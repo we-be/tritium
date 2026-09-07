@@ -255,6 +255,7 @@ go run ./cmd/tritium-msg -state ~/.tritium-msg-phone me                # its fin
 go run ./cmd/tritium-msg device authorize phone <FINGERPRINT>          # run as bob: certifies bob/phone onto bob
 go run ./cmd/tritium-msg device list               # certified devices and their fingerprints
 go run ./cmd/tritium-msg send bob "hey"            # reaches bob's primary identity and bob/phone
+go run ./cmd/tritium-msg send -fp <FP> bob -file secrets.env   # a secret: pinned to bob's fingerprint, read from a file, never on the command line
 ```
 
 The device roster shares the bundle's TTL and is refreshed whenever the name

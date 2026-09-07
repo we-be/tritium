@@ -29,3 +29,5 @@ The store itself is not a trust boundary: it's RAM-only and every key
 expires, but a node with `AUTH_PASSWORD` (or none set) can read anything not
 sealed client-side, same as any Redis-protocol server can read what it's
 handed in the clear.
+
+The latest review, with the threat model and the operating procedures that follow from it, is [docs/security-review.md](docs/security-review.md).
