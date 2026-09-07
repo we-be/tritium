@@ -9,7 +9,8 @@ key, and any Redis client can talk to any node.
 
 The [tritium-wails](https://github.com/we-be/tritium-wails) desktop client
 talks to it. The design notes live in
-[this gist](https://gist.github.com/hunterjsb/572f8e3b66dde9551e3fa3652f6b40b7).
+[this gist](https://gist.github.com/hunterjsb/572f8e3b66dde9551e3fa3652f6b40b7);
+docs beyond this file are indexed in [docs/](docs/README.md).
 
 ## Run it
 
@@ -36,9 +37,9 @@ podman compose up --build        # or: docker compose up --build
 
 Prebuilt binaries for Linux and macOS, amd64 and arm64, plus 32-bit ARM for a
 Pi Zero, are on the [releases page](https://github.com/we-be/tritium/releases);
-each tarball holds
-`tritium`, `tritium-cli`, `tritium-monitor` and `tritium-msg`. `make dist` builds
-the same set locally.
+each tarball holds `tritium`, `tritium-cli`, `tritium-monitor`, `tritium-msg`
+and `tritium-load`. `make dist` builds the same set locally, and
+`brew install --formula packaging/homebrew/tritium.rb` installs a release.
 
 ## Use it
 
@@ -50,7 +51,8 @@ valkey-cli -p 8081 get hello                  # any node answers
 valkey-cli -p 8080 info tritium
 ```
 
-From Python:
+From Python — see `examples/python/` for a runnable version, including one
+that reads back a value sealed the way the Go client seals it:
 
 ```python
 import redis
@@ -60,7 +62,7 @@ r.get("hello")
 ```
 
 From Go, without pulling in a Redis library, and with values encrypted before
-they leave the process:
+they leave the process — `examples/go/` runs this against a real node:
 
 ```go
 import "github.com/we-be/tritium/pkg/tritium"
@@ -80,7 +82,7 @@ opts, err := tritium.OptionsFromEnv(".env")          // or reach the node next d
 nodes, err := client.Nodes()                         // the cluster view
 ```
 
-`tritium-cli` wraps that client for the shell and adds `scan` and `nodes`:
+`tritium-cli` wraps that client for the shell and adds `scan`, `nodes` and `events`:
 
 ```sh
 export TRITIUM_KEY=$(openssl rand -hex 32)
@@ -88,7 +90,9 @@ go run ./cmd/tritium-cli set hello world      # sealed with $TRITIUM_KEY
 go run ./cmd/tritium-cli get hello            # world
 valkey-cli -p 8080 get hello                  # "TE1..." ciphertext
 go run ./cmd/tritium-cli scan 'hel*'          # every matching key, its type and TTL
+go run ./cmd/tritium-cli del hello
 go run ./cmd/tritium-cli nodes
+go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's cluster events
 ```
 
 ### Commands
@@ -108,7 +112,9 @@ go run ./cmd/tritium-cli nodes
 | `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
 | `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
-| `TRITIUM.GOSSIP <node-json>`                | What nodes send each other; replies with the view       |
+| `TRITIUM.GOSSIP <node-json>`                | Peer-only. What nodes send each other; replies with the view |
+| `TRITIUM.REPLICATE cmd [args...]`           | Peer-only. A write's owner fans this out to every other node's primary |
+| `TRITIUM.FORWARD cmd [args...]`             | Peer-only. A write for a key this node doesn't own, sent on to the owner |
 | `TRITIUM.PEERLINK <node-json>`              | Peer-only. Hands this connection to the node that answers, which serves the peer over it from then on ([docs/cloud.md](docs/cloud.md)) |
 | `ACL WHOAMI`                                | Which identity the connection carries                   |
 
@@ -116,6 +122,69 @@ Every key expires; the default TTL is 17600 seconds. `XX` and `KEEPTTL` are
 not supported. Every key has one owner among the live nodes, and its writes
 are carried out there (see below), so `NX` is decided in one place: two
 nodes racing the same claim get one `OK` between them.
+
+## How a cluster works
+
+Each node owns one RESP primary: its own, in-process, unless
+`SECURE_STORE_ADDRESS` points it at an external one (replicate that however
+you like; the compose file gives each one a replica). The embedded store
+holds strings and sorted sets, expires keys on time, walks `SCAN` without
+ever handing a key out twice, and is reached over RESP through connections
+that never leave the process, so it behaves exactly like an external store
+would — a node restart empties it, and the peers fill it back on rejoin. A
+write is carried out by the key's owner — the live node that rendezvous
+hashing picks for that key, the same on every node that agrees on the
+members — which applies it to its own primary with `SETEX` and fans it out
+to every other node's primary, the node that took the client's command
+included, before answering. A node handed a write for a key it does not own
+forwards it as `TRITIUM.FORWARD`; if the owner cannot be reached it applies
+the write itself and fans it out, as every node did before ownership, and a
+held or gone peer stops being picked. So the writes to one key are ordered
+in one place and `NX` holds cluster-wide, except in the moment two nodes
+disagree about the members — a replication timeout, not a key's lifetime.
+`KEY_OWNERSHIP=off` restores local-first writes. Reads hit the local
+primary only. A peer that stops answering is held: writes note the keys it
+missed instead of waiting on it, and every 5 s the node replays them — the
+current value, or the deletion — until it answers again. Every write waits
+for its peers by default, so a key read from any node right after the answer
+is there; over a slow link `REPLICATION=async` answers once the local store
+has the write and feeds peers in order from a queue, and `tritium-load -peer`
+shows the lag that buys. A peer that falls too far behind is held and
+repaired like one that stopped answering.
+
+Each node keeps its own cluster events — attach, detach, hold, repair,
+stall, evict, resync, and its own start — in `tritium:events:<node id>`, a
+sorted set scored by time and capped at a day and a few hundred entries so a
+flapping peer can't grow it without bound. It replicates like any other key,
+so `go run ./cmd/tritium-cli events [-since 1h] [-node NAME]` shows what
+happened across the whole fleet from any one node, and the monitor's Recent
+Events panel reads the same log.
+
+Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
+adopts the view, and announces itself to everyone in it with
+`TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
+5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
+is down and dropped from replication, and for 60 s is forgotten. Every live
+peer is attached and has the other's store copied over: a peer that restarted
+since it was last seen is a fresh incarnation and stale, so the survivor's keys
+win there; a newcomer, or a peer back from a partition both sides lived
+through, keeps what it holds and only has its gaps filled — and what it
+missed while the link was down, which the other side noted while holding it,
+is replayed on top, so a key updated on one side of a partition reaches the
+other once it heals. A key written on both sides during a partition ends up
+with whichever side's replay landed last. A node whose own clock stops for
+longer than 15 s (stopped, asleep, starved) knows it was the one away and
+rejoins as a fresh incarnation itself. Node-to-node traffic uses
+the same port and TLS settings as clients, authenticated as the `peer` user.
+
+A node that cannot be dialed — behind NAT, on another network from the rest
+of the fleet — sets `LINK_ADDRESS` instead of `JOIN_ADDRESS`: it opens the
+connections itself and is served over them with `TRITIUM.PEERLINK`, so
+gossip, replication, holding and repair all work unchanged over a socket it
+opened rather than one that dialed it. That is how a fleet gets a node that
+is always reachable — in the cloud, rather than behind a home NAT — without
+a VPN. See [docs/cloud.md](docs/cloud.md) for the design, what changed on the
+wire, and what it costs to run one.
 
 ## Messenger
 
@@ -226,60 +295,6 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
 | `TLS_CLIENT_AUTH`        | `false`          | Require client certificates: mutual TLS for clients and between nodes   |
 
-## How it works
-
-Each node owns one RESP primary: its own, in-process, unless
-`SECURE_STORE_ADDRESS` points it at an external one (replicate that however
-you like; the compose file gives each one a replica). The embedded store
-holds strings and sorted sets, expires keys on time, walks `SCAN` without
-ever handing a key out twice, and is reached over RESP through connections
-that never leave the process, so it behaves exactly like an external store
-would — a node restart empties it, and the peers fill it back on rejoin. A
-write is carried out by the key's owner — the live node that rendezvous
-hashing picks for that key, the same on every node that agrees on the
-members — which applies it to its own primary with `SETEX` and fans it out
-to every other node's primary, the node that took the client's command
-included, before answering. A node handed a write for a key it does not own
-forwards it as `TRITIUM.FORWARD`; if the owner cannot be reached it applies
-the write itself and fans it out, as every node did before ownership, and a
-held or gone peer stops being picked. So the writes to one key are ordered
-in one place and `NX` holds cluster-wide, except in the moment two nodes
-disagree about the members — a replication timeout, not a key's lifetime.
-`KEY_OWNERSHIP=off` restores local-first writes. Reads hit the local
-primary only. A peer that stops answering is held: writes note the keys it
-missed instead of waiting on it, and every 5 s the node replays them — the
-current value, or the deletion — until it answers again. Every write waits
-for its peers by default, so a key read from any node right after the answer
-is there; over a slow link `REPLICATION=async` answers once the local store
-has the write and feeds peers in order from a queue, and `tritium-load -peer`
-shows the lag that buys. A peer that falls too far behind is held and
-repaired like one that stopped answering.
-
-Each node keeps its own cluster events — attach, detach, hold, repair,
-stall, evict, resync, and its own start — in `tritium:events:<node id>`, a
-sorted set scored by time and capped at a day and a few hundred entries so a
-flapping peer can't grow it without bound. It replicates like any other key,
-so `go run ./cmd/tritium-cli events [-since 1h] [-node NAME]` shows what
-happened across the whole fleet from any one node, and the monitor's Recent
-Events panel reads the same log.
-
-Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
-adopts the view, and announces itself to everyone in it with
-`TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
-5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
-is down and dropped from replication, and for 60 s is forgotten. Every live
-peer is attached and has the other's store copied over: a peer that restarted
-since it was last seen is a fresh incarnation and stale, so the survivor's keys
-win there; a newcomer, or a peer back from a partition both sides lived
-through, keeps what it holds and only has its gaps filled — and what it
-missed while the link was down, which the other side noted while holding it,
-is replayed on top, so a key updated on one side of a partition reaches the
-other once it heals. A key written on both sides during a partition ends up
-with whichever side's replay landed last. A node whose own clock stops for
-longer than 15 s (stopped, asleep, starved) knows it was the one away and
-rejoins as a fresh incarnation itself. Node-to-node traffic uses
-the same port and TLS settings as clients, authenticated as the `peer` user.
-
 ## Security
 
 - **RAM-only.** The embedded store never touches disk; run an external one
@@ -305,7 +320,7 @@ the same port and TLS settings as clients, authenticated as the `peer` user.
   `tritium.ParseKey` (hex or base64) or `tritium.KeyFromPassphrase`.
 
 The sealed format is `"TE1" || 12-byte nonce || AES-256-GCM(plaintext, aad = key name)`,
-so other languages can read it. In Python with `cryptography`:
+so other languages can read it — `examples/python/sealed.py` is a runnable version of this:
 
 ```python
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -320,10 +335,11 @@ plaintext = AESGCM(key).decrypt(ct[3:15], ct[15:], b"hello")
 make test          # unit tests against an in-process RESP fake
 make integration   # same tests against a real server on localhost:6379
 make lint          # gofmt, go vet, go fix
-make image         # container image
 ```
 
-CI runs all of the above on every push.
+CI runs all of the above, plus a container build, on every push. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow, including the
+zero-dependency rule and `pkg/tritium`'s compatibility expectations.
 
 ## TUI
 
