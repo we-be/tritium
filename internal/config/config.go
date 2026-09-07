@@ -4,6 +4,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"slices"
@@ -14,6 +15,7 @@ import (
 const (
 	DefaultListenAddr = "localhost:8080"
 	DefaultPoolSize   = 4
+	DefaultMaxClients = 10000
 )
 
 // EmbeddedStore is what a node reports as its store address when it runs
@@ -32,6 +34,7 @@ type Config struct {
 	StorePassword  string          // SECURE_STORE_PASSWORD: AUTH for the store and every replica
 	StoreMaxMemory int64           // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
 	PoolSize       int             // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
+	MaxClients     int             // MAX_CLIENTS: connections a node accepts at once; more are refused. 0: no limit
 	Async          bool            // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
 	Ownership      bool            // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
 	TLSCert        string          // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
@@ -65,6 +68,15 @@ func LoadLocal(path string) (Local, error) {
 		password = u.Password
 	}
 	return Local{Addr: "127.0.0.1:" + port, User: cfg.AuthUser, Password: password, StorePassword: cfg.StorePassword, CA: cfg.TLSCA}, nil
+}
+
+// warnIfShared says so when a file holding passwords can be read by other
+// users of the machine; it goes on loading it, since the node is what keeps
+// the plane up, but the line is in the log.
+func warnIfShared(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
+		slog.Warn("config file is readable by other users; chmod 600 it", "path", path, "mode", fi.Mode().Perm())
+	}
 }
 
 // StoreLabel names the store for logs and INFO: its address, or "embedded".
@@ -130,6 +142,7 @@ func Load(path string) (Config, error) {
 		if vals, err = ReadDotenv(path); err != nil {
 			return Config{}, err
 		}
+		warnIfShared(path)
 	}
 	get := func(key, def string) string {
 		if v, ok := os.LookupEnv(key); ok {
@@ -164,7 +177,14 @@ func Load(path string) (Config, error) {
 		cfg.StoreMaxMemory = size
 	}
 
-	raw := get("MAX_SERVER_CONNECTIONS", strconv.Itoa(DefaultPoolSize))
+	raw := get("MAX_CLIENTS", strconv.Itoa(DefaultMaxClients))
+	clients, err := strconv.Atoi(raw)
+	if err != nil || clients < 0 {
+		return Config{}, fmt.Errorf("MAX_CLIENTS: %q is not a non-negative integer", raw)
+	}
+	cfg.MaxClients = clients
+
+	raw = get("MAX_SERVER_CONNECTIONS", strconv.Itoa(DefaultPoolSize))
 	n, err := strconv.Atoi(raw)
 	if err != nil || n < 1 {
 		return Config{}, fmt.Errorf("MAX_SERVER_CONNECTIONS: %q is not a positive integer", raw)

@@ -28,6 +28,11 @@ const DefaultTTL = 17600
 // queued before it is held and repaired instead.
 const asyncDepth = 4096
 
+// authTimeout is how long a connection may sit without authenticating: an
+// open port on the internet collects connections that never say anything,
+// and each holds a file descriptor and a goroutine until it goes.
+var authTimeout = 10 * time.Second
+
 // Version is reported by INFO and HELLO. Release builds stamp it with -X;
 // a `go install ...@vX.Y.Z` build takes it from the module version instead.
 var Version = "dev"
@@ -160,6 +165,11 @@ func (s *Server) acceptLoop() {
 			}
 			slog.Warn("accept failed", "err", err)
 			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		if s.cfg.MaxClients > 0 && s.active.Load() >= int64(s.cfg.MaxClients) {
+			c.Write(resp.AppendError(nil, "ERR max number of clients reached"))
+			c.Close()
 			continue
 		}
 		s.connMu.Lock()

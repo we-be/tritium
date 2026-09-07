@@ -193,13 +193,17 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		fmt.Printf("%s  %s\n", b.Name, b.Fingerprint())
 	case "send":
 		if len(args) < 2 {
-			return errors.New("usage: send NAME TEXT")
+			return errors.New("usage: send NAME TEXT | send NAME -file PATH | send NAME -   (stdin)")
+		}
+		body, err := messageBody(args[1:])
+		if err != nil {
+			return err
 		}
 		if err := publish(); err != nil {
 			return err
 		}
 		// fans out to every device certified under NAME, not just its primary identity
-		if err := client.SendAll(args[0], []byte(strings.Join(args[1:], " "))); err != nil {
+		if err := client.SendAll(args[0], body); err != nil {
 			return err
 		}
 		return save()
@@ -256,6 +260,20 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// messageBody is what `send` carries: the words on the command line, a file
+// (-file PATH), or standard input (-). A secret handed to a new machine
+// should come from a file or a pipe, never from the command line, where
+// every process on the sender's box can read it.
+func messageBody(args []string) ([]byte, error) {
+	switch {
+	case len(args) == 2 && args[0] == "-file":
+		return os.ReadFile(args[1])
+	case len(args) == 1 && args[0] == "-":
+		return io.ReadAll(os.Stdin)
+	}
+	return []byte(strings.Join(args, " ")), nil
 }
 
 // device authorizes a device published under id.Name+"/"+DEVICE, or lists

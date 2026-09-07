@@ -129,9 +129,15 @@ func TestMatch(t *testing.T) {
 	}{
 		{"*", "", true}, {"k:*", "k:1/2", true}, {"k:?", "k:12", false}, {"[a-c]x", "bx", true},
 		{"[^a-c]x", "bx", false}, {"\\*", "*", true}, {"\\*", "a", false}, {"a*b*c", "aXXbYYc", true}, {"a*b*c", "aXXbYY", false},
+		{"*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b", strings.Repeat("a", 200), false}, // exponential in a recursive matcher
+		{"k:*:[0-9]", "k:x/y:7", true}, {"k:*", "", false}, {"", "", true},
 	} {
+		start := time.Now()
 		if got := match(tc.p, tc.s); got != tc.want {
 			t.Errorf("match(%q, %q) = %v", tc.p, tc.s, got)
+		}
+		if time.Since(start) > 50*time.Millisecond {
+			t.Errorf("match(%q, …) took %v", tc.p, time.Since(start))
 		}
 	}
 }

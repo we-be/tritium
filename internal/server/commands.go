@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
@@ -37,6 +39,7 @@ type session struct {
 	proto     int
 	authed    bool
 	peer      bool
+	fails     int               // AUTHs refused on this connection; it is closed after maxAuthFailures
 	user      *config.User      // nil: one of the built-in identities, with no restrictions
 	linked    *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
 	forwarded bool              // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
@@ -114,7 +117,15 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 	}()
 
 	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == ""}
+	waiting := false // a deadline is set while the connection has not authenticated
 	for {
+		if !sess.authed {
+			c.SetReadDeadline(time.Now().Add(authTimeout))
+			waiting = true
+		} else if waiting {
+			c.SetReadDeadline(time.Time{})
+			waiting = false
+		}
 		args, err := sess.r.ReadCommand()
 		if err != nil {
 			if errors.Is(err, resp.ErrInvalidCommand) || errors.Is(err, resp.ErrInvalidType) {
@@ -144,11 +155,11 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 		return replyOK, true
 	case "AUTH":
 		if r := s.authenticate(args[1:]); r != nil {
-			return r, false
+			return r, s.fails >= maxAuthFailures
 		}
 		return replyOK, false
 	case "HELLO":
-		return s.hello(args[1:]), false
+		return s.hello(args[1:]), s.fails >= maxAuthFailures
 	}
 	if !s.authed {
 		return replyNoAuth, false
@@ -214,17 +225,33 @@ func (s *session) authenticate(args []string) []byte {
 		want = s.srv.peerPassword()
 	default:
 		u, ok := s.srv.cfg.Users[user]
-		if !ok || subtle.ConstantTimeCompare([]byte(password), []byte(u.Password)) != 1 {
-			return replyWrongPass
+		if !ok {
+			u.Password = strings.Repeat("\x00", len(password)) // an unknown user takes as long as a wrong password
+		}
+		if subtle.ConstantTimeCompare([]byte(password), []byte(u.Password)) != 1 || !ok {
+			return s.refuse()
 		}
 		s.authed, s.peer, s.user = true, false, &u
 		return nil
 	}
 	if want == "" || subtle.ConstantTimeCompare([]byte(password), []byte(want)) != 1 {
-		return replyWrongPass
+		return s.refuse()
 	}
 	s.authed, s.peer, s.user = true, user == "peer", nil
 	return nil
+}
+
+// maxAuthFailures is how many refused AUTHs a connection gets before it is
+// closed: guessing has to reconnect every few tries, and a run of them is
+// visible in the log.
+const maxAuthFailures = 5
+
+func (s *session) refuse() []byte {
+	s.fails++
+	if s.fails >= maxAuthFailures {
+		slog.Warn("closing a connection after repeated AUTH failures", "client", s.conn.RemoteAddr().String())
+	}
+	return replyWrongPass
 }
 
 // isPeer reports whether the connection may change cluster membership: it
@@ -690,7 +717,9 @@ func (s *session) replicate(args []string) []byte {
 		if err != nil {
 			return resp.AppendError(nil, "ERR invalid stamp")
 		}
-		s.srv.clock.observe(stamp)
+		if !s.srv.clock.observe(stamp) {
+			return resp.AppendError(nil, "ERR stamp too far ahead of this node's clock")
+		}
 		inner = strings.ToUpper(args[2])
 		if _, primary := s.srv.store.Stamps(); !primary {
 			args = args[2:]

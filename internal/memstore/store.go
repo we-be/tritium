@@ -877,58 +877,67 @@ func (h *expiries) Pop() any {
 
 // ── glob ──────────────────────────────────────────────────────────────────
 
-// match is the server's glob: * ? [set] [^set] [a-z] and \ escapes.
+// match is the server's glob: * ? [set] [^set] [a-z] and \ escapes. It
+// walks both strings once and backtracks only to the last *, so a pattern
+// built to make a recursive matcher branch at every star (the CVE-2022-36021
+// shape against Redis) costs O(len(pattern) * len(key)) here, not more.
 func match(p, s string) bool {
 	if !strings.ContainsAny(p, `*?[\`) {
 		return p == s
 	}
-	for len(p) > 0 {
-		switch p[0] {
-		case '*':
-			for len(p) > 0 && p[0] == '*' {
-				p = p[1:]
-			}
-			if len(p) == 0 {
-				return true
-			}
-			for i := 0; i <= len(s); i++ {
-				if match(p, s[i:]) {
-					return true
-				}
-			}
-			return false
-		case '?':
-			if len(s) == 0 {
-				return false
-			}
-			p, s = p[1:], s[1:]
-		case '[':
-			end := strings.IndexByte(p[1:], ']')
-			if end < 0 {
-				if len(s) == 0 || s[0] != '[' {
-					return false
-				}
-				p, s = p[1:], s[1:]
+	pi, si := 0, 0
+	starP, starS := -1, 0 // where the last * was, and where s stood then
+	for si < len(s) {
+		if pi < len(p) {
+			switch p[pi] {
+			case '*':
+				starP, starS = pi, si
+				pi++
 				continue
+			case '?':
+				pi++
+				si++
+				continue
+			case '[':
+				if end := strings.IndexByte(p[pi+1:], ']'); end >= 0 {
+					set := p[pi+1 : pi+1+end]
+					neg := strings.HasPrefix(set, "^")
+					if inSet(strings.TrimPrefix(set, "^"), s[si]) != neg {
+						pi += end + 2
+						si++
+						continue
+					}
+					break // no match here: fall back to the last star
+				}
+				if s[si] == '[' {
+					pi++
+					si++
+					continue
+				}
+			case '\\':
+				if pi+1 < len(p) && p[pi+1] == s[si] {
+					pi += 2
+					si++
+					continue
+				}
+			default:
+				if p[pi] == s[si] {
+					pi++
+					si++
+					continue
+				}
 			}
-			set := p[1 : 1+end]
-			p = p[end+2:]
-			neg := strings.HasPrefix(set, "^")
-			if len(s) == 0 || inSet(strings.TrimPrefix(set, "^"), s[0]) == neg {
-				return false
-			}
-			s = s[1:]
-		default:
-			if p[0] == '\\' && len(p) > 1 {
-				p = p[1:]
-			}
-			if len(s) == 0 || p[0] != s[0] {
-				return false
-			}
-			p, s = p[1:], s[1:]
 		}
+		if starP < 0 {
+			return false
+		}
+		starS++ // let the last * swallow one more byte and try again from there
+		pi, si = starP+1, starS
 	}
-	return len(s) == 0
+	for pi < len(p) && p[pi] == '*' {
+		pi++
+	}
+	return pi == len(p)
 }
 
 func inSet(set string, c byte) bool {

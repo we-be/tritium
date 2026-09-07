@@ -45,13 +45,25 @@ func (c *clock) next() uint64 {
 	return c.ms<<24 | c.seq<<12 | c.node
 }
 
+// maxStampAhead is how far past this node's own clock a peer's stamp may
+// reach: a stamp written into the far future would win every later write
+// to its key for as long as the key lived, and drag this clock along.
+const maxStampAhead = uint64(time.Hour / time.Millisecond)
+
 // observe moves the clock past a stamp a peer wrote, so what this node
-// writes after seeing it is stamped after it.
-func (c *clock) observe(stamp uint64) {
+// writes after seeing it is stamped after it. A stamp more than an hour
+// ahead of this node's clock is refused instead: the peer's clock is
+// wrong, or the peer is not what it claims.
+func (c *clock) observe(stamp uint64) bool {
 	ms, seq := stamp>>24, (stamp>>12)&0xfff
+	now := uint64(max(time.Now().UnixMilli()-stampEpoch, 0))
+	if ms > now+maxStampAhead {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if ms > c.ms || (ms == c.ms && seq > c.seq) {
 		c.ms, c.seq = ms, seq
 	}
+	return true
 }

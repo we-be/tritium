@@ -40,6 +40,7 @@ func users(vals map[string]string, file string) (map[string]User, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", UsersFileVar, err)
 		}
+		warnIfShared(file)
 		maps.Copy(raw, fv)
 	}
 	for k, v := range vals {

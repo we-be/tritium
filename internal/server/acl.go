@@ -44,11 +44,12 @@ var keyedCommands = map[string]keyed{
 	"ZREMRANGEBYSCORE": {write: true},
 }
 
-// openCommands touch no key, so every user may run them: the handshake, the
-// health of the node, and the cluster view.
+// openCommands touch no key, so every user may run them: the handshake and
+// the health of the node. The cluster view — every member's address — is
+// the node's own business, not a lesser credential's.
 var openCommands = map[string]bool{
 	"PING": true, "ECHO": true, "INFO": true, "CLIENT": true,
-	"COMMAND": true, "SELECT": true, "TRITIUM.NODES": true, "ACL": true,
+	"COMMAND": true, "SELECT": true, "ACL": true,
 }
 
 // allow returns the reply refusing a command this session's user may not run,

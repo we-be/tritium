@@ -298,6 +298,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
 | `STORE_MAX_MEMORY`       | none             | Bytes the embedded store keeps (`256M`, `1G`); past it the soonest-expiring keys are evicted, and a write with nothing left to evict is refused |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
+| `MAX_CLIENTS`            | `10000`          | Connections a node accepts at once; more are turned away with an error. A connection that has not authenticated within 10 s, or is refused five `AUTH`s, is closed |
 | `KEY_OWNERSHIP`          | `on`             | Each key's writes go through its owner node, so `NX` and write order hold cluster-wide; `off` writes locally first and fans out from there |
 | `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer has it. `async`: answered once this node's store has it; peers are fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
