@@ -660,7 +660,7 @@ func TestSignedThingsAreBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.Version = 1<<32 + 1
+	g.Version = -1 // out of range: refused before the signature is even checked, on any word size
 	if err := g.Verify(w.alice.id.Bundle()); err == nil {
 		t.Fatal("a version past the bound verified")
 	}
