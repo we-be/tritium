@@ -109,6 +109,8 @@ go run ./cmd/tritium-cli nodes
 | `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
 | `TRITIUM.GOSSIP <node-json>`                | What nodes send each other; replies with the view       |
+| `TRITIUM.PEERLINK <node-json>`              | Peer-only. Hands this connection to the node that answers, which serves the peer over it from then on ([docs/cloud.md](docs/cloud.md)) |
+| `ACL WHOAMI`                                | Which identity the connection carries                   |
 
 Every key expires; the default TTL is 17600 seconds. `XX` and `KEEPTTL` are
 not supported. `NX` is decided by the node's own store, so two nodes can each
@@ -207,7 +209,11 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `LISTEN_ADDRESS`         | `localhost:8080` | Where the node accepts clients and peers                                |
 | `ADVERTISE_ADDRESS`      | bound address    | Address peers dial; set it behind NAT or in containers                  |
 | `JOIN_ADDRESS`           | none             | Nodes to join, comma-separated; dialed until they answer and again whenever one drops out, so nodes boot in any order. Unset seeds a new cluster |
+| `LINK_ADDRESS`           | none             | Peers that cannot dial us back: joined like `JOIN_ADDRESS`, but we open the connections and are served over them ([docs/cloud.md](docs/cloud.md)) |
 | `AUTH_PASSWORD`          | none             | Password clients must `AUTH` with                                       |
+| `USER_<name>`            | none             | `<password>:<rights>` — a client with only the key prefixes it names, e.g. `pw:rw:node:gateway,sig:;r:board:` |
+| `USERS_FILE`             | none             | A file of those entries, one per line, with the bare name on the left of the `=` |
+| `AUTH_USER`              | none             | Which of them a client next to this node (`-config`) authenticates as     |
 | `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
 | `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
@@ -273,6 +279,11 @@ the same port and TLS settings as clients, authenticated as the `peer` user.
   its writes to the newcomer's store, so membership has its own credential.
   `TRITIUM.GOSSIP` is refused to anyone not authenticated as `peer`, and under
   `TLS_CLIENT_AUTH` also to any connection without a verified certificate.
+- **Users with fewer rights.** `USER_<name>=<password>:<rights>` configures a
+  client that may only touch the key prefixes it names — `AUTH <name>
+  <password>`, `NOPERM` outside them, never a peer command, and never a command
+  whose keys the node cannot locate. It is how a credential lives somewhere the
+  node's own password should not. See [docs/cloud.md](docs/cloud.md).
 - **Encryption in transit.** Set `TLS_CERT` and `TLS_KEY`; add `TLS_CA` and
   `TLS_CLIENT_AUTH=true` for mutual TLS, which covers node-to-node traffic too.
 - **Encryption at rest, end to end.** Give the Go client a `Key` and every

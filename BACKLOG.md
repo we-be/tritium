@@ -10,7 +10,7 @@ node does. Check an item off with the commit that closed it.
 - SCAN/TYPE/DBSIZE for clients, `pkg/tritium.Scan`, key browser in tritium-wails — agent
 - fleet event log in the plane (the Visibility item below) — agent
 - messenger: several devices per name, groups by pairwise fan-out — agent
-- cloud node + adapter so the mubs serverless worker can join the plane with a lesser credential — agent
+- [x] cloud node + adapter so the mubs serverless worker can join the plane with a lesser credential (`LINK_ADDRESS`/`TRITIUM.PEERLINK` reverse peering, `USER_<name>` prefix rights, `docs/cloud.md`) — agent, 2026-09-07
 - public-project polish (README, package docs, examples) — agent, after the above merge
 
 ## Now
@@ -37,7 +37,8 @@ node does. Check an item off with the commit that closed it.
 
 - [ ] Last-writer-wins for keys written on both sides of a partition: today whichever side's replay lands last wins; a per-key write stamp carried in `TRITIUM.REPLICATE` and compared by the receiving node would make it deterministic. Only matters when both networks write the same key — mubs' presence and mailboxes are per node
 - [x] Messenger groups; multiple devices per identity — devices are a second identity per device, certified onto a name by its primary identity (`devices:<name>`); groups are a creator-signed roster (`grp:<name>`) sent by pairwise fan-out, group name carried in the encrypted plaintext; envelope format unchanged — `msg-devices` branch, 2026-09-07
-- [ ] (claimed, 2026-09-07 wave) A cloud node, so a fleet that spans networks has a member that is always up
+- [x] A cloud node, so a fleet that spans networks has a member that is always up — 2026-09-07, `docs/cloud.md`
+- [ ] Relay through a node that both sides can reach: today `TRITIUM.REPLICATE` is applied and never fanned out again, so two nodes that cannot dial each other cannot exchange writes even when both link to the same cloud node. Needs the sender's identity on the wire (a `via` argument, so a relayed write cannot echo back or clobber a newer local write) — a change both fleet nodes must take together. Only matters once a machine leaves the LAN
 
 ## Done
 
