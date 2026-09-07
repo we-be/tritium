@@ -15,3 +15,4 @@ go.work
 # unless -o is given
 examples/go/go
 __pycache__/
+*.rdb
