@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/memstore"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -60,8 +61,10 @@ type Server struct {
 	store     *storage.Store
 	listener  net.Listener
 	cluster   *cluster
-	tlsServer *tls.Config // nil: plaintext listener
-	tlsPeer   *tls.Config // nil: plaintext peer dials
+	tlsServer *tls.Config        // nil: plaintext listener
+	tlsPeer   *tls.Config        // nil: plaintext peer dials
+	embedded  *memstore.Listener // set when the node runs its own store
+	memstore  *memstore.Store
 	active    atomic.Int64
 	bytes     atomic.Int64
 	clientSeq atomic.Int64
@@ -75,14 +78,25 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := storage.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
+	s := &Server{cfg: cfg, tlsServer: tlsServer, tlsPeer: tlsPeer}
+	if cfg.StoreAddr == "" {
+		// The node's own store: reached over RESP like any other, through
+		// connections that never leave the process.
+		s.memstore = memstore.New(memstore.Options{MaxMemory: cfg.StoreMaxMemory, Version: Version})
+		s.embedded = memstore.Listen()
+		go s.memstore.Serve(s.embedded)
+		via := storage.Transport{Dial: func(string) (net.Conn, error) { return s.embedded.Dial() }}
+		s.store, err = storage.NewStoreVia(via, config.EmbeddedStore, cfg.PoolSize)
+	} else {
+		s.store, err = storage.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
 	}
 	if cfg.Password != "" && cfg.PeerPassword == "" {
 		slog.Warn("PEER_PASSWORD is unset, so any client that knows AUTH_PASSWORD can join the cluster")
 	}
-	return &Server{cfg: cfg, store: store, tlsServer: tlsServer, tlsPeer: tlsPeer}, nil
+	return s, nil
 }
 
 // peerPassword is what nodes present to each other as AUTH peer <password>.
@@ -119,7 +133,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	if s.cfg.Async {
 		s.store.SetAsync(asyncDepth)
 	}
-	s.cluster = newCluster(s, advertise, s.cfg.StoreAddr, s.cfg.Seeds())
+	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
 	go s.acceptLoop()
 	return nil
 }
@@ -212,6 +226,10 @@ func (s *Server) Stop() error {
 			err = s.listener.Close()
 		}
 		s.store.Close()
+		if s.embedded != nil {
+			s.embedded.Close()
+			s.memstore.Close()
+		}
 	})
 	return err
 }

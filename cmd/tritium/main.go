@@ -38,7 +38,7 @@ func main() {
 		slog.Error("listen", "addr", cfg.ListenAddr, "err", err)
 		os.Exit(1)
 	}
-	slog.Info("listening", "addr", srv.Addr(), "store", cfg.StoreAddr)
+	slog.Info("listening", "addr", srv.Addr(), "store", cfg.StoreLabel())
 
 	if len(cfg.Seeds()) == 0 {
 		slog.Info("seeding a new cluster")

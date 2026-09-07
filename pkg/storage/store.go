@@ -424,10 +424,15 @@ type backlog struct {
 // fast if it is unreachable. The password, if any, is sent as AUTH to the
 // primary, and, until SetReplicaTransport says otherwise, to every replica.
 func NewStore(addr string, poolSize int, password string) (*Store, error) {
+	return NewStoreVia(direct(password), addr, poolSize)
+}
+
+// NewStoreVia is NewStore over a transport of the caller's: how a node
+// reaches the store it embeds, which has no address to dial.
+func NewStoreVia(via Transport, addr string, poolSize int) (*Store, error) {
 	if poolSize < 1 {
 		poolSize = 1
 	}
-	via := direct(password)
 	p, err := newPool(addr, poolSize, via)
 	if err != nil {
 		return nil, fmt.Errorf("primary: %w", err)

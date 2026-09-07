@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -280,8 +281,8 @@ func (c *cluster) merge(remote map[string]storage.NodeInfo) {
 // it the peer keeps what it holds and only has its gaps filled — it may be
 // the survivor and we the one that just started.
 func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
-	if n.StoreAddr == c.local.StoreAddr && !loopback(c.local.StoreAddr) {
-		return // sharing our store; replicating to it would be a self-write (a loopback store is never shared)
+	if n.StoreAddr == c.local.StoreAddr && !private(c.local.StoreAddr) {
+		return // sharing our store; replicating to it would be a self-write
 	}
 	c.attaching.Lock()
 	defer c.attaching.Unlock()
@@ -304,9 +305,13 @@ func (c *cluster) attach(n storage.NodeInfo, overwrite bool) {
 	}()
 }
 
-// loopback reports whether addr names this machine only, so equal loopback
-// store addresses on two nodes are two stores, not one.
-func loopback(addr string) bool {
+// private reports whether a store address can belong to this node alone —
+// embedded, or bound to loopback — so equal addresses on two nodes are two
+// stores, not one shared.
+func private(addr string) bool {
+	if addr == config.EmbeddedStore {
+		return true
+	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false

@@ -386,11 +386,46 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-// Two nodes whose stores both say 127.0.0.1 have two stores, not one.
-func TestLoopbackStoresAreNotShared(t *testing.T) {
-	for addr, want := range map[string]bool{"127.0.0.1:6380": true, "localhost:6380": true, "[::1]:6380": true, "bazzite.local:6380": false, "10.0.0.4:6380": false} {
-		if loopback(addr) != want {
-			t.Fatalf("loopback(%q) = %v", addr, !want)
+// Two nodes whose stores both say 127.0.0.1, or both embedded, have two stores, not one.
+func TestPrivateStoresAreNotShared(t *testing.T) {
+	for addr, want := range map[string]bool{"127.0.0.1:6380": true, "localhost:6380": true, "[::1]:6380": true, "embedded": true, "bazzite.local:6380": false, "10.0.0.4:6380": false} {
+		if private(addr) != want {
+			t.Fatalf("private(%q) = %v", addr, !want)
+		}
+	}
+}
+
+// A node with no store address runs its own: writes replicate between two
+// such nodes, and INFO shows the store as embedded with its key count.
+func TestEmbeddedStore(t *testing.T) {
+	seed, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, StoreMaxMemory: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Start(seed.cfg.ListenAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { seed.Stop() })
+	peer, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, JoinAddr: seed.Addr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.Start(peer.cfg.ListenAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Stop() })
+	if err := peer.Join(seed.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	dial(t, seed).want("OK", "SET", "k", "v", "EX", "60")
+	dial(t, peer).want("v", "GET", "k")
+	info, err := dial(t, seed).do("INFO", "store")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"store_addr:embedded", "store_status:ok", "store_keys:1", "store_maxmemory:1048576"} {
+		if !strings.Contains(string(info.([]byte)), want) {
+			t.Fatalf("INFO lacks %q:\n%s", want, info)
 		}
 	}
 }

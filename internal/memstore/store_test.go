@@ -1,0 +1,137 @@
+package memstore
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/we-be/tritium/internal/resp"
+)
+
+// do runs one command on s and decodes the reply.
+func do(t *testing.T, s *Store, args ...string) any {
+	t.Helper()
+	r := resp.NewReader(strings.NewReader(string(s.exec(nil, args))))
+	v, err := r.ReadValue()
+	if err != nil {
+		return err
+	}
+	return v
+}
+
+// TestScanWalksEveryKeyOnce: a full walk with MATCH sees each matching key exactly once.
+func TestScanWalksEveryKeyOnce(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	for i := range 3000 {
+		do(t, s, "SET", fmt.Sprintf("k:%d", i), "v")
+	}
+	do(t, s, "ZADD", "k:z", "1", "a")
+	seen := map[string]int{}
+	cursor, pages := "0", 0
+	for {
+		v := do(t, s, "SCAN", cursor, "MATCH", "k:1*", "COUNT", "100").([]any)
+		for _, k := range v[1].([]any) {
+			seen[string(k.([]byte))]++
+		}
+		pages++
+		if cursor = string(v[0].([]byte)); cursor == "0" {
+			break
+		}
+	}
+	if len(seen) != 1111 || pages < 2 { // k:1, k:10-19, k:100-199, k:1000-1999
+		t.Fatalf("saw %d keys in %d pages, want 1111 in several", len(seen), pages)
+	}
+	for k, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s seen %d times", k, n)
+		}
+	}
+	if v := do(t, s, "SCAN", "0", "TYPE", "zset", "COUNT", "5000").([]any)[1].([]any); len(v) != 1 {
+		t.Fatalf("TYPE zset returned %d keys", len(v))
+	}
+}
+
+// TestExpiryReturnsMemory: an expired key is gone from every command and its bytes are freed.
+func TestExpiryReturnsMemory(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	do(t, s, "SET", "a", "value", "EX", "10")
+	do(t, s, "ZADD", "z", "1", "m")
+	do(t, s, "EXPIRE", "z", "5")
+	if s.used == 0 || do(t, s, "TTL", "a") != int64(10) {
+		t.Fatalf("used %d, ttl %v", s.used, do(t, s, "TTL", "a"))
+	}
+	now = now.Add(11 * time.Second)
+	s.mu.Lock()
+	s.sweep(100)
+	s.mu.Unlock()
+	if s.used != 0 || len(s.kv) != 0 || do(t, s, "DBSIZE") != int64(0) || do(t, s, "GET", "a") != nil {
+		t.Fatalf("after expiry: used %d, %d keys", s.used, len(s.kv))
+	}
+}
+
+// TestMaxMemoryEvictsSoonestExpiring: past the limit the key expiring first goes; without an expiring key the write is refused.
+func TestMaxMemoryEvictsSoonestExpiring(t *testing.T) {
+	s := New(Options{MaxMemory: 3 * (keyOverhead + 6)})
+	defer s.Close()
+	do(t, s, "SET", "aaaaa", "1", "EX", "100")
+	do(t, s, "SET", "bbbbb", "1", "EX", "10")
+	do(t, s, "SET", "ccccc", "1", "EX", "50")
+	if v := do(t, s, "SET", "ddddd", "1"); v != "OK" {
+		t.Fatalf("SET under the limit: %v", v)
+	}
+	if do(t, s, "GET", "bbbbb") != nil || do(t, s, "GET", "aaaaa") == nil {
+		t.Fatal("the soonest-expiring key should have gone first")
+	}
+	do(t, s, "SET", "eeeee", "1") // evicts ccccc, then aaaaa on the next
+	do(t, s, "SET", "fffff", "1")
+	if v := do(t, s, "SET", "ggggg", "1"); v == "OK" {
+		t.Fatal("nothing expiring is left: the write must be refused")
+	}
+}
+
+// TestPipeBatchDoesNotDeadlock: a pipelined batch larger than any buffer is written whole before a reply is read.
+func TestPipeBatchDoesNotDeadlock(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	ln := Listen()
+	defer ln.Close()
+	go s.Serve(ln)
+	c, err := ln.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf []byte
+	const n = 2000
+	for i := range n {
+		buf = append(buf, resp.NewCommand("SET", fmt.Sprintf("key-%d", i), strings.Repeat("x", 1000))...)
+	}
+	if _, err := c.Write(buf); err != nil {
+		t.Fatal(err)
+	}
+	r := resp.NewReader(c)
+	for range n {
+		if err := r.ReadOK(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestMatch: the glob's forms, including a * that crosses a slash.
+func TestMatch(t *testing.T) {
+	for _, tc := range []struct {
+		p, s string
+		want bool
+	}{
+		{"*", "", true}, {"k:*", "k:1/2", true}, {"k:?", "k:12", false}, {"[a-c]x", "bx", true},
+		{"[^a-c]x", "bx", false}, {"\\*", "*", true}, {"\\*", "a", false}, {"a*b*c", "aXXbYYc", true}, {"a*b*c", "aXXbYY", false},
+	} {
+		if got := match(tc.p, tc.s); got != tc.want {
+			t.Errorf("match(%q, %q) = %v", tc.p, tc.s, got)
+		}
+	}
+}

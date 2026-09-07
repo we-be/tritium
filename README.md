@@ -1,8 +1,9 @@
 # Tritium
 
 Tritium is a RAM-only, zero-dependency key-value store that speaks the Redis
-protocol. Each node is a small Go server in front of a RESP store (Valkey,
-Redis, Garnet, anything that speaks RESP). Nodes find each other by gossip and
+protocol. Each node is one static Go binary with its own in-memory store —
+or, if you prefer, a small server in front of a RESP store (Valkey, Redis,
+Garnet, anything that speaks RESP). Nodes find each other by gossip and
 replicate every write into each other's stores, so any node answers for any
 key, and any Redis client can talk to any node.
 
@@ -10,27 +11,27 @@ The [tritium-wails](https://github.com/we-be/tritium-wails) desktop client
 talks to it. The design notes live in
 [this gist](https://gist.github.com/hunterjsb/572f8e3b66dde9551e3fa3652f6b40b7).
 
-## Run a cluster
+## Run it
 
-Three nodes, each with its own Valkey primary and replica:
+A single node, nothing else to install:
 
 ```sh
-podman compose up --build        # or: docker compose up --build
-go run ./cmd/tritium-monitor     # live dashboard over 8080-8082 (each store read through its node); -config node.env takes addresses and passwords from a node's env file
+go run ./cmd/tritium             # loads .env if present; environment overrides it
 ```
 
-Same thing on bare metal, with `valkey-server` on PATH (`brew install valkey`):
+Three nodes on bare metal, each with its own embedded store:
 
 ```sh
 make cluster
+go run ./cmd/tritium-monitor     # live dashboard over 8080-8082 (each store read through its node); -config node.env takes addresses and passwords from a node's env file
 make cluster-down
 ```
 
-A single node:
+The same three nodes each in front of a Valkey primary and replica, the way
+a node runs with an external store:
 
 ```sh
-valkey-server --save "" --appendonly no &
-go run ./cmd/tritium             # loads .env if present; environment overrides it
+podman compose up --build        # or: docker compose up --build
 ```
 
 Prebuilt binaries for Linux and macOS, amd64 and arm64, plus 32-bit ARM for a
@@ -161,8 +162,9 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `JOIN_ADDRESS`           | none             | Nodes to join, comma-separated; dialed until they answer and again whenever one drops out, so nodes boot in any order. Unset seeds a new cluster |
 | `AUTH_PASSWORD`          | none             | Password clients must `AUTH` with                                       |
 | `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
-| `SECURE_STORE_ADDRESS`   | `localhost:6379` | RESP server this node writes through                                    |
+| `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
+| `STORE_MAX_MEMORY`       | none             | Bytes the embedded store keeps (`256M`, `1G`); past it the soonest-expiring keys are evicted, and a write with nothing left to evict is refused |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
 | `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer has it. `async`: answered once this node's store has it; peers are fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
@@ -171,9 +173,15 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 
 ## How it works
 
-Each node owns one RESP primary (replicate that however you like; the compose
-file gives each one a replica). A write goes to the node's own primary with
-`SETEX`, then fans out to every other node's primary. Reads hit the local
+Each node owns one RESP primary: its own, in-process, unless
+`SECURE_STORE_ADDRESS` points it at an external one (replicate that however
+you like; the compose file gives each one a replica). The embedded store
+holds strings and sorted sets, expires keys on time, walks `SCAN` without
+ever handing a key out twice, and is reached over RESP through connections
+that never leave the process, so it behaves exactly like an external store
+would — a node restart empties it, and the peers fill it back on rejoin. A
+write goes to the node's own primary with `SETEX`, then fans out to every
+other node's primary. Reads hit the local
 primary only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
 current value, or the deletion — until it answers again. Every write waits
@@ -202,8 +210,8 @@ the same port and TLS settings as clients, authenticated as the `peer` user.
 
 ## Security
 
-- **RAM-only.** Run stores with `--save "" --appendonly no`, as the compose file
-  and scripts do, and nothing ever touches disk. Every key expires.
+- **RAM-only.** The embedded store never touches disk; run an external one
+  with `--save "" --appendonly no`, as the compose file does. Every key expires.
 - **Zero dependencies.** Standard library only; `go.mod` has no requirements.
 - **Authentication.** Set `AUTH_PASSWORD` and every client must `AUTH`. Set
   `PEER_PASSWORD` too: joining the cluster means every node starts replicating

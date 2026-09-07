@@ -467,7 +467,7 @@ func (s *session) info(args []string) []byte {
 // answers, and what its own INFO says about version, uptime, memory and keys.
 func (s *Server) storeInfo() string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "store_addr:%s\r\n", s.cfg.StoreAddr)
+	fmt.Fprintf(&sb, "store_addr:%s\r\n", s.cfg.StoreLabel())
 	v, err := s.store.Query("INFO", "server", "memory", "keyspace")
 	raw, _ := v.([]byte)
 	if err != nil {
@@ -481,7 +481,7 @@ func (s *Server) storeInfo() string {
 			fields[k] = val
 		}
 	}
-	if ver := cmp.Or(fields["valkey_version"], fields["redis_version"]); ver != "" {
+	if ver := cmp.Or(fields["tritium_version"], fields["valkey_version"], fields["redis_version"]); ver != "" {
 		fmt.Fprintf(&sb, "store_version:%s\r\n", ver)
 	}
 	for _, f := range []string{"uptime_in_seconds", "used_memory", "maxmemory", "maxmemory_policy"} {

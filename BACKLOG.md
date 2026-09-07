@@ -6,7 +6,7 @@ node does. Check an item off with the commit that closed it.
 
 ## In flight — 2026-09-07 wave (claimed; the steward skips these)
 
-- embedded store: a node is its own store when no store address is configured — lead
+- [x] embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — lead, 2026-09-07
 - SCAN/TYPE/DBSIZE for clients, `pkg/tritium.Scan`, key browser in tritium-wails — agent
 - fleet event log in the plane (the Visibility item below) — agent
 - messenger: several devices per name, groups by pairwise fan-out — agent

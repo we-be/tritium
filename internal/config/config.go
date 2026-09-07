@@ -11,25 +11,29 @@ import (
 )
 
 const (
-	DefaultStoreAddr  = "localhost:6379"
 	DefaultListenAddr = "localhost:8080"
 	DefaultPoolSize   = 4
 )
 
+// EmbeddedStore is what a node reports as its store address when it runs
+// its own: there is nothing to dial.
+const EmbeddedStore = "embedded"
+
 type Config struct {
-	ListenAddr    string // LISTEN_ADDRESS: where this node accepts clients and peers
-	AdvertiseAddr string // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
-	JoinAddr      string // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
-	Password      string // AUTH_PASSWORD: required from clients when set
-	PeerPassword  string // PEER_PASSWORD: what nodes AUTH to each other with; defaults to AUTH_PASSWORD
-	StoreAddr     string // SECURE_STORE_ADDRESS: RESP server this node writes through
-	StorePassword string // SECURE_STORE_PASSWORD: AUTH for the store and every replica
-	PoolSize      int    // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
-	Async         bool   // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
-	TLSCert       string // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
-	TLSKey        string // TLS_KEY: PEM private key
-	TLSCA         string // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
-	TLSClientAuth bool   // TLS_CLIENT_AUTH: require client certificates (mutual TLS)
+	ListenAddr     string // LISTEN_ADDRESS: where this node accepts clients and peers
+	AdvertiseAddr  string // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
+	JoinAddr       string // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
+	Password       string // AUTH_PASSWORD: required from clients when set
+	PeerPassword   string // PEER_PASSWORD: what nodes AUTH to each other with; defaults to AUTH_PASSWORD
+	StoreAddr      string // SECURE_STORE_ADDRESS: RESP server this node writes through; empty runs the node's own store in-process
+	StorePassword  string // SECURE_STORE_PASSWORD: AUTH for the store and every replica
+	StoreMaxMemory int64  // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
+	PoolSize       int    // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
+	Async          bool   // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
+	TLSCert        string // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
+	TLSKey         string // TLS_KEY: PEM private key
+	TLSCA          string // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
+	TLSClientAuth  bool   // TLS_CLIENT_AUTH: require client certificates (mutual TLS)
 }
 
 // Load reads path as a dotenv file (empty path: none), then lets process
@@ -51,6 +55,35 @@ func LoadLocal(path string) (Local, error) {
 		return Local{}, fmt.Errorf("LISTEN_ADDRESS %q: %w", cfg.ListenAddr, err)
 	}
 	return Local{Addr: "127.0.0.1:" + port, Password: cfg.Password, StorePassword: cfg.StorePassword, CA: cfg.TLSCA}, nil
+}
+
+// StoreLabel names the store for logs and INFO: its address, or "embedded".
+func (c Config) StoreLabel() string {
+	if c.StoreAddr == "" {
+		return EmbeddedStore
+	}
+	return c.StoreAddr
+}
+
+// ParseBytes reads a size such as 268435456, 256M, 1G or 512K.
+func ParseBytes(raw string) (int64, error) {
+	s := strings.TrimSpace(raw)
+	mult := int64(1)
+	if n := len(s); n > 0 {
+		switch strings.ToUpper(s[n-1:]) {
+		case "K":
+			mult, s = 1<<10, s[:n-1]
+		case "M":
+			mult, s = 1<<20, s[:n-1]
+		case "G":
+			mult, s = 1<<30, s[:n-1]
+		}
+	}
+	n, err := strconv.ParseInt(strings.TrimSuffix(s, "B"), 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%q is not a size", raw)
+	}
+	return n * mult, nil
 }
 
 // Seeds is JOIN_ADDRESS as a list. Each entry is dialed until it answers and
@@ -89,11 +122,19 @@ func Load(path string) (Config, error) {
 		JoinAddr:      get("JOIN_ADDRESS", ""),
 		Password:      get("AUTH_PASSWORD", ""),
 		PeerPassword:  get("PEER_PASSWORD", ""),
-		StoreAddr:     get("SECURE_STORE_ADDRESS", DefaultStoreAddr),
+		StoreAddr:     get("SECURE_STORE_ADDRESS", ""),
 		StorePassword: get("SECURE_STORE_PASSWORD", ""),
 		TLSCert:       get("TLS_CERT", ""),
 		TLSKey:        get("TLS_KEY", ""),
 		TLSCA:         get("TLS_CA", ""),
+	}
+
+	if raw := get("STORE_MAX_MEMORY", ""); raw != "" {
+		size, err := ParseBytes(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("STORE_MAX_MEMORY: %w", err)
+		}
+		cfg.StoreMaxMemory = size
 	}
 
 	raw := get("MAX_SERVER_CONNECTIONS", strconv.Itoa(DefaultPoolSize))
