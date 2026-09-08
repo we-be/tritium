@@ -132,10 +132,11 @@ func (s *Server) forward(addr string, args []string) (any, error) {
 		c.Close()
 		return nil, err
 	}
-	if se != nil && (strings.HasPrefix(se.Msg, "ERR unknown command") || strings.HasPrefix(se.Msg, "NOPERM") || strings.HasPrefix(se.Msg, "NOAUTH") || strings.HasPrefix(se.Msg, "ERR primary:")) {
+	if se != nil && (strings.HasPrefix(se.Msg, "ERR unknown command") || strings.HasPrefix(se.Msg, "ERR TRITIUM.FORWARD does not carry") || strings.HasPrefix(se.Msg, "NOPERM") || strings.HasPrefix(se.Msg, "NOAUTH") || strings.HasPrefix(se.Msg, "ERR primary:")) {
 		s.pconns.put(addr, c, s.cfg.PoolSize)
-		// An older node, one we are not a peer of, or one whose own store is
-		// gone (it is stopping): nothing was applied there, so write here.
+		// An older node (the command, or the form of it we sent, is new to
+		// it), one we are not a peer of, or one whose own store is gone (it
+		// is stopping): nothing was applied there, so write here.
 		return nil, errors.New("owner refused the forward: " + se.Msg)
 	}
 	s.pconns.put(addr, c, s.cfg.PoolSize)
