@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -125,7 +126,7 @@ func (s *Server) forward(addr string, args []string) (any, error) {
 		return nil, err
 	}
 	c.SetDeadline(time.Now().Add(forwardTimeout))
-	v, err := resp.NewCommand(append([]string{"TRITIUM.FORWARD"}, args...)...).Do(c, c.r)
+	v, err := resp.NewCommand(append([]string{"TRITIUM.FORWARD", "FROM", s.cluster.addr()}, args...)...).Do(c, c.r)
 	c.SetDeadline(time.Time{})
 	var se *resp.ServerError
 	if err != nil && !errors.As(err, &se) {
@@ -140,7 +141,40 @@ func (s *Server) forward(addr string, args []string) (any, error) {
 		return nil, errors.New("owner refused the forward: " + se.Msg)
 	}
 	s.pconns.put(addr, c, s.cfg.PoolSize)
+	if arr, ok := v.([]any); ok && len(arr) > 0 {
+		// An owner that understood FROM: the client's reply, then what it
+		// sent the other replicas — applied here, so this node holds the
+		// write before the client hears of it, without a second round trip.
+		if raw, ok := arr[0].([]byte); ok {
+			for _, e := range arr[1:] {
+				if cmd := commandOf(e); cmd != nil {
+					if _, err := s.store.Apply(cmd); err != nil {
+						slog.Warn("forwarded write not applied here", "owner", addr, "err", err)
+					}
+				}
+			}
+			return resp.NewReader(bytes.NewReader(raw)).ReadValue()
+		}
+	}
 	return v, err
+}
+
+// commandOf rebuilds a command from its wire form in a reply: an array of
+// bulk strings. Anything else is nil.
+func commandOf(v any) resp.Command {
+	parts, ok := v.([]any)
+	if !ok || len(parts) == 0 {
+		return nil
+	}
+	args := make([]string, 0, len(parts))
+	for _, p := range parts {
+		b, ok := p.([]byte)
+		if !ok {
+			return nil
+		}
+		args = append(args, string(b))
+	}
+	return resp.NewCommand(args...)
 }
 
 // peerConn is an authenticated connection to the peer at addr: an idle one
@@ -228,14 +262,36 @@ func (s *session) forwardTo(owner string, args []string) (reply []byte, ok bool)
 // The inner command is dispatched here with forwarding off, so a disagreement
 // about who owns the key can never bounce it back and forth.
 func (s *session) forwardHandler(args []string) []byte {
+	var from string
+	if strings.EqualFold(args[0], "FROM") {
+		if len(args) < 3 {
+			return errArity("TRITIUM.FORWARD")
+		}
+		from, args = args[1], args[2:]
+	}
 	name := strings.ToUpper(args[0])
 	if !owned[name] && name != "DEL" {
 		return resp.AppendError(nil, "ERR TRITIUM.FORWARD does not carry '"+args[0]+"'")
 	}
 	s.forwarded = true
+	if from != "" {
+		s.fwd = s.srv.store.Forwarded(from)
+	}
 	reply, _ := s.dispatch(args)
-	s.forwarded = false
-	return reply
+	fwd := s.fwd
+	s.forwarded, s.fwd = false, nil
+	if fwd == nil {
+		return reply
+	}
+	// The reply as the client should see it, then each command the other
+	// replicas got, for the forwarder to apply itself.
+	sent := fwd.Sent()
+	out := resp.AppendArray(nil, 1+len(sent))
+	out = resp.AppendBulk(out, reply)
+	for _, cmd := range sent {
+		out = append(out, cmd...)
+	}
+	return out
 }
 
 // gossip handles TRITIUM.GOSSIP <node-json>: learn the caller, reply with

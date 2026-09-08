@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -21,6 +22,56 @@ func TestOwnershipFollowsWeight(t *testing.T) {
 	}
 	if won["c:1"] != 0 || won["a:1"] < 1700 || won["a:1"] > 2300 {
 		t.Fatalf("ownership split %v, want about 2000:1000:0", won)
+	}
+}
+
+// An owner told who forwarded a write answers with the client's reply and
+// what it sent the other replicas, so the forwarder can apply that itself.
+func TestForwardFromAnswersWithWhatItSent(t *testing.T) {
+	s := startNode(t, config.Config{})
+	c := dial(t, s)
+	c.want("OK", "AUTH", "peer", testPeerPW)
+	v, err := c.do("TRITIUM.FORWARD", "FROM", "127.0.0.1:1", "SET", "fwd:k", "v", "EX", "60")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr, _ := v.([]any)
+	if len(arr) != 2 || string(arr[0].([]byte)) != "+OK\r\n" {
+		t.Fatalf("reply %v", v)
+	}
+	cmd, _ := arr[1].([]any)
+	var args []string
+	for _, p := range cmd {
+		args = append(args, string(p.([]byte)))
+	}
+	if n := len(args); n < 4 || !slices.Equal(args[n-4:], []string{"SETEX", "fwd:k", "60", "v"}) {
+		t.Fatalf("sent %v", args)
+	}
+	c.want("v", "GET", "fwd:k")
+}
+
+// A write forwarded to its owner is on the forwarding node by the time the
+// client hears OK, and cost the owner no fan-out back to it.
+func TestForwardedWriteLandsOnTheForwarder(t *testing.T) {
+	hurry(t)
+	a := startNode(t, config.Config{})
+	b := startNode(t, config.Config{JoinAddr: a.Addr()})
+	waitFor(t, "the nodes to attach", func() bool { return len(a.store.Replicas()) == 1 && len(b.store.Replicas()) == 1 })
+	key := ""
+	for i := range 100 {
+		if k := fmt.Sprintf("far:%d", i); a.ownerOf(k) != "" {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		t.Skip("every key landed on a")
+	}
+	c := dial(t, a)
+	c.want("OK", "SET", key, "v", "EX", "60")
+	c.want("v", "GET", key)
+	if f, fb := a.forwarded.Load(), a.fallbacks.Load(); f != 1 || fb != 0 {
+		t.Fatalf("a forwarded %d and fell back %d times, want 1 and 0", f, fb)
 	}
 }
 

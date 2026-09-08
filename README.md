@@ -118,7 +118,7 @@ go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
 | `TRITIUM.GOSSIP <node-json>`                | Peer-only. What nodes send each other; replies with the view |
 | `TRITIUM.REPLICATE cmd [args...]`           | Peer-only. A write's owner fans this out to every other node's primary |
-| `TRITIUM.FORWARD cmd [args...]`             | Peer-only. A write for a key this node doesn't own, sent on to the owner |
+| `TRITIUM.FORWARD [FROM addr] cmd [args...]` | Peer-only. A write for a key this node doesn't own, sent on to the owner. With `FROM`, the owner answers with the reply and what it sent the other replicas, and the sender applies that itself |
 | `TRITIUM.PEERLINK <node-json>`              | Peer-only. Hands this connection to the node that answers, which serves the peer over it from then on ([docs/cloud.md](docs/cloud.md)) |
 | `ACL WHOAMI`                                | Which identity the connection carries                   |
 
@@ -143,7 +143,9 @@ hashing, weighted by each node's `ELECTRONEGATIVITY`, picks for that key, the sa
 members — which applies it to its own primary with `SETEX` and fans it out
 to every other node's primary, the node that took the client's command
 included, before answering. A node handed a write for a key it does not own
-forwards it as `TRITIUM.FORWARD`; if the owner cannot be reached it applies
+forwards it as `TRITIUM.FORWARD`, and the owner answers with what it sent
+the other replicas, which the forwarder applies itself, so a forward costs
+one round trip and not a second one back; if the owner cannot be reached it applies
 the write itself and fans it out, as every node did before ownership, and a
 held or gone peer stops being picked. So the writes to one key are ordered
 in one place and `NX` holds cluster-wide, except in the moment two nodes

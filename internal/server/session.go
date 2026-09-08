@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -38,10 +39,11 @@ type session struct {
 	proto     int
 	authed    bool
 	peer      bool
-	fails     int               // AUTHs refused on this connection; it is closed after maxAuthFailures
-	user      *config.User      // nil: one of the built-in identities, with no restrictions
-	linked    *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
-	forwarded bool              // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
+	fails     int                // AUTHs refused on this connection; it is closed after maxAuthFailures
+	user      *config.User       // nil: one of the built-in identities, with no restrictions
+	linked    *storage.NodeInfo  // set by TRITIUM.PEERLINK: this connection is handed to the peer
+	forwarded bool               // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
+	fwd       *replica.Forwarded // ...and, when that node said FROM, the store as that write sees it: every replica but the sender
 
 	// What CLIENT LIST reports about this connection, written by its own
 	// goroutine and read by another's, so under mu.
@@ -50,6 +52,24 @@ type session struct {
 	started time.Time
 	last    time.Time // when the last command arrived
 	lastCmd string
+}
+
+// writer is what a handler writes through: the store, or, for a write
+// another node forwarded here with FROM, the view of it that leaves that
+// node out and remembers what the others got.
+type writer interface {
+	Set(key string, value []byte, ttl int) error
+	Delete(keys ...string) (int64, error)
+	Mutate(cmds ...resp.Command) ([]any, error)
+	Replicate(cmds ...resp.Command)
+	Query(args ...string) (any, error)
+}
+
+func (s *session) w() writer {
+	if s.fwd != nil {
+		return s.fwd
+	}
+	return s.srv.store
 }
 
 // touch notes a command arriving, for CLIENT LIST's idle and cmd.

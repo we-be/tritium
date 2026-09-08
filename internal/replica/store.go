@@ -198,16 +198,23 @@ func (s *Store) Apply(cmd resp.Command) (any, error) {
 
 // Set stores value under key for ttl seconds, then replicates the write.
 func (s *Store) Set(key string, value []byte, ttl int) error {
+	_, err := s.set(key, value, ttl, "")
+	return err
+}
+
+// set writes key on the primary and fans it out to every replica but
+// except, returning the form the replicas got.
+func (s *Store) set(key string, value []byte, ttl int, except string) (resp.Command, error) {
 	local, remote := s.stamped("SETEX", key, strconv.Itoa(ttl), string(value))
 	v, err := s.primary.do(local)
 	if err != nil {
-		return fmt.Errorf("primary: %w", err)
+		return nil, fmt.Errorf("primary: %w", err)
 	}
 	if v != "OK" {
-		return fmt.Errorf("primary: unexpected reply %v", v)
+		return nil, fmt.Errorf("primary: unexpected reply %v", v)
 	}
-	s.replicate(remote)
-	return nil
+	s.replicateAllExcept([]resp.Command{remote}, except)
+	return remote, nil
 }
 
 // Get returns the value under key, or storage.ErrNotFound.
@@ -228,13 +235,20 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Delete removes keys and returns how many existed, then replicates.
 func (s *Store) Delete(keys ...string) (int64, error) {
+	n, _, err := s.delete(keys, "")
+	return n, err
+}
+
+// delete removes keys on the primary and fans the deletion out to every
+// replica but except, returning the form the replicas got.
+func (s *Store) delete(keys []string, except string) (int64, resp.Command, error) {
 	local, remote := s.stamped(append([]string{"DEL"}, keys...)...)
 	n, err := s.primary.integer(local)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
-	s.replicate(remote)
-	return n, nil
+	s.replicateAllExcept([]resp.Command{remote}, except)
+	return n, remote, nil
 }
 
 // Query runs one command on the primary without replicating it: reads, or
@@ -250,17 +264,70 @@ func (s *Store) Query(args ...string) (any, error) {
 // Mutate pipelines cmds on the primary, then replicates them all if none
 // failed. Replies are returned even when one is a server error.
 func (s *Store) Mutate(cmds ...resp.Command) ([]any, error) {
+	return s.mutate(cmds, "")
+}
+
+// mutate runs cmds on the primary and fans them out, as they are, to every
+// replica but except.
+func (s *Store) mutate(cmds []resp.Command, except string) ([]any, error) {
 	out, err := s.primary.doAll(cmds)
 	if err != nil {
 		return out, fmt.Errorf("primary: %w", err)
 	}
-	s.replicateAll(cmds)
+	s.replicateAllExcept(cmds, except)
 	return out, nil
 }
 
+// Forwarded is the Store as a write another node forwarded here sees it:
+// the write lands on the primary and fans out to every replica but the
+// node that forwarded, which applies what Sent reports itself — so a
+// forward costs one round trip, not the forward and then the fan-out back.
+type Forwarded struct {
+	s    *Store
+	from string
+	sent []resp.Command
+}
+
+// Forwarded is this store as seen from a write the node at from forwarded.
+func (s *Store) Forwarded(from string) *Forwarded { return &Forwarded{s: s, from: from} }
+
+func (f *Forwarded) Set(key string, value []byte, ttl int) error {
+	remote, err := f.s.set(key, value, ttl, f.from)
+	if err == nil {
+		f.sent = append(f.sent, remote)
+	}
+	return err
+}
+
+func (f *Forwarded) Delete(keys ...string) (int64, error) {
+	n, remote, err := f.s.delete(keys, f.from)
+	if err == nil {
+		f.sent = append(f.sent, remote)
+	}
+	return n, err
+}
+
+func (f *Forwarded) Mutate(cmds ...resp.Command) ([]any, error) {
+	out, err := f.s.mutate(cmds, f.from)
+	if err == nil {
+		f.sent = append(f.sent, cmds...)
+	}
+	return out, err
+}
+
+func (f *Forwarded) Replicate(cmds ...resp.Command) {
+	f.sent = append(f.sent, cmds...)
+	f.s.replicateAllExcept(cmds, f.from)
+}
+
+func (f *Forwarded) Query(args ...string) (any, error) { return f.s.Query(args...) }
+
+// Sent is what went to the other replicas, for the forwarder to apply.
+func (f *Forwarded) Sent() []resp.Command { return f.sent }
+
 // Replicate fans cmds out to the replicas without touching the primary.
 func (s *Store) Replicate(cmds ...resp.Command) {
-	s.replicateAll(cmds)
+	s.replicateAllExcept(cmds, "")
 }
 
 // Exists returns how many of keys are present.
@@ -273,16 +340,15 @@ func (s *Store) TTL(key string) (int64, error) {
 	return s.primary.integer(resp.NewCommand("TTL", key))
 }
 
-func (s *Store) replicate(cmd resp.Command) {
-	s.replicateAll([]resp.Command{cmd})
-}
-
 // replicateAll runs cmds on every replica concurrently. Failures are logged,
 // not returned: the primary write already succeeded. A replica the transport
 // fails to reach is held from then on — its keys are noted for Repair, and
 // no write waits on it — while one that answers with an error is merely
 // refusing this write.
-func (s *Store) replicateAll(cmds []resp.Command) {
+// replicateAllExcept is the fan-out, leaving out the replica at except —
+// the node a forwarded write came from, which applies it itself; "" leaves
+// nobody out.
+func (s *Store) replicateAllExcept(cmds []resp.Command, except string) {
 	s.writes.Add(1)
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
@@ -290,6 +356,9 @@ func (s *Store) replicateAll(cmds []resp.Command) {
 
 	var wg sync.WaitGroup
 	for _, r := range replicas {
+		if r.addr == except {
+			continue
+		}
 		if r.queue != nil {
 			r.enqueue(cmds)
 			continue

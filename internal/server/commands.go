@@ -104,14 +104,14 @@ func (s *session) set(args []string) []byte {
 	}
 	// NX is decided by the primary; replicas only hear about it if it won.
 	q, rep := s.stampedPair([]string{"SET", key, value, "EX", strconv.Itoa(ttl), "NX"}, []string{"SETEX", key, strconv.Itoa(ttl), value})
-	v, err := s.srv.store.Query(q...)
+	v, err := s.w().Query(q...)
 	if err != nil {
 		return errMsg(err)
 	}
 	if v == nil {
 		return s.null()
 	}
-	s.srv.store.Replicate(resp.NewCommand(rep...))
+	s.w().Replicate(resp.NewCommand(rep...))
 	s.srv.bytes.Add(int64(len(value)))
 	return replyOK
 }
@@ -150,7 +150,7 @@ func (s *session) userTTL(ttl int) int {
 }
 
 func (s *session) write(key, value string, ttl int) []byte {
-	if err := s.srv.store.Set(key, []byte(value), ttl); err != nil {
+	if err := s.w().Set(key, []byte(value), ttl); err != nil {
 		return errMsg(err)
 	}
 	s.srv.bytes.Add(int64(len(value)))
@@ -181,14 +181,14 @@ func (s *session) get(args []string) []byte {
 // the replicas to drop it.
 func (s *session) getdel(args []string) []byte {
 	q, rep := s.stampedPair([]string{"GETDEL", args[0]}, []string{"DEL", args[0]})
-	v, err := s.srv.store.Query(q...)
+	v, err := s.w().Query(q...)
 	if err != nil {
 		return errMsg(err)
 	}
 	if v == nil {
 		return s.null()
 	}
-	s.srv.store.Replicate(resp.NewCommand(rep...))
+	s.w().Replicate(resp.NewCommand(rep...))
 	b, _ := v.([]byte)
 	s.srv.bytes.Add(int64(len(b)))
 	return resp.AppendBulk(nil, b)
@@ -202,7 +202,7 @@ func (s *session) mget(args []string) []byte {
 // to several nodes, so they are grouped and the counts added up.
 func (s *session) del(args []string) []byte {
 	if s.forwarded || !s.srv.cfg.Ownership {
-		return integer(s.srv.store.Delete(args...))
+		return integer(s.w().Delete(args...))
 	}
 	byOwner := map[string][]string{}
 	for _, k := range args {
@@ -225,7 +225,7 @@ func (s *session) del(args []string) []byte {
 			}
 			s.srv.fallbacks.Add(1)
 		}
-		n, err := s.srv.store.Delete(keys...)
+		n, err := s.w().Delete(keys...)
 		if err != nil {
 			return errMsg(err)
 		}
@@ -245,7 +245,7 @@ func (s *session) zadd(args []string) []byte {
 			return resp.AppendError(nil, "ERR value is not a valid float")
 		}
 	}
-	out, err := s.srv.store.Mutate(resp.NewCommand(append([]string{"ZADD"}, args...)...), ttlCommand(args[0]))
+	out, err := s.w().Mutate(resp.NewCommand(append([]string{"ZADD"}, args...)...), ttlCommand(args[0]))
 	if err != nil {
 		return errMsg(err)
 	}
@@ -258,7 +258,7 @@ func (s *session) zadd(args []string) []byte {
 // hands back is the store's own, opaque to us. KEYS stays unsupported: it
 // has no cursor and is O(n) on a real store.
 func (s *session) query(args []string) []byte {
-	v, err := s.srv.store.Query(args...)
+	v, err := s.w().Query(args...)
 	if err != nil {
 		return errMsg(err)
 	}
@@ -267,7 +267,7 @@ func (s *session) query(args []string) []byte {
 
 // mutate passes a write through to the primary and replicates it.
 func (s *session) mutate(args []string) []byte {
-	out, err := s.srv.store.Mutate(resp.NewCommand(args...))
+	out, err := s.w().Mutate(resp.NewCommand(args...))
 	if err != nil {
 		return errMsg(err)
 	}
