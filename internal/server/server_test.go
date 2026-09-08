@@ -26,9 +26,16 @@ import (
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
+// testPeerPW is the peer password every clustered test config in this
+// package shares, so nodes started separately can still AUTH as peers.
+const testPeerPW = "peer-test-pw"
+
 func startNode(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
 	cfg.StoreAddr, cfg.ListenAddr, cfg.PoolSize, cfg.Ownership = resptest.Addr(t), "127.0.0.1:0", 2, true
+	if cfg.PeerPassword == "" {
+		cfg.PeerPassword = testPeerPW
+	}
 	s, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -335,7 +342,7 @@ func TestRejoinsSeed(t *testing.T) {
 	seedAddr := ln.Addr().String()
 	ln.Close() // reserved for the seed, which is not up yet
 
-	late, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, JoinAddr: seedAddr})
+	late, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, JoinAddr: seedAddr, PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +355,7 @@ func TestRejoinsSeed(t *testing.T) {
 		t.Fatalf("saw %d nodes before the seed existed", n)
 	}
 
-	seed, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2})
+	seed, err := New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +405,7 @@ func TestPrivateStoresAreNotShared(t *testing.T) {
 // A node with no store address runs its own: writes replicate between two
 // such nodes, and INFO shows the store as embedded with its key count.
 func TestEmbeddedStore(t *testing.T) {
-	seed, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, StoreMaxMemory: 1 << 20})
+	seed, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, StoreMaxMemory: 1 << 20, PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +413,7 @@ func TestEmbeddedStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { seed.Stop() })
-	peer, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, JoinAddr: seed.Addr()})
+	peer, err := New(config.Config{ListenAddr: "127.0.0.1:0", PoolSize: 2, JoinAddr: seed.Addr(), PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +455,7 @@ func TestResyncAfterOutage(t *testing.T) {
 	})
 	c.want("OK", "SET", "sync:during", "v2", "EX", "60") // the peer misses this
 
-	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()}
+	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr(), PeerPassword: testPeerPW}
 	back, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -484,7 +491,7 @@ func TestQuickRestartResyncs(t *testing.T) {
 	c.want("OK", "SET", "quick:before", "v1", "EX", "60")
 	peer.Stop()
 	c.want("OK", "SET", "quick:during", "v2", "EX", "60") // the peer misses this, and is back before downAfter
-	back, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()})
+	back, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr(), PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -527,7 +534,7 @@ func TestRestartAfterEvictionIsOverwritten(t *testing.T) {
 	})
 	c.want("OK", "SET", "evict:k", "new", "EX", "60")
 
-	back, err := New(config.Config{StoreAddr: peerStore, ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr()})
+	back, err := New(config.Config{StoreAddr: peerStore, ListenAddr: peerAddr, PoolSize: 2, JoinAddr: seed.Addr(), PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}

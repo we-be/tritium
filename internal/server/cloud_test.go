@@ -31,7 +31,7 @@ func TestCloudPeering(t *testing.T) {
 	homes := []*Server{}
 	for range 2 {
 		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0",
-			AdvertiseAddr: dead(t), LinkAddr: cloud.Addr(), PoolSize: 2}
+			AdvertiseAddr: dead(t), LinkAddr: cloud.Addr(), PoolSize: 2, PeerPassword: testPeerPW}
 		s, err := New(cfg)
 		if err != nil {
 			t.Fatal(err)

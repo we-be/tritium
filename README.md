@@ -298,7 +298,8 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `PEER_ALLOW`             | none             | The only addresses this node takes as peers, comma-separated; gossip naming any other is ignored. Set it on every node of a fleet that can be reached from the internet |
 | `ALLOW_NO_AUTH`          | `false`          | A node with no `AUTH_PASSWORD` refuses to listen anywhere but loopback unless this says it is meant |
 | `AUTH_USER`              | none             | Which of them a client next to this node (`-config`) authenticates as     |
-| `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
+| `PEER_PASSWORD`          | none             | Password nodes present to each other as `AUTH peer <password>`. Required, and must differ from `AUTH_PASSWORD`, on any node that peers (`JOIN_ADDRESS`, `ADVERTISE_ADDRESS` or `LINK_ADDRESS` set) — otherwise the node refuses to start |
+| `ALLOW_SHARED_PEER_PASSWORD` | `false`      | Start anyway on a `PEER_PASSWORD` that is unset or equal to `AUTH_PASSWORD`, with a warning instead of a refusal |
 | `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process. Plaintext without `SECURE_STORE_TLS`, so keep it loopback or container-local unless TLS is on |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
 | `SECURE_STORE_TLS`       | `false`          | Verify the store's certificate instead of dialing it in the clear       |
@@ -318,11 +319,14 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 - **RAM-only.** The embedded store never touches disk; run an external one
   with `--save "" --appendonly no`, as the compose file does. Every key expires.
 - **Zero dependencies.** Standard library only; `go.mod` has no requirements.
-- **Authentication.** Set `AUTH_PASSWORD` and every client must `AUTH`. Set
-  `PEER_PASSWORD` too: joining the cluster means every node starts replicating
-  its writes to the newcomer's store, so membership has its own credential.
-  `TRITIUM.GOSSIP` is refused to anyone not authenticated as `peer`, and under
-  `TLS_CLIENT_AUTH` also to any connection without a verified certificate.
+- **Authentication.** Set `AUTH_PASSWORD` and every client must `AUTH`. A node
+  that peers needs its own `PEER_PASSWORD` too, distinct from `AUTH_PASSWORD`:
+  joining the cluster means every node starts replicating its writes to the
+  newcomer's store, so membership has its own credential — a peering node
+  refuses to start without one (`ALLOW_SHARED_PEER_PASSWORD=true` overrides
+  this for a closed lab network). `TRITIUM.GOSSIP` is refused to anyone not
+  authenticated as `peer`, and under `TLS_CLIENT_AUTH` also to any connection
+  without a verified certificate.
 - **Users with fewer rights.** `USER_<name>=<password>:<rights>` configures a
   client that may only touch the keys it names — `AUTH <name> <password>`,
   `NOPERM` outside them, never a peer command, never the cluster view, and

@@ -30,9 +30,13 @@ func TestRun(t *testing.T) {
 	t.Log(rep)
 }
 
+// testPeerPW lets the seed and its joiner share a peer password, whether or
+// not either happens to be the one whose config names the other.
+const testPeerPW = "peer-test-pw"
+
 func node(t *testing.T, join string) *server.Server {
 	t.Helper()
-	s, err := server.New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, JoinAddr: join})
+	s, err := server.New(config.Config{StoreAddr: resptest.Addr(t), PoolSize: 2, JoinAddr: join, PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}

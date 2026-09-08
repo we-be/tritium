@@ -96,6 +96,13 @@ type Server struct {
 // New loads TLS material and connects to the node's RESP store. Nothing
 // listens until Start.
 func New(cfg config.Config) (*Server, error) {
+	if cfg.Peering() && (cfg.PeerPassword == "" || cfg.PeerPassword == cfg.Password) {
+		const msg = "PEER_PASSWORD is unset or equal to AUTH_PASSWORD, and this node peers (JOIN_ADDRESS, ADVERTISE_ADDRESS or LINK_ADDRESS is set)"
+		if !cfg.AllowSharedPeerPassword {
+			return nil, errors.New(msg + ": any client, or whoever holds AUTH_PASSWORD, could join the cluster; set a distinct PEER_PASSWORD, or ALLOW_SHARED_PEER_PASSWORD=true to mean it")
+		}
+		slog.Warn(msg + ", so any client that knows it can join the cluster")
+	}
 	tlsServer, tlsPeer, err := tlsConfigs(cfg)
 	if err != nil {
 		return nil, err
@@ -120,9 +127,6 @@ func New(cfg config.Config) (*Server, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
-	}
-	if cfg.Password != "" && cfg.PeerPassword == "" {
-		slog.Warn("PEER_PASSWORD is unset, so any client that knows AUTH_PASSWORD can join the cluster")
 	}
 	return s, nil
 }

@@ -49,6 +49,7 @@ for i in 1 2 3; do
         if [[ ${STORES:-} == valkey ]]; then echo "SECURE_STORE_ADDRESS=127.0.0.1:$((6379 + (i - 1) * 2))"; fi
         echo "LISTEN_ADDRESS=127.0.0.1:$rpc"
         if (( i > 1 )); then echo "JOIN_ADDRESS=127.0.0.1:8080"; fi
+        echo "PEER_PASSWORD=local-cluster-demo" # every node shares it; node 1 needs it too, to answer the others' AUTH peer
     } > "node$i.env"
     ./bin/tritium -config "node$i.env" > "logs/node$i.log" 2>&1 &
     echo $! > "logs/node$i.pid"

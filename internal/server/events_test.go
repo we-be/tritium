@@ -40,7 +40,7 @@ func TestEventsReplicateAcrossFleet(t *testing.T) {
 		hurry(t)
 		realA, realB := reserve(t), reserve(t)
 		linkA, linkB := newLink(t, realA), newLink(t, realB)
-		a, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2})
+		a, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2, PeerPassword: testPeerPW})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,7 @@ func TestEventsReplicateAcrossFleet(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { a.Stop() })
-		b, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr()})
+		b, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr(), PeerPassword: testPeerPW})
 		if err != nil {
 			t.Fatal(err)
 		}

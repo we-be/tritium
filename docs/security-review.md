@@ -74,6 +74,14 @@ last section.
    unbounded — client pools and `tritium-msg recv -watch` sit quiet for
    hours — but once a command's first byte arrives, the rest of it must
    land within 60 s or the connection is closed.
+9. **A node could cluster on its client password.** `PEER_PASSWORD` fell
+   back to `AUTH_PASSWORD` when unset, so any client that knew the client
+   password could also `AUTH peer` and join the cluster, only a log warning
+   said so. Now: a node configured to peer (`JOIN_ADDRESS`,
+   `ADVERTISE_ADDRESS` or `LINK_ADDRESS` set) refuses to start on a
+   `PEER_PASSWORD` that is unset or equal to `AUTH_PASSWORD`;
+   `ALLOW_SHARED_PEER_PASSWORD=true` keeps the old behaviour, with the same
+   warning. A lone node that never peers is unaffected either way.
 
 ## Looked at and left as is
 
@@ -95,6 +103,16 @@ last section.
 - **Peers are fully trusted.** A peer can inject any membership view and
   any write. That is what a peer is; there is no partial peer. A node you
   do not run should be a user, not a peer.
+- **`PEER_ALLOW` is an allowlist of addresses, not proof of who holds one.**
+  It names which advertised addresses may be members; it does not check that
+  whoever announces one actually runs it. Without `TLS_CLIENT_AUTH`, a stolen
+  `PEER_PASSWORD` lets an attacker gossip a node of its own claiming any
+  allowed address. Under `TLS_CLIENT_AUTH`, the announcing peer's certificate
+  must name the address it claims (`certNames` in
+  `internal/server/commands.go`), and that binding — not the allowlist — is
+  what actually ties an address to an identity. The recommended cloud shape
+  is TLS plus mutual TLS plus a `PEER_PASSWORD` distinct from
+  `AUTH_PASSWORD`.
 - **No certificate revocation.** Losing a node's cert is handled by
   rotating PEER_PASSWORD (a peer needs both) and, if you like, reissuing
   the CA. A revocation list would add a config knob for a case the

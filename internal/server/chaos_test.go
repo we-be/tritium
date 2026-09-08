@@ -59,7 +59,7 @@ func chaos(t *testing.T, async bool) {
 				seeds = append(seeds, a)
 			}
 		}
-		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: addrs[i], PoolSize: 2, JoinAddr: seeds[0] + "," + seeds[1], Async: async}
+		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: addrs[i], PoolSize: 2, JoinAddr: seeds[0] + "," + seeds[1], Async: async, PeerPassword: testPeerPW}
 		s, err := New(cfg)
 		if err != nil {
 			t.Fatal(err)

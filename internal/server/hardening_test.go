@@ -93,6 +93,7 @@ func TestMaxClients(t *testing.T) {
 func TestStampTooFarAheadIsRefused(t *testing.T) {
 	s := startNode(t, config.Config{})
 	c := dial(t, s)
+	c.want("OK", "AUTH", "peer", testPeerPW) // TRITIUM.REPLICATE is peer-only
 	c.want("OK", "SET", "far:k", "now", "EX", "60")
 	ahead := (uint64(time.Now().UnixMilli()-stampEpoch) + 2*maxStampAhead) << 24
 	c.wantErr("ERR stamp too far ahead", "TRITIUM.REPLICATE", "STAMPED", strconvU(ahead), "SETEX", "far:k", "60", "frozen")
@@ -132,6 +133,23 @@ func TestNoPasswordOffLoopbackIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.Start("0.0.0.0:0"); err != nil {
+		t.Fatal(err)
+	}
+	s.Stop()
+}
+
+// A node that peers refuses to start on a peer password that is unset or
+// equal to AUTH_PASSWORD, since either lets any client join the cluster;
+// ALLOW_SHARED_PEER_PASSWORD keeps the old behaviour.
+func TestPeeringNeedsADistinctPeerPassword(t *testing.T) {
+	if _, err := New(config.Config{PoolSize: 1, JoinAddr: "127.0.0.1:1"}); err == nil {
+		t.Fatal("a peering node with no PEER_PASSWORD started")
+	}
+	if _, err := New(config.Config{PoolSize: 1, JoinAddr: "127.0.0.1:1", Password: "pw", PeerPassword: "pw"}); err == nil {
+		t.Fatal("a peering node with PEER_PASSWORD equal to AUTH_PASSWORD started")
+	}
+	s, err := New(config.Config{PoolSize: 1, JoinAddr: "127.0.0.1:1", AllowSharedPeerPassword: true})
+	if err != nil {
 		t.Fatal(err)
 	}
 	s.Stop()
@@ -193,6 +211,7 @@ func TestUsersTTLIsCapped(t *testing.T) {
 func TestPeerAllowIgnoresStrangers(t *testing.T) {
 	s := startNode(t, config.Config{PeerAllow: []string{"127.0.0.1:1"}})
 	c := dial(t, s)
+	c.want("OK", "AUTH", "peer", testPeerPW) // TRITIUM.GOSSIP is peer-only
 	if _, err := c.do("TRITIUM.GOSSIP", `{"id":"node-evil","addr":"10.9.9.9:8080","state":"healthy","last_seen":"2099-01-01T00:00:00Z"}`); err != nil {
 		t.Fatal(err)
 	}

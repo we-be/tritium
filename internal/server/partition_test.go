@@ -97,7 +97,7 @@ func TestPartitionHeals(t *testing.T) {
 	}
 	realA, realB := reserve(t), reserve(t)
 	linkA, linkB := newLink(t, realA), newLink(t, realB)
-	a, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2})
+	a, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2, PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestPartitionHeals(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { a.Stop() })
-	b, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr()})
+	b, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr(), PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestPartitionSettlesConflicts(t *testing.T) {
 	hurry(t)
 	realA, realB := reserve(t), reserve(t)
 	linkA, linkB := newLink(t, realA), newLink(t, realB)
-	a, err := New(config.Config{ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2}) // embedded stores keep stamps
+	a, err := New(config.Config{ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2, PeerPassword: testPeerPW}) // embedded stores keep stamps
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestPartitionSettlesConflicts(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { a.Stop() })
-	b, err := New(config.Config{ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr()})
+	b, err := New(config.Config{ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr(), PeerPassword: testPeerPW})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,6 +206,7 @@ func TestPartitionSettlesConflicts(t *testing.T) {
 	}
 
 	pa := dial(t, a)
+	pa.want("OK", "AUTH", "peer", testPeerPW) // TRITIUM.REPLICATE is peer-only
 	pa.want("OK", "TRITIUM.REPLICATE", "STAMPED", "1", "SETEX", "part:c", "60", "stale")
 	pa.want(int64(0), "TRITIUM.REPLICATE", "STAMPED", "1", "DEL", "part:c")
 	ca.want("b-side", "GET", "part:c")
