@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +16,11 @@ import (
 )
 
 // Every key has one owner among the live nodes, picked by rendezvous
-// hashing over their addresses, and a write to a key is carried out by its
-// owner: a node handed a client's write for a key it does not own forwards
+// hashing over their addresses weighted by each node's electronegativity —
+// a node competes with as many points as its weight, so one of weight 2
+// owns twice the keys of one of weight 1, and one of weight 0, the cloud
+// hub that carries replicas and orders nothing, owns none — and a write to
+// a key is carried out by its owner: a node handed a client's write for a key it does not own forwards
 // it there as TRITIUM.FORWARD, and the owner applies it and fans it out to
 // everyone, the sender included, before answering. So the writes to one key
 // are ordered in one place, and SET NX means what it says across the
@@ -39,38 +43,55 @@ var owned = map[string]bool{"SET": true, "SETEX": true, "GETDEL": true, "EXPIRE"
 
 // ownerOf names the node that orders writes to key: "" when it is this one.
 // Held replicas are passed over — a forward to one would only wait out the
-// deadline — so during a hold the sides may briefly disagree. So is a peer
-// served over connections it opened: it cannot dial the others, so what it
-// applies reaches only the nodes it can, and a write of ours must not
-// shrink to that.
+// deadline — so during a hold the sides may briefly disagree. So are nodes
+// of weight 0; if no live node has a weight, the write stays here. And so
+// is a peer served over connections it opened: its fan-out reaches only
+// what it can dial, and a write of ours must not shrink to that — unless we
+// are a node of weight 0, which orders nothing and hands every write to
+// its peers, whose reach is then their own affair.
 func (s *Server) ownerOf(key string) string {
 	if !s.cfg.Ownership || s.cluster == nil {
 		return ""
 	}
 	local := s.cluster.addr()
-	best, top := local, score(local, key)
+	weights := map[string]int{local: s.cfg.Weight()}
 	held := s.store.Held()
 	for _, addr := range s.store.Replicas() {
-		if slices.Contains(held, addr) || s.links.has(addr) {
+		if slices.Contains(held, addr) || (s.links.has(addr) && s.cfg.Weight() > 0) {
 			continue
 		}
-		if sc := score(addr, key); sc > top || (sc == top && addr > best) {
-			best, top = addr, sc
-		}
+		weights[addr] = s.cluster.weightOf(addr)
 	}
-	if best == local {
-		return ""
+	if best := owner(key, weights); best != "" && best != local {
+		return best
+	}
+	return ""
+}
+
+// owner is the rendezvous winner for key among nodes, each competing with
+// as many hashed points as its weight: every node computes the same, so
+// they agree on the owner whenever they agree on the members and their
+// weights. "" when no node has a weight.
+func owner(key string, weights map[string]int) string {
+	best, top := "", uint64(0)
+	for addr, weight := range weights {
+		for point := range weight {
+			if sc := score(addr, point, key); sc > top || (sc == top && addr > best) {
+				best, top = addr, sc
+			}
+		}
 	}
 	return best
 }
 
-// score is the rendezvous weight of a node for a key: every node computes
-// the same, so they agree on the owner whenever they agree on the members.
-// FNV alone ranks keys that differ in a trailing byte almost identically,
-// so its sum is mixed once more before comparing.
-func score(addr, key string) uint64 {
+// score is one of a node's rendezvous points for a key. FNV alone ranks
+// keys that differ in a trailing byte almost identically, so its sum is
+// mixed once more before comparing.
+func score(addr string, point int, key string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(addr))
+	h.Write([]byte{0})
+	h.Write([]byte(strconv.Itoa(point)))
 	h.Write([]byte{0})
 	h.Write([]byte(key))
 	x := h.Sum64()

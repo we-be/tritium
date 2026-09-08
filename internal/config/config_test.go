@@ -19,7 +19,8 @@ func TestLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Config{StoreAddr: "store:6379", ListenAddr: ":9001", Password: "multi\nline", PoolSize: 2, MaxClients: DefaultMaxClients, Ownership: true, TLSClientAuth: true, TLSCA: "ca.pem"}
+	one := 1
+	want := Config{StoreAddr: "store:6379", ListenAddr: ":9001", Password: "multi\nline", PoolSize: 2, MaxClients: DefaultMaxClients, Ownership: true, Electronegativity: &one, TLSClientAuth: true, TLSCA: "ca.pem"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}

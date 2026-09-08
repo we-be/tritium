@@ -225,8 +225,9 @@ the plane by whoever can write `id:travel` is refused on both ends.
   on the cloud node so only certificate holders reach AUTH there.
 - A write on the laptop never waits for a hotel round trip: its link to
   the cloud node is fed from a queue on its own.
-- A linked node is never a key's owner and applies what it receives, so
-  a stolen laptop's node has no more than a client has: the plane's keys
+- With `ELECTRONEGATIVITY=0` the laptop's node is never a key's owner and
+  only applies what it receives, so a stolen laptop's node has no more than
+  a client has: the plane's keys
   as of its last sync, and the credentials in its files.
 - Full-disk encryption on the laptop covers the files; the playbook covers
   the credentials.

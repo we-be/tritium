@@ -57,10 +57,12 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		StoreAddr: storeAddr,
 		State:     storage.NodeStateHealthy,
 		LastSeen:  time.Now(),
-		IsLeader:  len(seeds) == 0,
+		IsLeader:  len(seeds) == 0 && s.cfg.Weight() > 0,
 		Started:   time.Now(),
 		Version:   Version,
 		Seeds:     seeds,
+
+		Electronegativity: s.cfg.Electronegativity,
 	}
 	events := newEventLog(local.ID, s.store)
 	s.store.SetHoldHook(func(addr string) { events.emit("hold", addr, 0, 0) })
@@ -443,6 +445,18 @@ func (c *cluster) localCopy() storage.NodeInfo {
 
 // addr is this node's advertised address; set once, so no lock.
 func (c *cluster) addr() string { return c.local.Addr }
+
+// weightOf is the electronegativity a peer gossiped, 1 for one that never said.
+func (c *cluster) weightOf(addr string) int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, n := range c.nodes {
+		if n.Addr == addr {
+			return n.Weight()
+		}
+	}
+	return 1
+}
 
 func (c *cluster) localJSON() string {
 	b, _ := json.Marshal(c.localCopy())

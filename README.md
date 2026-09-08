@@ -136,7 +136,7 @@ ever handing a key out twice, and is reached over RESP through connections
 that never leave the process, so it behaves exactly like an external store
 would — a node restart empties it, and the peers fill it back on rejoin. A
 write is carried out by the key's owner — the live node that rendezvous
-hashing picks for that key, the same on every node that agrees on the
+hashing, weighted by each node's `ELECTRONEGATIVITY`, picks for that key, the same on every node that agrees on the
 members — which applies it to its own primary with `SETEX` and fans it out
 to every other node's primary, the node that took the client's command
 included, before answering. A node handed a write for a key it does not own
@@ -312,6 +312,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
 | `MAX_CLIENTS`            | `10000`          | Connections a node accepts at once; more are turned away with an error. A connection that has not authenticated within 10 s, or is refused five `AUTH`s, is closed |
 | `KEY_OWNERSHIP`          | `on`             | Each key's writes go through its owner node, so `NX` and write order hold cluster-wide; `off` writes locally first and fans out from there |
+| `ELECTRONEGATIVITY`      | `1`              | This node's pull on key ownership: it competes for each key with this many rendezvous points, so `2` owns twice the keys of `1`, and `0` never owns a key nor reads as leader — for a cloud hub that carries replicas and orders nothing |
 | `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer on this network has it — a peer across a link (`LINK_ADDRESS`, or one that linked to us) is fed from a queue either way, so no write waits out the internet. `async`: answered once this node's store has it; every peer is fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |

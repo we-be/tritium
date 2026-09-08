@@ -43,6 +43,7 @@ type Config struct {
 	AllowSharedPeerPassword bool            // ALLOW_SHARED_PEER_PASSWORD=true: let a peering node start with PEER_PASSWORD unset or equal to AUTH_PASSWORD
 	Async                   bool            // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
 	Ownership               bool            // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
+	Electronegativity       *int            // ELECTRONEGATIVITY: this node's pull on key ownership — rendezvous points per key; nil is 1, 0 never owns a key
 	TLSCert                 string          // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
 	TLSKey                  string          // TLS_KEY: PEM private key
 	TLSCA                   string          // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
@@ -128,6 +129,15 @@ func (c Config) Seeds() []string {
 	return out
 }
 
+// Weight is this node's electronegativity: its share of key ownership
+// relative to its peers, 1 unless ELECTRONEGATIVITY says otherwise.
+func (c Config) Weight() int {
+	if c.Electronegativity == nil {
+		return 1
+	}
+	return *c.Electronegativity
+}
+
 // Links is LINK_ADDRESS as a list: the peers that cannot dial us back, so we
 // open the connections they serve us over (see TRITIUM.PEERLINK).
 func (c Config) Links() []string { return list(c.LinkAddr) }
@@ -198,6 +208,13 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("MAX_CLIENTS: %q is not a non-negative integer", raw)
 	}
 	cfg.MaxClients = clients
+
+	raw = get("ELECTRONEGATIVITY", "1")
+	weight, err := strconv.Atoi(raw)
+	if err != nil || weight < 0 {
+		return Config{}, fmt.Errorf("ELECTRONEGATIVITY: %q is not a non-negative integer", raw)
+	}
+	cfg.Electronegativity = &weight
 
 	raw = get("MAX_SERVER_CONNECTIONS", strconv.Itoa(DefaultPoolSize))
 	n, err := strconv.Atoi(raw)

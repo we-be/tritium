@@ -28,7 +28,7 @@ type NodeStats struct {
 
 // NodeInfo is one node's entry in the cluster view, exchanged as JSON over
 // the TRITIUM.NODES and TRITIUM.GOSSIP commands. IsLeader only marks the
-// node that seeded the cluster; there is no election.
+// node that seeded the cluster and has a weight; there is no election.
 type NodeInfo struct {
 	ID        string    `json:"id"`
 	Addr      string    `json:"addr"`       // where clients and peers reach this node
@@ -40,6 +40,18 @@ type NodeInfo struct {
 	Version   string    `json:"version,omitempty"` // the tritium build it runs, so a fleet upgrade can be watched
 	Seeds     []string  `json:"seeds,omitempty"`   // the peers it dials to join and rejoin
 	Stats     NodeStats `json:"stats"`
+	// Electronegativity is the node's pull on key ownership, as its
+	// ELECTRONEGATIVITY says: absent is 1; 0 never owns a key.
+	Electronegativity *int `json:"electronegativity,omitempty"`
+}
+
+// Weight is the node's electronegativity: its share of key ownership
+// relative to its peers. A node that never said has weight 1.
+func (n NodeInfo) Weight() int {
+	if n.Electronegativity == nil {
+		return 1
+	}
+	return *n.Electronegativity
 }
 
 // EventsKeyPrefix plus a node's ID names the sorted set holding that node's
