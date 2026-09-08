@@ -38,8 +38,10 @@ podman compose up --build        # or: docker compose up --build
 Prebuilt binaries for Linux and macOS, amd64 and arm64, plus 32-bit ARM for a
 Pi Zero, are on the [releases page](https://github.com/we-be/tritium/releases);
 each tarball holds `tritium`, `tritium-cli`, `tritium-monitor`, `tritium-msg`
-and `tritium-load`. `make dist` builds the same set locally, and
-`brew install --formula packaging/homebrew/tritium.rb` installs a release.
+and `tritium-load`. `make dist` builds the same set locally. With Homebrew,
+`brew install we-be/tritium/tritium` installs the latest release from the
+[tap](https://github.com/we-be/homebrew-tritium), which copies the `tritium.rb`
+each release attaches.
 
 ## Use it
 

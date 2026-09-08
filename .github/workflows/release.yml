@@ -17,8 +17,17 @@ jobs:
           go-version-file: go.mod
       - run: make lint
       - run: go test -race -count=1 ./...
-      - run: make dist VERSION=${{ github.ref_name }}
+      - run: make dist formula VERSION=${{ github.ref_name }}
       - name: publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" --verify-tag --generate-notes dist/*.tar.gz
+        run: gh release create "${{ github.ref_name }}" --verify-tag --generate-notes dist/*.tar.gz dist/tritium.rb
+      # The tap picks the new formula up on its hourly schedule by itself. With a
+      # HOMEBREW_TAP_TOKEN secret (a fine-grained PAT that can write the tap's
+      # contents) it is told right away instead.
+      - name: nudge the tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "no HOMEBREW_TAP_TOKEN; the tap updates on its own schedule"; exit 0; }
+          gh api repos/we-be/homebrew-tritium/dispatches -f event_type=release

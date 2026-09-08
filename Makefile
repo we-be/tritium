@@ -1,4 +1,4 @@
-.PHONY: build dist test integration chaos lint image cluster cluster-down clean
+.PHONY: build dist formula test integration chaos lint image cluster cluster-down clean
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 LDFLAGS = -s -w -X github.com/we-be/tritium/internal/server.Version=$(VERSION)
@@ -17,6 +17,11 @@ dist:
 	  tar -C dist -czf $$out.tar.gz $$(basename $$out) && rm -r $$out; \
 	done
 	ls -l dist
+
+# The Homebrew formula for what dist/ holds, version and checksums filled in.
+# The release workflow attaches it to the release; the tap copies it from there.
+formula:
+	packaging/homebrew/render.sh $(VERSION) dist > dist/tritium.rb
 
 test:
 	go test -race -count=1 ./...

@@ -15,6 +15,9 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   relays twice, stamps settle duplicates, and a hub older than this is sent plain writes,
   so the hub rolls first. Also a Prometheus text endpoint behind `METRICS_ADDRESS`
   (off by default, no auth — bind it to loopback or a private interface).
+- **v0.18.1** — **Homebrew.** Every release attaches its own `tritium.rb` (version and
+  checksums filled in by `make formula`), and the tap `we-be/homebrew-tritium` copies the
+  latest one, so `brew install we-be/tritium/tritium` installs the current release.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
