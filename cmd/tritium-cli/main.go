@@ -11,9 +11,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"slices"
 	"strconv"
@@ -82,13 +84,18 @@ func main() {
 	}
 	defer client.Close()
 
-	if err := run(client, flag.Arg(0), flag.Args()[1:]); err != nil {
+	if err := run(client, opts, flag.Arg(0), flag.Args()[1:]); err != nil {
 		fail(err)
 	}
 }
 
-func run(client *tritium.Client, cmd string, args []string) error {
+func run(client *tritium.Client, opts tritium.ClientOptions, cmd string, args []string) error {
 	switch cmd {
+	case "where":
+		if len(args) != 1 {
+			return errors.New("usage: where KEY")
+		}
+		return where(client, opts, args[0])
 	case "get":
 		if len(args) != 1 {
 			return errors.New("usage: get KEY")
@@ -257,6 +264,69 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 	w.Flush()
 }
 
+// where asks every healthy node in the view for the key — its type, its
+// TTL and a digest of what it holds — so a key that differs between nodes,
+// or is missing from one, shows. Each node is reached with the same
+// credentials as the first, so a node with its own password says so.
+func where(client *tritium.Client, opts tritium.ClientOptions, key string) error {
+	nodes, err := client.Nodes()
+	if err != nil {
+		return err
+	}
+	rows := slices.SortedFunc(maps.Values(nodes), func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE\tTYPE\tTTL\tHOLDS")
+	for _, n := range rows {
+		if n.State != storage.NodeStateHealthy {
+			fmt.Fprintf(w, "%s\t%s\t\t\n", n.Addr, n.State)
+			continue
+		}
+		o := opts
+		o.Address = n.Addr
+		c, err := tritium.NewClient(&o)
+		if err != nil {
+			fmt.Fprintf(w, "%s\tunreachable\t\t%s\n", n.Addr, err)
+			continue
+		}
+		typ, ttl, holds := lookup(c, key)
+		c.Close()
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.Addr, typ, ttl, holds)
+	}
+	return w.Flush()
+}
+
+// lookup is one node's answer about a key: its type, its TTL and what it
+// holds — the first bytes of a digest of a string's stored value, sealed or
+// not, so two nodes that hold the same bytes print the same; a sorted set's
+// member count.
+func lookup(c *tritium.Client, key string) (typ, ttl, holds string) {
+	t, err := c.Type(key)
+	if err != nil {
+		return "error", "", err.Error()
+	}
+	if t == "none" {
+		return "none", "", ""
+	}
+	if v, err := c.Do("TTL", key); err == nil {
+		if n, ok := v.(int64); ok && n >= 0 {
+			ttl = (time.Duration(n) * time.Second).String()
+		}
+	}
+	switch t {
+	case "string":
+		v, err := c.Do("GET", key)
+		if b, ok := v.([]byte); err == nil && ok {
+			sum := sha256.Sum256(b)
+			holds = fmt.Sprintf("%d bytes, %x", len(b), sum[:4])
+		}
+	case "zset":
+		if v, err := c.Do("ZCARD", key); err == nil {
+			holds = fmt.Sprintf("%v members", v)
+		}
+	}
+	return t, ttl, holds
+}
+
 // mem renders bytes the way a glance wants them.
 func mem(n int64) string {
 	switch {
@@ -290,7 +360,7 @@ func printEvents(events []storage.Event, node string) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | where KEY | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
 	flag.PrintDefaults()
 }
 
