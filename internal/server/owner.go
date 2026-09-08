@@ -236,3 +236,44 @@ func (s *session) forwardHandler(args []string) []byte {
 	s.forwarded = false
 	return reply
 }
+
+// gossip handles TRITIUM.GOSSIP <node-json>: learn the caller, reply with
+// our view.
+// replicatable is what a peer may write through us: the writes our own
+// fan-out produces, nothing that reads or reaches beyond the store.
+var replicatable = map[string]bool{"SET": true, "SETEX": true, "DEL": true, "EXPIRE": true,
+	"ZADD": true, "ZREM": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true}
+
+// replicate applies a peer's write to this node's store only. It is how a
+// peer's SET reaches us without ever dialing our store, and it never fans
+// out again: the peer already sent it to everyone.
+func (s *session) replicate(args []string) []byte {
+	inner := strings.ToUpper(args[0])
+	if inner == "STAMPED" { // a stamped write: our clock moves past it, and a store that keeps no stamps gets it plain
+		if len(args) < 3 {
+			return errArity("TRITIUM.REPLICATE")
+		}
+		stamp, err := strconv.ParseUint(args[1], 10, 64)
+		if err != nil {
+			return resp.AppendError(nil, "ERR invalid stamp")
+		}
+		inner = strings.ToUpper(args[2])
+		if !replicatable[inner] {
+			return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[2]+"'")
+		}
+		if !s.srv.clock.observe(stamp) {
+			return resp.AppendError(nil, "ERR stamp too far ahead of this node's clock")
+		}
+		if _, primary := s.srv.store.Stamps(); !primary {
+			args = args[2:]
+		}
+	}
+	if !replicatable[inner] {
+		return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[0]+"'")
+	}
+	v, err := s.srv.store.Apply(resp.NewCommand(args...))
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendValue(nil, v)
+}

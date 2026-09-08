@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
@@ -283,4 +285,41 @@ func (l *linker) closeAll() {
 	for c := range l.conns {
 		c.Close()
 	}
+}
+
+// peerlink handles TRITIUM.PEERLINK <node-json>: the caller cannot be dialed,
+// so it opened this connection for us to send on. The reply is the last thing
+// we write as its server; serveConnWith parks the socket afterwards.
+func (s *session) peerlink(args []string) []byte {
+	var n storage.NodeInfo
+	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" || n.Addr == "" {
+		return resp.AppendError(nil, "ERR invalid node info")
+	}
+	if r := s.certNames(n.Addr); r != nil {
+		return r
+	}
+	s.linked = &n
+	return replyOK
+}
+
+// certNames refuses a peer that announces an address its certificate does
+// not name, under TLS_CLIENT_AUTH: with a stolen peer password alone, a
+// node could otherwise claim another member's address and be handed its
+// replication. Without client certificates there is nothing to check.
+func (s *session) certNames(addr string) []byte {
+	if !s.srv.cfg.TLSClientAuth {
+		return nil
+	}
+	tc, ok := s.conn.(*tls.Conn)
+	if !ok || len(tc.ConnectionState().PeerCertificates) == 0 {
+		return replyNoPerm
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return resp.AppendError(nil, "ERR invalid node address")
+	}
+	if err := tc.ConnectionState().PeerCertificates[0].VerifyHostname(host); err != nil {
+		return resp.AppendError(nil, "NOPERM the peer's certificate does not name "+host)
+	}
+	return nil
 }

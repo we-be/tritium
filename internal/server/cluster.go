@@ -497,3 +497,27 @@ func (c *cluster) snapshot() map[string]storage.NodeInfo {
 	}
 	return out
 }
+
+func (s *session) nodes(args []string) []byte {
+	return viewJSON(s.srv.cluster.snapshot())
+}
+
+func (s *session) gossip(args []string) []byte {
+	var n storage.NodeInfo
+	if err := json.Unmarshal([]byte(args[0]), &n); err != nil || n.ID == "" {
+		return resp.AppendError(nil, "ERR invalid node info")
+	}
+	if r := s.certNames(n.Addr); r != nil {
+		return r
+	}
+	s.srv.cluster.learn(n)
+	return viewJSON(s.srv.cluster.snapshot())
+}
+
+func viewJSON(view map[string]storage.NodeInfo) []byte {
+	b, err := json.Marshal(view)
+	if err != nil {
+		return errMsg(err)
+	}
+	return resp.AppendBulk(nil, b)
+}
