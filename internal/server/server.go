@@ -247,7 +247,22 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 	}
 	cfg := s.tlsPeer.Clone()
 	cfg.ServerName = host
-	return tls.DialWithDialer(&d, "tcp", addr, cfg)
+	// Connect and handshake within one peerTimeout, but separately, so a
+	// dial that times out says which of the two stalled and for how long.
+	start := time.Now()
+	raw, err := d.Dial("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	connected := time.Since(start)
+	raw.SetDeadline(start.Add(peerTimeout))
+	conn := tls.Client(raw, cfg)
+	if err := conn.Handshake(); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("tls handshake with %s: %w (connect took %s, handshake %s)", addr, err, connected.Round(time.Millisecond), (time.Since(start) - connected).Round(time.Millisecond))
+	}
+	raw.SetDeadline(time.Time{})
+	return conn, nil
 }
 
 // peerTransport reaches a peer's node the way gossip does — TLS when

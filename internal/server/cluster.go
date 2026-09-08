@@ -406,6 +406,9 @@ func (c *cluster) checkHealth() {
 		default:
 			n.State = storage.NodeStateHealthy
 		}
+		if n.State == storage.NodeStateDegraded && was == storage.NodeStateHealthy {
+			slog.Info("cluster: peer degraded", "peer", id, "silent_for", age.Round(time.Second)) // the first word of trouble; a detach follows only if it stays quiet
+		}
 		if n.State == storage.NodeStateDown && was != storage.NodeStateDown {
 			detach = append(detach, *n)
 		}
