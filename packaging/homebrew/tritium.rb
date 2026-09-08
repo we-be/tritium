@@ -2,7 +2,7 @@
 # each tarball from what `make dist` built, and the release workflow attaches
 # the result to the GitHub release as `tritium.rb`. The tap at
 # github.com/we-be/homebrew-tritium copies the latest one within the hour, so
-#   brew install we-be/tritium/tritium
+#   brew trust we-be/tritium && brew install we-be/tritium/tritium
 # installs the current release. (Homebrew no longer installs a formula from a
 # bare file, so the attached one is the tap's source and a record of the
 # checksums, not something to install directly.)
