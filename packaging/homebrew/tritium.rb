@@ -15,30 +15,29 @@
 class Tritium < Formula
   desc "RAM-only, zero-dependency key-value store that speaks the Redis protocol"
   homepage "https://github.com/we-be/tritium"
-  version "0.0.0"
   license "GPL-3.0-only"
 
   livecheck do
-    url "https://github.com/we-be/tritium/releases/latest"
+    url :stable
     strategy :github_latest
   end
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/we-be/tritium/releases/download/v#{version}/tritium-v#{version}-darwin-arm64.tar.gz"
+      url "https://github.com/we-be/tritium/releases/download/v0.0.0/tritium-v0.0.0-darwin-arm64.tar.gz"
       sha256 "REPLACE_WITH_DARWIN_ARM64_SHA256"
     else
-      url "https://github.com/we-be/tritium/releases/download/v#{version}/tritium-v#{version}-darwin-amd64.tar.gz"
+      url "https://github.com/we-be/tritium/releases/download/v0.0.0/tritium-v0.0.0-darwin-amd64.tar.gz"
       sha256 "REPLACE_WITH_DARWIN_AMD64_SHA256"
     end
   end
 
   on_linux do
     if Hardware::CPU.arm?
-      url "https://github.com/we-be/tritium/releases/download/v#{version}/tritium-v#{version}-linux-arm64.tar.gz"
+      url "https://github.com/we-be/tritium/releases/download/v0.0.0/tritium-v0.0.0-linux-arm64.tar.gz"
       sha256 "REPLACE_WITH_LINUX_ARM64_SHA256"
     else
-      url "https://github.com/we-be/tritium/releases/download/v#{version}/tritium-v#{version}-linux-amd64.tar.gz"
+      url "https://github.com/we-be/tritium/releases/download/v0.0.0/tritium-v0.0.0-linux-amd64.tar.gz"
       sha256 "REPLACE_WITH_LINUX_AMD64_SHA256"
     end
   end

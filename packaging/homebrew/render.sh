@@ -17,7 +17,7 @@ darwin_amd64=$(sum darwin-amd64)
 linux_arm64=$(sum linux-arm64)
 linux_amd64=$(sum linux-amd64)
 
-sed -e "s/^  version \".*\"/  version \"$v\"/" \
+sed -e "s/0\.0\.0/$v/g" \
 	-e "s/REPLACE_WITH_DARWIN_ARM64_SHA256/$darwin_arm64/" \
 	-e "s/REPLACE_WITH_DARWIN_AMD64_SHA256/$darwin_amd64/" \
 	-e "s/REPLACE_WITH_LINUX_ARM64_SHA256/$linux_arm64/" \
