@@ -148,7 +148,7 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 			return
 		}
 		if sess.linked != nil { // the peer serves this socket from here on
-			s.handOff(*sess.linked, c)
+			s.handOff(*sess.linked, c, sess.r)
 			handed = true
 			return
 		}

@@ -146,10 +146,23 @@ func (l *links) close() {
 }
 
 // handOff parks a connection a peer opened for us and takes its node into the
-// view. We stop reading that socket here; from now on we send on it. The peer
+// view. We stop reading that socket here; from now on we send on it, and the
+// first thing we send is AUTH: that makes the peer's side of it a peer
+// session at once, rather than an unauthenticated one whose auth deadline
+// closes it before we take it. (Spare links used to die that way every ten
+// seconds and be reopened, a connection a second per fleet spoke.) The peer
 // is learned after the connection is parked, since attaching it as a replica
-// is what takes connections back out of the queue.
-func (s *Server) handOff(n storage.NodeInfo, c net.Conn) {
+// is what takes connections back out of the park.
+func (s *Server) handOff(n storage.NodeInfo, c net.Conn, r *resp.Reader) {
+	if pw := s.peerPassword(); pw != "" {
+		c.SetDeadline(time.Now().Add(peerTimeout))
+		if _, err := resp.NewCommand("AUTH", "peer", pw).Do(c, r); err != nil {
+			slog.Warn("cluster: peer link refused our AUTH, dropping it", "peer", n.ID, "err", err)
+			c.Close()
+			return
+		}
+		c.SetDeadline(time.Time{})
+	}
 	s.links.park(n.Addr, c)
 	s.cluster.learn(n)
 }

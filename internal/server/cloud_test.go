@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/internal/resptest"
 )
 
@@ -26,9 +27,9 @@ func dead(t *testing.T) string {
 
 // linkHome starts a node the cloud node cannot dial, linked to it, and
 // returns it with the address it advertises.
-func linkHome(t *testing.T, cloud *Server) (*Server, string) {
+func linkHome(t *testing.T, cloud *Server, password string) (*Server, string) {
 	t.Helper()
-	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0",
+	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0", Password: password,
 		AdvertiseAddr: dead(t), LinkAddr: cloud.Addr(), PoolSize: 2, PeerPassword: testPeerPW}
 	s, err := New(cfg)
 	if err != nil {
@@ -46,10 +47,29 @@ func linkHome(t *testing.T, cloud *Server) (*Server, string) {
 func TestDeadLinksAreDropped(t *testing.T) {
 	hurry(t)
 	cloud := startNode(t, config.Config{})
-	home, addr := linkHome(t, cloud)
+	home, addr := linkHome(t, cloud, "")
 	waitFor(t, "the home node to link", func() bool { return cloud.links.parked(addr) > 0 })
 	home.Stop()
 	waitFor(t, "the dead links to leave the park", func() bool { return cloud.links.parked(addr) == 0 })
+}
+
+// A parked connection is a peer session on the home node's side from the
+// moment it is parked: the cloud node authenticates on it as it is handed
+// over, so the home's auth deadline never closes a spare link the cloud has
+// not taken yet.
+func TestParkedLinksAreAuthenticated(t *testing.T) {
+	cloud := startNode(t, config.Config{})
+	_, addr := linkHome(t, cloud, "home-pw")
+	waitFor(t, "the home node to link", func() bool { return cloud.links.parked(addr) > 0 })
+	c, err := cloud.links.take(addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := resp.NewCommand("TRITIUM.NODES").Do(c, resp.NewReader(c)); err != nil {
+		t.Fatalf("a parked connection is not a peer session on the home node: %v", err)
+	}
 }
 
 // A cloud node the others can dial, and two home nodes it cannot: they open
@@ -60,7 +80,7 @@ func TestCloudPeering(t *testing.T) {
 	cloud := startNode(t, config.Config{})
 	homes := []*Server{}
 	for range 2 {
-		h, _ := linkHome(t, cloud)
+		h, _ := linkHome(t, cloud, "")
 		homes = append(homes, h)
 	}
 	waitFor(t, "the cloud node to reach both homes", func() bool { return len(cloud.store.Replicas()) == 2 })

@@ -53,10 +53,12 @@ attach or a fan-out after a home node restarts never takes a dead one.
 Two things fall out for free, because a parked connection is an ordinary peer
 connection:
 
-- **Authentication is symmetric.** The replication pool sends `AUTH peer <pw>`
-  on every fresh connection, parked ones included — so the home node
-  authenticates the cloud node on the reverse channel exactly as the cloud node
-  authenticated it on the way in. Under `TLS_CLIENT_AUTH` the home node is
+- **Authentication is symmetric.** The cloud node sends `AUTH peer <pw>` down a
+  link the moment it is handed over, and its replication pool sends it again on
+  every connection it takes — so the home node authenticates the cloud node on
+  the reverse channel exactly as the cloud node authenticated it on the way in,
+  and a spare link waiting in the park is a peer session on both ends, not an
+  unauthenticated one the home's auth deadline would close. Under `TLS_CLIENT_AUTH` the home node is
   verifying the certificate the cloud node presented, which is the right check.
 - **Outages take the path they already took.** A linked peer that stops
   answering is *held*, its missed keys noted, its backlog *parked by address*
