@@ -107,7 +107,7 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 	if cmd == "ask" {
 		return ask(conn, args)
 	}
-	if cmd != "init" {
+	if cmd != "init" && cmd != "status" { // status reads and consumes nothing: it must not wait on a running serve's lock
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
