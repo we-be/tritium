@@ -241,6 +241,17 @@ the plane by whoever can write `id:travel` is refused on both ends.
 - `MAX_CLIENTS` at the default; `STORE_MAX_MEMORY` set; the box's firewall
   admits 8080 and nothing else; ssh by key only.
 - Watch the log for "closing a connection after repeated AUTH failures".
+- Since v0.16.3 the cloud node sends `AUTH peer` down a link the moment
+  it is handed over, so a spare link waiting in its park is a peer session
+  on both ends; since v0.16.2 a parked link the home node closed leaves the
+  park at once, so a dead one is never handed to a fan-out. Neither widens
+  what a link may do — the home node still authenticated first, and still
+  refuses a link whose AUTH never comes within ten seconds.
+- `ELECTRONEGATIVITY=0`: the cloud node never orders a key and never
+  reads as leader. A write the gateway hands it goes down a link to a home
+  node, so whoever holds the gateway's credential can write the gateway's
+  prefixes and nothing more, exactly as before, and cannot make the cloud
+  node the arbiter of anyone else's keys.
 
 ## When a machine is lost
 

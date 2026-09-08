@@ -59,6 +59,38 @@ median SET grows by about half a round trip, 2.3 ms here. That is the price
 of `NX` and write order holding across the cluster. Reads never leave the
 node.
 
+## The fleet with a cloud node
+
+Measured 2026-09-08, the same desktop and Air on wifi plus a Lightsail nano
+in us-east-1 linked from both (`LINK_ADDRESS`; TCP handshake to it 21 ms).
+`tritium-load -config <the desktop's env> -rate 100 -duration 5s -keys 50
+-conns 2 -peer <the Air>`, run after each release rolled to all three.
+
+| Release | What changed | SET p50 | ZADD p50 | lag to the Air p50 |
+|---|---|---|---|---|
+| v0.15.0 | the cloud node joined; every write waited for it | 29.7 ms | 30.1 ms | 36 ms |
+| v0.16.0 | a peer across a link is fed from a queue on its own | 12.3 ms | 5.6 ms | 19 ms |
+| v0.17.0 | `ELECTRONEGATIVITY`: the cloud node never owns a key | 7.2 ms | 11.3 ms | 13 ms |
+
+GET stayed at 0.1 ms throughout: reads never leave the node. At v0.15.0
+every write paid the round trip to the cloud, including writes for the
+machine beside the writer, because the link was waited on like any other
+peer. Queue-feeding the link took that out. At v0.16.0 the cloud node
+could still own a machine's key from the machine's side — a WAN forward,
+then the write fed back to the writer from a queue — and the weights
+closed that. What is left in the 7 ms is one wifi round trip for a key the
+desktop owns and two in series for one the Air owns (the forward, then the
+owner's fan-out back); the ZADD column is a single key and lands on
+whichever node the hash picks. The backlog holds the one-round-trip design
+for the forwarded case.
+
+Between v0.16.0 and v0.17.0 the cloud node also stopped being churned: the
+spare link connections had died and been reopened every ten seconds on the
+spoke's auth deadline, and gossip had opened a TCP+TLS connection per round.
+With both gone, the nano's packet-rate allowance drops and TCP retransmits
+went to zero (`ethtool -S`, `nstat`); the handshake stalls seen before were
+those bursts.
+
 ## Memory
 
 200 000 keys written through a node, then the store's own accounting against
