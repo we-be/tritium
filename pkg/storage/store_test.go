@@ -99,7 +99,7 @@ func TestStoreReplicates(t *testing.T) {
 // replica can't be told apart from the primary.
 func sameServer(t *testing.T) bool {
 	t.Helper()
-	return resptest.Addr(t) == resptest.Addr(t)
+	return resptest.Shared()
 }
 
 // A replica the transport cannot reach is held — later writes no longer wait

@@ -130,13 +130,6 @@ func (s *Store) Close() {
 	s.once.Do(func() { close(s.stop) })
 }
 
-// Keys is how many keys are held, expired ones not yet swept included.
-func (s *Store) Keys() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.kv)
-}
-
 // sweeper expires keys nobody reads, so their memory comes back.
 func (s *Store) sweeper() {
 	t := time.NewTicker(time.Second)

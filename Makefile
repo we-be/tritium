@@ -36,6 +36,9 @@ lint:
 	go vet ./...
 	GOOS=linux GOARCH=arm GOARM=6 go vet ./...   # the Pi Zero build: int is 32 bits there
 	test -z "$$(go fix -diff ./...)" || { go fix -diff ./...; exit 1; }
+	go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+	@# Example is documentation, not a test root, so deadcode cannot see it is used
+	@dead=$$(go run golang.org/x/tools/cmd/deadcode@v0.46.0 -test ./... | grep -v 'unreachable func: Example$$'); test -z "$$dead" || { echo "$$dead"; exit 1; }
 
 image:
 	podman build -t tritium .

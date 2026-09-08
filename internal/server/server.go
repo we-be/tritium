@@ -253,7 +253,8 @@ func (s *Server) peerTransport() storage.Transport {
 }
 
 // Join adopts the cluster view of the node at addr and announces this node
-// to every peer in it.
+// to every peer in it: what a started node does with its seeds, for tests
+// that pair nodes after the fact.
 func (s *Server) Join(addr string) error {
 	if s.cluster == nil {
 		return errors.New("join before Start")

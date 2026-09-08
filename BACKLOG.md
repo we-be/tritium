@@ -1,8 +1,32 @@
 # Backlog
 
-What the loop works from, in order. One item per iteration, test-verified,
-pushed when CI is green, rolled to the mubs fleet nodes when it changes what a
-node does. Check an item off with the commit that closed it.
+What the loop works from. One item per iteration, test-verified, pushed when
+CI is green, rolled to the mubs fleet nodes when it changes what a node does.
+Check an item off with the commit that closed it.
+
+## What the loop works toward
+
+The lists below are hints, not the plan (Hunter, 2026-09-08: "I don't know
+that backlog is super accurate"). The plan is inferred from what tritium is
+for: the mubs fleet plane — a zero-dependency, Redis-compatible store that a
+few machines on a LAN and one always-up cloud node share, and the private
+channel between them. In order, it has to be:
+
+1. **Right under trouble** — restarts, upgrades, partitions, a frozen peer, a
+   full store. An iteration that finds a way to lose or misorder a write is
+   worth more than a feature.
+2. **Safe on an internet-reachable port** — one credential per role, a bound
+   on everything a stranger can send, nothing in gossip a user should not see.
+3. **Legible to whoever runs it**, person or agent — events, INFO, the
+   monitor, the CLI and the desktop browser answer "what happened" without a
+   shell on the node.
+4. **Cheap** — one static binary, RAM-only, a $5 node, no WAN round trip a
+   write does not need.
+5. **Small** — zero deps, one way to do each thing, no code kept for a caller
+   that is gone. `make lint` gates on staticcheck and deadcode for this.
+
+Each iteration picks one and moves it: a fix, a measurement, a probe that
+finds nothing, or a cut. Not every iteration ships.
 
 ## Now
 

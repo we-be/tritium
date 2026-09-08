@@ -20,6 +20,10 @@ func Addr(tb testing.TB) string {
 	return Start(tb).Addr()
 }
 
+// Shared reports whether every Addr call names the same real server, so a
+// test that needs two stores it can tell apart should skip.
+func Shared() bool { return os.Getenv("TRITIUM_RESP_ADDR") != "" }
+
 type Server struct {
 	ln net.Listener
 }

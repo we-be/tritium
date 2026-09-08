@@ -367,11 +367,11 @@ func device(client *messenger.Client, id *messenger.Identity, args []string) err
 // group creates, edits, sends to, or lists a group's roster.
 func group(client *messenger.Client, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: group create/add/remove/send/list NAME ...")
+		return errors.New("usage: group create/add/remove/send/list NAME [ARGS]")
 	}
 	verb, args := args[0], args[1:]
 	if len(args) == 0 {
-		return errors.New("usage: group " + verb + " NAME ...")
+		return errors.New("usage: group " + verb + " NAME [ARGS]")
 	}
 	name := args[0]
 	switch verb {

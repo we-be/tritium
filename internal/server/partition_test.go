@@ -92,7 +92,7 @@ func (l *link) Heal() {
 // incarnation.
 func TestPartitionHeals(t *testing.T) {
 	hurry(t)
-	if resptest.Addr(t) == resptest.Addr(t) {
+	if resptest.Shared() {
 		t.Skip("a shared store cannot be partitioned")
 	}
 	realA, realB := reserve(t), reserve(t)
