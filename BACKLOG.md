@@ -44,7 +44,7 @@ finds nothing, or a cut. Not every iteration ships.
 
 - [x] Fleet event log in the plane: each node records its cluster events — attach, detach, hold, repair (keys), stall, evict, resync (keys, took), start — as a capped (500), 24h TTL'd sorted set at `tritium:events:<node id>`, replicated like any key; `tritium-cli events [-since 1h] [-node NAME]` and the monitor's Recent Events panel merge every node's log from the local store — 2026-09-07
 - [ ] Richer gossip stats: NodeStats carries writes/s, keys, memory, last repair time and the store's uptime, so every consumer gets them from the view without dialing each node
-- [ ] Small answers for the agents that operate the fleet: `CLIENT LIST` (who is connected — worker, bridge, CLI), `tritium-cli where <key>` (which nodes hold it, TTL on each), `tritium-msg status` (bridge sessions, last message, latency)
+- [ ] Small answers for the agents that operate the fleet: `CLIENT LIST` (who is connected — worker, bridge, CLI), `tritium-cli where <key>` (which nodes hold it, TTL on each), `tritium-msg status` (bridge sessions, last message, latency). Done so far: `tritium-cli info [SECTION]` — v0.16.4, 2026-09-08
 - [ ] (mubs, not here) plane health on the Discord status board — node versions, held replicas, peer state — and a page only on a sustained condition such as a peer held for more than ten minutes
 
 ## Later
@@ -62,6 +62,7 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Done
 
+- [x] Gossip reuses an authenticated peer connection between rounds (the forwarder's pool, now `peerConns`): with the link churn gone, a fresh TCP+TLS+AUTH per round per spoke was most of the hub's accept rate (0.4/s of WAN handshakes). `TestGossipReusesConnections` — v0.16.4, 2026-09-08
 - [x] Spare links died every ten seconds: the hub only sent AUTH on a link when it took one, so on the spoke the untaken spares sat as unauthenticated sessions until the auth deadline closed them, and the linker reopened them — a connection a second per spoke, most of the hub's resets and part of its packet-rate drops. The hub now authenticates a link as it is handed over; `TestParkedLinksAreAuthenticated` (NOAUTH on the old hub) — v0.16.3, 2026-09-08
 - [x] A parked link connection the peer closed leaves the park at once: the hub used to find each dead one only when an attach or a fan-out took it and failed (six failed attaches in a row after a machine restarted, and spurious holds). Found in the hub's journal; `TestDeadLinksAreDropped` — v0.16.2, 2026-09-08
 - [x] Link dial timeouts to the cloud node explained: the connect completes in ~21 ms and the TLS handshake stalls (telemetry in the dial error since 816940a; an outside probe saw the same stalls in the same windows); the hub's counters show WAN packet loss (retransmits, timeouts) and a few packet-rate allowance drops on the nano instance. Not tritium's to fix; the fleet's hold/repair absorbs it — 2026-09-08
