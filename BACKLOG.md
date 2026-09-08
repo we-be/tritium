@@ -62,6 +62,7 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Done
 
+- [x] The replicated Store moved out of the public API: `pkg/storage` keeps the six cluster-view types clients use (`NodeInfo`, `NodeStats`, `NodeState`, `Event`, `EventsKeyPrefix`, `ErrNotFound`); the thousand-line Store with its node-only setters is `internal/replica` — 2026-09-08
 - [x] Gossip reuses an authenticated peer connection between rounds (the forwarder's pool, now `peerConns`): with the link churn gone, a fresh TCP+TLS+AUTH per round per spoke was most of the hub's accept rate (0.4/s of WAN handshakes). `TestGossipReusesConnections` — v0.16.4, 2026-09-08
 - [x] Spare links died every ten seconds: the hub only sent AUTH on a link when it took one, so on the spoke the untaken spares sat as unauthenticated sessions until the auth deadline closed them, and the linker reopened them — a connection a second per spoke, most of the hub's resets and part of its packet-rate drops. The hub now authenticates a link as it is handed over; `TestParkedLinksAreAuthenticated` (NOAUTH on the old hub) — v0.16.3, 2026-09-08
 - [x] A parked link connection the peer closed leaves the park at once: the hub used to find each dead one only when an attach or a fan-out took it and failed (six failed attaches in a row after a machine restarted, and spurious holds). Found in the hub's journal; `TestDeadLinksAreDropped` — v0.16.2, 2026-09-08

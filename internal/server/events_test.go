@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
@@ -105,7 +106,7 @@ func TestEventsCapAndTrim(t *testing.T) {
 	eventsCap = 10
 	t.Cleanup(func() { eventsCap = savedCap })
 
-	store, err := storage.NewStore(resptest.Addr(t), 1, "")
+	store, err := replica.NewStore(resptest.Addr(t), 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}

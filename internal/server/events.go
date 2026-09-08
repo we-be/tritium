@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -27,13 +28,13 @@ var (
 // with none of those locks held.
 type eventLog struct {
 	nodeID string
-	store  *storage.Store
+	store  *replica.Store
 	ch     chan storage.Event
 	done   chan struct{}
 }
 
 // newEventLog starts the writer goroutine for nodeID's log.
-func newEventLog(nodeID string, store *storage.Store) *eventLog {
+func newEventLog(nodeID string, store *replica.Store) *eventLog {
 	el := &eventLog{nodeID: nodeID, store: store, ch: make(chan storage.Event, 64), done: make(chan struct{})}
 	go el.run()
 	return el

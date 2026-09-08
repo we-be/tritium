@@ -1,4 +1,8 @@
-package storage
+// Package replica is the RESP-backed replicated Store a node writes
+// through: its own primary, plus every peer's store as a replica that each
+// write is fanned out to — waited on, or fed from a queue — held and
+// repaired when it stops answering, and resynced when it comes back.
+package replica
 
 import (
 	"bytes"
@@ -15,11 +19,11 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/resp"
+	"github.com/we-be/tritium/pkg/storage"
 )
 
-// ErrNotFound is returned by Get for a missing or expired key. Its text is
+// storage.ErrNotFound is returned by Get for a missing or expired key. Its text is
 // part of the wire contract: servers put it in GetReply.Error.
-var ErrNotFound = errors.New("key not found")
 
 const (
 	dialTimeout    = 5 * time.Second
@@ -598,7 +602,7 @@ func (s *Store) Set(key string, value []byte, ttl int) error {
 	return nil
 }
 
-// Get returns the value under key, or ErrNotFound.
+// Get returns the value under key, or storage.ErrNotFound.
 func (s *Store) Get(key string) ([]byte, error) {
 	v, err := s.primary.do(resp.NewCommand("GET", key))
 	if err != nil {
@@ -606,7 +610,7 @@ func (s *Store) Get(key string) ([]byte, error) {
 	}
 	switch b := v.(type) {
 	case nil:
-		return nil, ErrNotFound
+		return nil, storage.ErrNotFound
 	case []byte:
 		return b, nil
 	default:

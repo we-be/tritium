@@ -47,7 +47,11 @@ touching the root module's dependency list.
 on. Treat its exported names as a contract: adding a field or a method is
 fine (`ClientOptions.User` shipped that way); changing a signature or
 removing an export needs a reason worth breaking every caller for.
-`internal/*` carries no such promise — it moves as fast as the node does.
+`pkg/storage` is the other half of that surface: the cluster-view types
+the client returns (a node's record, its stats and state, an event) and
+`ErrNotFound`, nothing more. `internal/*` carries no such promise — it moves
+as fast as the node does; the replicated store a node writes through is
+`internal/replica`.
 
 ## Style
 

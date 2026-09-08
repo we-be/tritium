@@ -17,6 +17,7 @@ import (
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/memstore"
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -70,7 +71,7 @@ func shortVersion(v string) string {
 
 type Server struct {
 	cfg       config.Config
-	store     *storage.Store
+	store     *replica.Store
 	listener  net.Listener
 	cluster   *cluster
 	links     *links // connections peers that cannot be dialed opened for us
@@ -115,16 +116,16 @@ func New(cfg config.Config) (*Server, error) {
 		s.memstore = memstore.New(memstore.Options{MaxMemory: cfg.StoreMaxMemory, Version: Version})
 		s.embedded = memstore.Listen()
 		go s.memstore.Serve(s.embedded)
-		via := storage.Transport{Dial: func(string) (net.Conn, error) { return s.embedded.Dial() }}
-		s.store, err = storage.NewStoreVia(via, config.EmbeddedStore, cfg.PoolSize)
+		via := replica.Transport{Dial: func(string) (net.Conn, error) { return s.embedded.Dial() }}
+		s.store, err = replica.NewStoreVia(via, config.EmbeddedStore, cfg.PoolSize)
 	} else if cfg.StoreTLS {
 		var storeTLS *tls.Config
 		if storeTLS, err = storeTLSConfig(cfg); err != nil {
 			return nil, fmt.Errorf("store: %w", err)
 		}
-		s.store, err = storage.NewStoreTLS(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword, storeTLS)
+		s.store, err = replica.NewStoreTLS(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword, storeTLS)
 	} else {
-		s.store, err = storage.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
+		s.store, err = replica.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: %w", err)
@@ -268,8 +269,8 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 // peerTransport reaches a peer's node the way gossip does — TLS when
 // configured, AUTH as the peer user — and wraps every write in
 // TRITIUM.REPLICATE, which the peer applies to its own store only.
-func (s *Server) peerTransport() storage.Transport {
-	t := storage.Transport{Dial: s.dialPeer, Wrap: "TRITIUM.REPLICATE", Timeout: 2 * time.Second}
+func (s *Server) peerTransport() replica.Transport {
+	t := replica.Transport{Dial: s.dialPeer, Wrap: "TRITIUM.REPLICATE", Timeout: 2 * time.Second}
 	if pw := s.peerPassword(); pw != "" {
 		t.Auth = resp.NewCommand("AUTH", "peer", pw)
 	}

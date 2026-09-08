@@ -1,4 +1,4 @@
-package storage_test
+package replica_test
 
 import (
 	"crypto/ecdsa"
@@ -9,7 +9,6 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
-	"github.com/we-be/tritium/internal/resp"
 	"math/big"
 	"net"
 	"strconv"
@@ -17,13 +16,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/we-be/tritium/internal/resp"
+
 	"github.com/we-be/tritium/internal/memstore"
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
 )
 
 func TestStoreCommands(t *testing.T) {
-	s, err := storage.NewStore(resptest.Addr(t), 2, "")
+	s, err := replica.NewStore(resptest.Addr(t), 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,17 +62,17 @@ func TestStoreCommands(t *testing.T) {
 }
 
 func TestStoreReplicates(t *testing.T) {
-	primary, err := storage.NewStore(resptest.Addr(t), 1, "")
+	primary, err := replica.NewStore(resptest.Addr(t), 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer primary.Close()
 	replicaAddr := resptest.Addr(t)
-	replica, err := storage.NewStore(replicaAddr, 1, "")
+	rep, err := replica.NewStore(replicaAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replica.Close()
+	defer rep.Close()
 
 	if err := primary.AddReplica(replicaAddr); err != nil {
 		t.Fatal(err)
@@ -81,7 +83,7 @@ func TestStoreReplicates(t *testing.T) {
 	if err := primary.Set("storage:rep", []byte("v"), 60); err != nil {
 		t.Fatal(err)
 	}
-	if v, err := replica.Get("storage:rep"); err != nil || string(v) != "v" {
+	if v, err := rep.Get("storage:rep"); err != nil || string(v) != "v" {
 		t.Fatalf("replica did not receive write: %q, %v", v, err)
 	}
 	if !primary.RemoveReplica(replicaAddr) {
@@ -90,38 +92,38 @@ func TestStoreReplicates(t *testing.T) {
 	if _, err := primary.Delete("storage:rep"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := replica.Get("storage:rep"); err != nil && !sameServer(t) {
+	if _, err := rep.Get("storage:rep"); err != nil && !sameServer(t) {
 		t.Fatalf("delete reached a removed replica: %v", err)
 	}
 }
 
 // With TRITIUM_RESP_ADDR set every Addr call is the same real server, so the
-// replica can't be told apart from the primary.
+// rep can't be told apart from the primary.
 func sameServer(t *testing.T) bool {
 	t.Helper()
 	return resptest.Shared()
 }
 
-// A replica the transport cannot reach is held — later writes no longer wait
+// A rep the transport cannot reach is held — later writes no longer wait
 // on it — and Repair replays exactly what it missed: current values and
 // deletions, after which writes flow again.
 func TestHeldReplicaIsRepaired(t *testing.T) {
 	if sameServer(t) {
 		t.Skip("a shared store cannot miss a write")
 	}
-	primary, err := storage.NewStore(resptest.Addr(t), 2, "")
+	primary, err := replica.NewStore(resptest.Addr(t), 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer primary.Close()
 	replicaAddr := resptest.Addr(t)
-	replica, err := storage.NewStore(replicaAddr, 1, "")
+	rep, err := replica.NewStore(replicaAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replica.Close()
+	defer rep.Close()
 	var broken atomic.Bool
-	primary.SetReplicaTransport(storage.Transport{Dial: func(addr string) (net.Conn, error) {
+	primary.SetReplicaTransport(replica.Transport{Dial: func(addr string) (net.Conn, error) {
 		c, err := net.Dial("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -139,7 +141,7 @@ func TestHeldReplicaIsRepaired(t *testing.T) {
 	}
 	set("held:a", "1")
 	set("held:b", "1")
-	if v, _ := replica.Get("held:b"); string(v) != "1" {
+	if v, _ := rep.Get("held:b"); string(v) != "1" {
 		t.Fatalf("replica did not receive the write: %q", v)
 	}
 
@@ -153,7 +155,7 @@ func TestHeldReplicaIsRepaired(t *testing.T) {
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("writes waited %v on a held replica", d)
 	}
-	if v, _ := replica.Get("held:a"); string(v) != "1" {
+	if v, _ := rep.Get("held:a"); string(v) != "1" {
 		t.Fatalf("a write reached the broken replica: %q", v)
 	}
 	if primary.Repair() != 0 {
@@ -164,17 +166,17 @@ func TestHeldReplicaIsRepaired(t *testing.T) {
 	if n := primary.Repair(); n != 3 {
 		t.Fatalf("replayed %d keys, want 3", n)
 	}
-	if v, _ := replica.Get("held:a"); string(v) != "2" {
+	if v, _ := rep.Get("held:a"); string(v) != "2" {
 		t.Fatalf("held:a on the replica = %q after repair", v)
 	}
-	if _, err := replica.Get("held:b"); err == nil {
+	if _, err := rep.Get("held:b"); err == nil {
 		t.Fatal("a delete missed by the replica was not replayed")
 	}
-	if v, _ := replica.Get("held:c"); string(v) != "3" {
+	if v, _ := rep.Get("held:c"); string(v) != "3" {
 		t.Fatalf("held:c on the replica = %q after repair", v)
 	}
 	set("held:d", "4")
-	if v, _ := replica.Get("held:d"); string(v) != "4" {
+	if v, _ := rep.Get("held:d"); string(v) != "4" {
 		t.Fatalf("the repaired replica is not receiving writes: %q", v)
 	}
 }
@@ -200,17 +202,17 @@ func TestSyncCopiesPages(t *testing.T) {
 	if sameServer(t) {
 		t.Skip("a shared store cannot be synced to itself")
 	}
-	primary, err := storage.NewStore(resptest.Addr(t), 1, "")
+	primary, err := replica.NewStore(resptest.Addr(t), 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer primary.Close()
 	replicaAddr := resptest.Addr(t)
-	replica, err := storage.NewStore(replicaAddr, 1, "")
+	rep, err := replica.NewStore(replicaAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replica.Close()
+	defer rep.Close()
 	for i := range 450 { // more than two SCAN pages
 		if err := primary.Set(fmt.Sprintf("page:%d", i), []byte("v"), 60); err != nil {
 			t.Fatal(err)
@@ -219,44 +221,44 @@ func TestSyncCopiesPages(t *testing.T) {
 	if _, err := primary.Mutate(resp.NewCommand("ZADD", "page:z", "1", "a", "2", "b"), resp.NewCommand("EXPIRE", "page:z", "60")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := replica.Mutate(resp.NewCommand("ZADD", "page:z", "9", "stale"), resp.NewCommand("EXPIRE", "page:z", "60")); err != nil {
+	if _, err := rep.Mutate(resp.NewCommand("ZADD", "page:z", "9", "stale"), resp.NewCommand("EXPIRE", "page:z", "60")); err != nil {
 		t.Fatal(err)
 	}
 	n, err := primary.Sync(replicaAddr, true)
 	if err != nil || n != 451 {
 		t.Fatalf("Sync copied %d keys, %v; want 451", n, err)
 	}
-	if got, _ := replica.Exists("page:0", "page:449"); got != 2 {
+	if got, _ := rep.Exists("page:0", "page:449"); got != 2 {
 		t.Fatalf("replica has %d of the page keys", got)
 	}
-	if ttl, _ := replica.TTL("page:449"); ttl <= 0 || ttl > 60 {
+	if ttl, _ := rep.TTL("page:449"); ttl <= 0 || ttl > 60 {
 		t.Fatalf("copied key lost its TTL: %d", ttl)
 	}
-	if v, _ := replica.Query("ZRANGEBYSCORE", "page:z", "-inf", "+inf"); fmt.Sprint(v) != "[[97] [98]]" { // a, b — stale is gone
+	if v, _ := rep.Query("ZRANGEBYSCORE", "page:z", "-inf", "+inf"); fmt.Sprint(v) != "[[97] [98]]" { // a, b — stale is gone
 		t.Fatalf("sorted set after an overwrite sync: %v", v)
 	}
 }
 
 // Under asynchronous replication a write returns once the primary has it;
-// the replica gets every write in order soon after, and a replica that
+// the rep gets every write in order soon after, and a rep that
 // stops answering is held and repaired like any other.
 func TestAsyncReplication(t *testing.T) {
 	if sameServer(t) {
 		t.Skip("a shared store cannot lag itself")
 	}
-	primary, err := storage.NewStore(resptest.Addr(t), 2, "")
+	primary, err := replica.NewStore(resptest.Addr(t), 2, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer primary.Close()
 	replicaAddr := resptest.Addr(t)
-	replica, err := storage.NewStore(replicaAddr, 1, "")
+	rep, err := replica.NewStore(replicaAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer replica.Close()
+	defer rep.Close()
 	var broken atomic.Bool
-	primary.SetReplicaTransport(storage.Transport{Dial: func(addr string) (net.Conn, error) {
+	primary.SetReplicaTransport(replica.Transport{Dial: func(addr string) (net.Conn, error) {
 		c, err := net.Dial("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -267,34 +269,34 @@ func TestAsyncReplication(t *testing.T) {
 	if err := primary.AddReplica(replicaAddr); err != nil {
 		t.Fatal(err)
 	}
-	for i := range 300 { // one key rewritten: the replica must end on the last value
+	for i := range 300 { // one key rewritten: the rep must end on the last value
 		if err := primary.Set("async:k", []byte(strconv.Itoa(i)), 60); err != nil {
 			t.Fatal(err)
 		}
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		if v, _ := replica.Get("async:k"); string(v) == "299" {
+		if v, _ := rep.Get("async:k"); string(v) == "299" {
 			break
 		}
 		if time.Now().After(deadline) {
-			v, _ := replica.Get("async:k")
+			v, _ := rep.Get("async:k")
 			t.Fatalf("replica has %q after 5 s, want 299", v)
 		}
 		time.Sleep(10 * time.Millisecond)
-		primary.Repair() // a slow box fills the queue: the replica is held, and the health tick's repair is what brings it up to date
+		primary.Repair() // a slow box fills the queue: the rep is held, and the health tick's repair is what brings it up to date
 	}
 
 	broken.Store(true)
 	if err := primary.Set("async:held", []byte("x"), 60); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(50 * time.Millisecond) // the writer meets the broken link and holds the replica
+	time.Sleep(50 * time.Millisecond) // the writer meets the broken link and holds the rep
 	broken.Store(false)
 	if n := primary.Repair(); n == 0 {
 		t.Fatal("nothing repaired after the link came back")
 	}
-	if v, _ := replica.Get("async:held"); string(v) != "x" {
+	if v, _ := rep.Get("async:held"); string(v) != "x" {
 		t.Fatalf("held write not repaired: %q", v)
 	}
 }
@@ -308,12 +310,12 @@ func TestSyncMergesByStamp(t *testing.T) {
 	var n uint64
 	next := func() uint64 { n++; return n }
 	aAddr, bAddr := resptest.Addr(t), resptest.Addr(t)
-	a, err := storage.NewStore(aAddr, 1, "")
+	a, err := replica.NewStore(aAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer a.Close()
-	b, err := storage.NewStore(bAddr, 1, "")
+	b, err := replica.NewStore(bAddr, 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +355,7 @@ func TestStoreTLS(t *testing.T) {
 	go st.Serve(tln)
 	t.Cleanup(func() { tln.Close(); st.Close() })
 
-	s, err := storage.NewStoreTLS(ln.Addr().String(), 1, "s3cret", &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})
+	s, err := replica.NewStoreTLS(ln.Addr().String(), 1, "s3cret", &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +367,7 @@ func TestStoreTLS(t *testing.T) {
 		t.Fatalf("get: %q, %v", v, err)
 	}
 
-	if _, err := storage.NewStore(ln.Addr().String(), 1, "s3cret"); err == nil {
+	if _, err := replica.NewStore(ln.Addr().String(), 1, "s3cret"); err == nil {
 		t.Fatal("a plain dial to a TLS store was accepted")
 	}
 }

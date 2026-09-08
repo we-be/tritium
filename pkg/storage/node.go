@@ -1,8 +1,15 @@
-// Package storage holds the cluster-view types shared by nodes and clients,
-// and the RESP-backed replicated Store a node writes through.
+// Package storage holds the cluster-view types shared by nodes and
+// clients: a node's record in the view, its state and stats, the fleet event
+// log's entry and key prefix, and the error a missing key reads as.
 package storage
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// ErrNotFound is what a read of a key that is missing or expired reports.
+var ErrNotFound = errors.New("key not found")
 
 type NodeState string
 
