@@ -389,6 +389,43 @@ func (c *Client) checkName(s *Session) {
 	}
 }
 
+// SessionInfo is what a session says about itself: the peer, when it was
+// last used, how many messages have gone each way, and how many wait in
+// its inbox unread.
+type SessionInfo struct {
+	Peer     Bundle
+	Touched  time.Time
+	Sent     uint32
+	Received uint32
+	Waiting  int64
+}
+
+// Status describes every session, most recently used first, and how many
+// hellos wait unread in the hello mailbox. It costs one round trip per
+// mailbox; nothing is consumed.
+func (c *Client) Status() (sessions []SessionInfo, hellos int64, err error) {
+	waiting := func(mailbox string, seen []string) (int64, error) {
+		v, err := c.t.Do("ZCARD", mailbox)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := v.(int64)
+		return max(n-int64(len(seen)), 0), nil // what the last Receive read is still there until the next deletes it
+	}
+	if hellos, err = waiting(helloMailbox(c.id.Bundle()), c.helloSeen); err != nil {
+		return nil, 0, err
+	}
+	for _, s := range c.sessions {
+		n, err := waiting(s.Inbox, s.Seen)
+		if err != nil {
+			return nil, 0, err
+		}
+		sessions = append(sessions, SessionInfo{Peer: s.Peer, Touched: s.Touched, Sent: s.Ns, Received: s.Nr, Waiting: n})
+	}
+	slices.SortFunc(sessions, func(a, b SessionInfo) int { return b.Touched.Compare(a.Touched) })
+	return sessions, hellos, nil
+}
+
 // Sessions lists the peers we have sessions with.
 func (c *Client) Sessions() []Bundle {
 	out := make([]Bundle, 0, len(c.sessions))

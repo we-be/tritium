@@ -260,6 +260,10 @@ a 512 MB box is ample.
 | Hetzner CX22 | ~$4.10 | Best hardware per dollar by far, but EU — ~90 ms to a us-east-1 Lambda, and a second vendor |
 | Oracle Always Free arm64 | $0 | Hunter's last Oracle host expired out from under him (xn-mc). No |
 
+Measured 2026-09-08 with the fleet idle but for presence and signals: the
+node moves 0.5 KB/s in and 0.8 KB/s out, about 3.6 GB a month of the
+nano's 1 TB. Transfer is not a cost that matters here.
+
 **Recommendation: Lightsail nano, $5.00/mo.** Latency to the Lambda is the
 argument as much as the price — the gateway pays the round trip on every
 invocation, and same-region is sub-millisecond. Add $0.40/mo for one Secrets

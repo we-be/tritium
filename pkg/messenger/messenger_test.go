@@ -372,6 +372,9 @@ func TestAsk(t *testing.T) {
 	if n := len(w.bob.Sessions()); n != 1 {
 		t.Fatalf("bob holds %d sessions, want the one asker", n)
 	}
+	if st, hellos, err := w.bob.Status(); err != nil || len(st) != 1 || st[0].Received == 0 || st[0].Sent == 0 || st[0].Waiting != 0 || hellos != 0 {
+		t.Fatalf("bob's status: %+v, %d hellos, %v", st, hellos, err)
+	}
 	if w.bob.Prune(time.Hour) != 0 || w.bob.Prune(0) != 1 || len(w.bob.Sessions()) != 0 {
 		t.Fatal("idle session pruning went wrong")
 	}

@@ -228,6 +228,7 @@ go run ./cmd/tritium-msg init alice        # identity in ~/.tritium-msg, publish
 go run ./cmd/tritium-msg lookup bob        # prints bob's fingerprint: compare it with bob in person
 go run ./cmd/tritium-msg send bob "hey"
 go run ./cmd/tritium-msg recv -watch
+go run ./cmd/tritium-msg status               # every session: peer, last used, messages each way, waiting unread
 ```
 
 Programs use it as request and reply. `serve` prints each incoming message as

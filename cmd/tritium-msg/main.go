@@ -36,6 +36,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"text/tabwriter"
 	"time"
 	"unicode/utf8"
 
@@ -189,6 +190,25 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 		return serve(client, &id, idFile, save, serveFlags)
 	case "me":
 		fmt.Printf("%s  %s\n", id.Name, id.Fingerprint())
+	case "status":
+		sessions, hellos, err := client.Status()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s  %s\n", id.Name, id.Fingerprint())
+		if hellos > 0 {
+			fmt.Printf("%d hello(s) waiting\n", hellos)
+		}
+		if len(sessions) == 0 {
+			fmt.Println("no sessions")
+			return nil
+		}
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "PEER\tFINGERPRINT\tLAST USED\tSENT\tRECEIVED\tWAITING")
+		for _, s := range sessions {
+			fmt.Fprintf(w, "%s\t%s\t%s ago\t%d\t%d\t%d\n", s.Peer.Name, s.Peer.Fingerprint(), time.Since(s.Touched).Round(time.Second), s.Sent, s.Received, s.Waiting)
+		}
+		w.Flush()
 	case "lookup":
 		if len(args) != 1 {
 			return errors.New("usage: lookup NAME")
@@ -619,7 +639,7 @@ func readJSON(path string, v any) error {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE FINGERPRINT | device list | group create/add/remove/send/list NAME ...")
+	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | status | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE FINGERPRINT | device list | group create/add/remove/send/list NAME ...")
 	flag.PrintDefaults()
 }
 
