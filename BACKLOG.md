@@ -49,6 +49,8 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Later
 
+- [ ] A forwarded write pays two LAN round trips in series: the forward to the owner, then the owner's synchronous fan-out back to the node that forwarded, before that node can answer its client. Measured 2026-09-08 on the wifi fleet after v0.16.0: SET p50 12 ms (about half the keys are owned by the other machine) against 5.6 ms for a key owned here. The owner's reply could carry the write's stamp so the forwarder applies it itself and the owner feeds it from a queue — a change to TRITIUM.FORWARD's reply, so both machines roll together
+
 - [ ] `TestSimultaneousHello` failed once in CI (2026-09-07, "received [a1], want [a3]": a hello's first message delivered twice after the tie-break) and never in 380 local runs, one CPU included; find the interleaving before it bites a real simultaneous first contact
 
 - [ ] Metrics export for a Grafana stack: a Prometheus text endpoint is zero-dep; OpenTelemetry means the OTel SDK (a dependency) or a hand-rolled OTLP exporter — decide when the stack exists. Until then the plane's own event log and gossip stats are the time series
