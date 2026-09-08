@@ -174,8 +174,9 @@ Events panel reads the same log.
 
 Membership is gossip. A joining node asks any member for `TRITIUM.NODES`,
 adopts the view, and announces itself to everyone in it with
-`TRITIUM.GOSSIP`; after that each node swaps views with a random peer every
-5 seconds over the same command. A peer silent for 10 s is degraded, for 15 s
+`TRITIUM.GOSSIP`; after that each node swaps views over the same command
+every 5 seconds with a random peer, and with any peer it has not heard from
+since the last round, so a peer that cannot dial back is kept fresh. A peer silent for 10 s is degraded, for 15 s
 is down and dropped from replication, and for 60 s is forgotten. Every live
 peer is attached and has the other's store copied over: a peer that restarted
 since it was last seen is a fresh incarnation and stale, so the survivor's keys

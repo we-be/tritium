@@ -29,7 +29,8 @@ var (
 )
 
 // cluster is this node's view of its peers, kept fresh by announce-on-join,
-// random-peer gossip every gossipInterval, and LastSeen-based health checks.
+// random-peer gossip every gossipInterval (plus every peer a round stale),
+// and LastSeen-based health checks.
 // Every live peer's RESP store is attached to the local Store as a replica.
 // Nodes talk to each other with TRITIUM.NODES and TRITIUM.GOSSIP, which
 // carry the view as JSON.
@@ -186,19 +187,41 @@ func (c *cluster) announce() {
 }
 
 // gossip exchanges views with one random peer, down ones included so a
-// restarted node gets rediscovered.
+// restarted node gets rediscovered, and with every peer not heard from
+// since the last round: a peer that never dials us — the one at the far
+// end of a link cannot — would otherwise be refreshed only when the random
+// pick lands on it, and three misses in a row read as down. (Seen on the
+// fleet: the two machines wrote the cloud node off 38 times in six hours,
+// often in the same second, while it never lost either of them.)
 func (c *cluster) gossip() {
-	peers := c.dialable(c.peers())
+	var wg sync.WaitGroup
+	for _, p := range gossipTargets(c.dialable(c.peers())) {
+		wg.Go(func() {
+			view, err := c.exchange(p.Addr, resp.NewCommand("TRITIUM.GOSSIP", c.localJSON()))
+			if err != nil {
+				slog.Debug("cluster: gossip failed", "peer", p.ID, "err", err)
+				return
+			}
+			c.merge(view)
+		})
+	}
+	wg.Wait()
+}
+
+// gossipTargets is one of peers at random plus every one a round old or
+// more, each once.
+func gossipTargets(peers []storage.NodeInfo) []storage.NodeInfo {
 	if len(peers) == 0 {
-		return
+		return nil
 	}
-	p := peers[rand.IntN(len(peers))]
-	view, err := c.exchange(p.Addr, resp.NewCommand("TRITIUM.GOSSIP", c.localJSON()))
-	if err != nil {
-		slog.Debug("cluster: gossip failed", "peer", p.ID, "err", err)
-		return
+	pick := rand.IntN(len(peers))
+	out := []storage.NodeInfo{peers[pick]}
+	for i, p := range peers {
+		if i != pick && time.Since(p.LastSeen) >= gossipInterval {
+			out = append(out, p)
+		}
 	}
-	c.merge(view)
+	return out
 }
 
 // exchange sends one command to a peer, authenticating first when the

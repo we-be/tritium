@@ -62,6 +62,7 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Done
 
+- [x] Gossip asks every peer a round stale, not only the random pick: the fleet's two machines wrote the cloud node off 38 times in six hours (often in the same second) while it never lost them — nothing dials a linked peer but the spokes, so its record aged out whenever the random pick missed it three rounds running. Found in the event log, reproduced by TestCloudPeering, fixed — v0.16.1, 2026-09-08
 - [x] A peer across a link is fed from a queue on its own, `REPLICATION` left alone: measured on the fleet, every write on a LAN machine waited on Lightsail (SET p50 30 ms, GET 0.1 ms) because no node had set `async` — v0.16.0, 2026-09-08
 - [x] Embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — 2026-09-07
 - [x] SCAN/TYPE/DBSIZE for clients: `pkg/tritium.Scan`, `tritium-cli scan`, key browser in tritium-wails — 2026-09-07

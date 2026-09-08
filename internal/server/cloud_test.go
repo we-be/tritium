@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resptest"
@@ -52,6 +53,15 @@ func TestCloudPeering(t *testing.T) {
 	for _, h := range homes {
 		if q := h.store.Queued(); !slices.Equal(q, []string{cloud.Addr()}) {
 			t.Fatalf("a home node queues for %v, want the cloud node alone", q)
+		}
+	}
+	// Nothing dials the cloud node but the homes, so a home's view of it is
+	// only as fresh as the home's own gossip: twenty rounds must pass
+	// without either home writing it off.
+	time.Sleep(20 * gossipInterval)
+	for _, h := range homes {
+		if hasEvent(t, dial(t, h), h.cluster.local.ID, "detach", cloud.Addr()) {
+			t.Fatal("a home node detached the cloud node while it was up")
 		}
 	}
 
