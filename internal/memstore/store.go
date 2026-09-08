@@ -198,10 +198,16 @@ func (s *Store) run(b []byte, args []string) []byte {
 		if len(args) != 2 {
 			return errArgs(b, cmd)
 		}
+		if s.isZSet(args[1]) {
+			return wrongType(b)
+		}
 		return resp.AppendBulk(b, s.get(args[1]))
 	case "GETDEL":
 		if len(args) != 2 {
 			return errArgs(b, cmd)
+		}
+		if s.isZSet(args[1]) {
+			return wrongType(b)
 		}
 		v := s.get(args[1])
 		if e := s.kv[args[1]]; e != nil {
@@ -397,6 +403,9 @@ func (s *Store) stamped(b []byte, args []string) []byte {
 		if len(inner) != 2 || n <= s.stampOf(inner[1]) {
 			return resp.AppendNull(b)
 		}
+		if s.isZSet(inner[1]) {
+			return wrongType(b)
+		}
 		out := s.run(b, inner)
 		s.entomb(inner[1], n)
 		return out
@@ -527,7 +536,7 @@ func (s *Store) zadd(b []byte, args []string) []byte {
 	k := args[1]
 	e := s.live(k)
 	if e != nil && e.zset == nil {
-		return resp.AppendError(b, "WRONGTYPE Operation against a key holding the wrong kind of value")
+		return wrongType(b)
 	}
 	scores := make([]float64, 0, (len(args)-2)/2)
 	var need int64
@@ -686,7 +695,19 @@ func (s *Store) live(k string) *entry {
 	return e
 }
 
-// get is the string under k: nil when missing, expired or a sorted set.
+// isZSet reports whether k holds a sorted set: what GET and GETDEL refuse
+// with WRONGTYPE, as Redis does, rather than answer as a missing key.
+func (s *Store) isZSet(k string) bool {
+	e := s.live(k)
+	return e != nil && e.zset != nil
+}
+
+func wrongType(b []byte) []byte {
+	return resp.AppendError(b, "WRONGTYPE Operation against a key holding the wrong kind of value")
+}
+
+// get is the string under k: nil when missing, expired or a sorted set (MGET's
+// answer for one; GET and GETDEL check the type first).
 func (s *Store) get(k string) []byte {
 	e := s.live(k)
 	if e == nil || e.zset != nil {

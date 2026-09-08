@@ -192,3 +192,19 @@ func TestScanPageIsBounded(t *testing.T) {
 		t.Fatalf("one page held %d keys and cursor %s", n, page[0])
 	}
 }
+
+// TestGetWrongType: GET and GETDEL on a sorted set are WRONGTYPE as in Redis, not a missing key; MGET still answers nil for it.
+func TestGetWrongType(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	do(t, s, "ZADD", "z", "1", "a")
+	if err, ok := do(t, s, "GET", "z").(error); !ok || !strings.Contains(err.Error(), "WRONGTYPE") {
+		t.Fatalf("GET on a sorted set: %v", err)
+	}
+	if _, ok := do(t, s, "GETDEL", "z").(error); !ok || do(t, s, "ZCARD", "z") != int64(1) {
+		t.Fatal("GETDEL on a sorted set was not refused")
+	}
+	if v := do(t, s, "MGET", "z").([]any); v[0] != nil {
+		t.Fatalf("MGET on a sorted set: %v", v)
+	}
+}

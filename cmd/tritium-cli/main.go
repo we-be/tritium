@@ -93,6 +93,13 @@ func run(client *tritium.Client, cmd string, args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: get KEY")
 		}
+		typ, err := client.Type(args[0])
+		if err != nil {
+			return err
+		}
+		if typ == "zset" {
+			return printZSet(client, args[0])
+		}
 		v, err := client.Get(args[0])
 		if err != nil {
 			return err
@@ -164,6 +171,30 @@ func run(client *tritium.Client, cmd string, args []string) error {
 
 // scanKeys walks every SCAN page for pattern and prints each key with its
 // type and TTL — what KEYS would show, without the O(n) footgun.
+// printZSet lists a sorted set (a mubs board, the fleet index) as one
+// "score<TAB>member" line each, lowest score first, since GET refuses the type.
+func printZSet(client *tritium.Client, key string) error {
+	v, err := client.Do("ZRANGEBYSCORE", key, "-inf", "+inf", "WITHSCORES")
+	if err != nil {
+		return err
+	}
+	items, _ := v.([]any)
+	for i := 0; i+1 < len(items); i += 2 {
+		fmt.Printf("%s\t%s\n", bulk(items[i+1]), bulk(items[i]))
+	}
+	return nil
+}
+
+func bulk(v any) string {
+	switch x := v.(type) {
+	case []byte:
+		return string(x)
+	case string:
+		return x
+	}
+	return fmt.Sprint(v)
+}
+
 func scanKeys(client *tritium.Client, pattern string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "KEY\tTYPE\tTTL")
