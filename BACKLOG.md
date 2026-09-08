@@ -24,6 +24,8 @@ node does. Check an item off with the commit that closed it.
 
 ## Later
 
+- [ ] `TestSimultaneousHello` failed once in CI (2026-09-07, "received [a1], want [a3]": a hello's first message delivered twice after the tie-break) and never in 380 local runs, one CPU included; find the interleaving before it bites a real simultaneous first contact
+
 - [ ] Metrics export for a Grafana stack: a Prometheus text endpoint is zero-dep; OpenTelemetry means the OTel SDK (a dependency) or a hand-rolled OTLP exporter — decide when the stack exists. Until then the plane's own event log and gossip stats are the time series
 
 - [x] Writes to one key ordered in one place: key ownership by rendezvous hash, `TRITIUM.FORWARD` to the owner, local fallback when it is out of reach (`KEY_OWNERSHIP`) — 2026-09-07. Write stamps followed the same day: a hybrid clock per node, `STAMPED <n>` on every string write, the embedded store keeps the stamp and a tombstone, resync and repair carry stamps, so both sides of a partition settle on the later write; an external store still settles by arrival
