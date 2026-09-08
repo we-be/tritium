@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"runtime/debug"
 	"slices"
@@ -204,6 +205,7 @@ func (s *Server) acceptLoop() {
 		}
 		s.conns[c] = struct{}{}
 		s.connMu.Unlock()
+		keepalive(c)
 		s.connWG.Go(func() {
 			defer func() {
 				s.connMu.Lock()
@@ -228,6 +230,37 @@ func loopbackListener(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// keepalive spreads a connection's TCP keepalive out: Go's default probes
+// every socket 15 s after it goes idle and every 15 s after that, so the
+// dozens of connections a fleet opens together — links, pools — probe
+// together, and on the cloud node that lands as a burst of a hundred
+// packets in ten milliseconds, past a nano instance's packet-rate
+// allowance (seen with tcpdump: 184 packets in one 10 ms window, 143 of
+// them empty ACKs, from 28 ports). Each connection now gets its own idle
+// and interval, drawn at random from a range wide enough that no two
+// stay in step, and long enough to cost little; a dead peer is still
+// noticed within a few minutes, and gossip notices it in fifteen seconds
+// regardless.
+func keepalive(c net.Conn) {
+	if tc, ok := c.(*tls.Conn); ok {
+		c = tc.NetConn()
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetKeepAliveConfig(keepaliveConfig(rand.IntN))
+	}
+}
+
+// keepaliveConfig draws the idle and interval for one connection: 30–60 s
+// idle, 15–30 s between probes, five probes before the peer is given up.
+func keepaliveConfig(intn func(int) int) net.KeepAliveConfig {
+	return net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     30*time.Second + time.Duration(intn(30000))*time.Millisecond,
+		Interval: 15*time.Second + time.Duration(intn(15000))*time.Millisecond,
+		Count:    5,
+	}
+}
+
 // far reports whether addr is the peer on the other end of a link — one we
 // opened (LINK_ADDRESS) or one it opened to us — and so on another network:
 // it is fed from a queue, so no write here waits out the internet.
@@ -243,7 +276,11 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 	}
 	d := net.Dialer{Timeout: peerTimeout}
 	if s.tlsPeer == nil {
-		return d.Dial("tcp", addr)
+		c, err := d.Dial("tcp", addr)
+		if err == nil {
+			keepalive(c)
+		}
+		return c, err
 	}
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -266,6 +303,7 @@ func (s *Server) dialPeer(addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("tls handshake with %s: %w (connect took %s, handshake %s)", addr, err, connected.Round(time.Millisecond), (time.Since(start) - connected).Round(time.Millisecond))
 	}
 	raw.SetDeadline(time.Time{})
+	keepalive(raw)
 	return conn, nil
 }
 

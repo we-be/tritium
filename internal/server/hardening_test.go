@@ -71,6 +71,15 @@ func TestCommandTimeout(t *testing.T) {
 	idle.want("PONG", "PING")
 }
 
+// Every connection's keepalive is its own: idle and interval drawn from
+// ranges wide enough that a fleet's connections never probe in step.
+func TestKeepaliveIsSpread(t *testing.T) {
+	lo, hi := keepaliveConfig(func(int) int { return 0 }), keepaliveConfig(func(n int) int { return n - 1 })
+	if lo.Idle != 30*time.Second || hi.Idle < 59*time.Second || lo.Interval != 15*time.Second || hi.Interval < 29*time.Second || !lo.Enable {
+		t.Fatalf("keepalive ranges: %+v .. %+v", lo, hi)
+	}
+}
+
 // Past MAX_CLIENTS a connection is turned away with an error.
 func TestMaxClients(t *testing.T) {
 	s := startNode(t, config.Config{MaxClients: 1})
