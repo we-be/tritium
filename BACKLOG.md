@@ -62,6 +62,8 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Done
 
+- [x] A parked link connection the peer closed leaves the park at once: the hub used to find each dead one only when an attach or a fan-out took it and failed (six failed attaches in a row after a machine restarted, and spurious holds). Found in the hub's journal; `TestDeadLinksAreDropped` — v0.16.2, 2026-09-08
+- [x] Link dial timeouts to the cloud node explained: the connect completes in ~21 ms and the TLS handshake stalls (telemetry in the dial error since 816940a; an outside probe saw the same stalls in the same windows); the hub's counters show WAN packet loss (retransmits, timeouts) and a few packet-rate allowance drops on the nano instance. Not tritium's to fix; the fleet's hold/repair absorbs it — 2026-09-08
 - [x] Gossip asks every peer a round stale, not only the random pick: the fleet's two machines wrote the cloud node off 38 times in six hours (often in the same second) while it never lost them — nothing dials a linked peer but the spokes, so its record aged out whenever the random pick missed it three rounds running. Found in the event log, reproduced by TestCloudPeering, fixed — v0.16.1, 2026-09-08
 - [x] A peer across a link is fed from a queue on its own, `REPLICATION` left alone: measured on the fleet, every write on a LAN machine waited on Lightsail (SET p50 30 ms, GET 0.1 ms) because no node had set `async` — v0.16.0, 2026-09-08
 - [x] Embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — 2026-09-07

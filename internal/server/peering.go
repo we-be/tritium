@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sync"
 	"time"
 
@@ -34,31 +35,55 @@ const (
 
 // links parks the connections inbound peers opened for us, by the address
 // each advertises, so a dial for that address takes one instead of opening a
-// socket to somewhere we cannot reach.
+// socket to somewhere we cannot reach. Every parked connection is watched:
+// the peer never speaks on it unasked, so anything read — an EOF once it
+// closed the socket, a reset — means it is gone, and it leaves the park at
+// once instead of failing the next attach or fan-out that takes it.
 type links struct {
-	mu sync.Mutex
-	by map[string]chan net.Conn
+	mu   sync.Mutex
+	by   map[string][]*parkedConn
+	wake map[string]chan struct{} // closed, and forgotten, when addr gains a connection
 }
 
-func newLinks() *links { return &links{by: map[string]chan net.Conn{}} }
+// parkedConn is one connection in the park and the goroutine watching it.
+type parkedConn struct {
+	net.Conn
+	done chan struct{} // closed once the watcher has stopped reading
+}
 
-func (l *links) queue(addr string) chan net.Conn {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	q, ok := l.by[addr]
-	if !ok {
-		q = make(chan net.Conn, 4*linkDepth)
-		l.by[addr] = q
-	}
-	return q
+func newLinks() *links {
+	return &links{by: map[string][]*parkedConn{}, wake: map[string]chan struct{}{}}
 }
 
 // park hands a connection to whoever next dials addr.
 func (l *links) park(addr string, c net.Conn) {
-	select {
-	case l.queue(addr) <- c:
-	default:
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.by[addr]) >= 4*linkDepth {
 		c.Close() // the peer is opening more than we could ever use
+		return
+	}
+	p := &parkedConn{Conn: c, done: make(chan struct{})}
+	l.by[addr] = append(l.by[addr], p)
+	go l.watch(addr, p)
+	if w, ok := l.wake[addr]; ok {
+		close(w)
+		delete(l.wake, addr)
+	}
+}
+
+// watch reads a parked connection until the read returns: the peer closed
+// it, the socket was reset, or take expired its deadline to reclaim it. Only
+// a connection still in the park is dropped.
+func (l *links) watch(addr string, p *parkedConn) {
+	defer close(p.done)
+	var b [1]byte
+	p.Read(b[:])
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if i := slices.Index(l.by[addr], p); i >= 0 {
+		l.by[addr] = slices.Delete(l.by[addr], i, i+1)
+		p.Close()
 	}
 }
 
@@ -71,32 +96,52 @@ func (l *links) has(addr string) bool {
 	return ok
 }
 
+// parked is how many of addr's connections are waiting to be taken.
+func (l *links) parked(addr string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return len(l.by[addr])
+}
+
 // take waits briefly for one of addr's parked connections. Failing is the
 // same as a failed dial: the replica is held until the peer links again.
 func (l *links) take(addr string) (net.Conn, error) {
-	t := time.NewTimer(linkWait)
-	defer t.Stop()
-	select {
-	case c := <-l.queue(addr):
-		return c, nil
-	case <-t.C:
-		return nil, fmt.Errorf("no connection parked by %s", addr)
+	deadline := time.Now().Add(linkWait)
+	for {
+		l.mu.Lock()
+		if q := l.by[addr]; len(q) > 0 {
+			p := q[len(q)-1]
+			l.by[addr] = q[:len(q)-1]
+			l.mu.Unlock()
+			p.SetReadDeadline(time.Now()) // reclaim it from the watcher, which finds it gone from the park
+			<-p.done
+			p.SetReadDeadline(time.Time{})
+			return p.Conn, nil
+		}
+		w, ok := l.wake[addr]
+		if !ok {
+			w = make(chan struct{})
+			l.wake[addr] = w
+		}
+		l.mu.Unlock()
+		t := time.NewTimer(time.Until(deadline))
+		select {
+		case <-w:
+			t.Stop()
+		case <-t.C:
+			return nil, fmt.Errorf("no connection parked by %s", addr)
+		}
 	}
 }
 
 func (l *links) close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for _, q := range l.by {
-		for {
-			select {
-			case c := <-q:
-				c.Close()
-			default:
-				goto next
-			}
+	for addr, q := range l.by {
+		for _, p := range q {
+			p.Close()
 		}
-	next:
+		l.by[addr] = nil
 	}
 }
 

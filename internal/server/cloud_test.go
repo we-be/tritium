@@ -24,6 +24,34 @@ func dead(t *testing.T) string {
 	return addr
 }
 
+// linkHome starts a node the cloud node cannot dial, linked to it, and
+// returns it with the address it advertises.
+func linkHome(t *testing.T, cloud *Server) (*Server, string) {
+	t.Helper()
+	cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0",
+		AdvertiseAddr: dead(t), LinkAddr: cloud.Addr(), PoolSize: 2, PeerPassword: testPeerPW}
+	s, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Start(cfg.ListenAddr); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Stop() })
+	return s, cfg.AdvertiseAddr
+}
+
+// A parked connection its peer closed leaves the park at once, so no attach
+// or fan-out after a home node goes away is spent finding that out.
+func TestDeadLinksAreDropped(t *testing.T) {
+	hurry(t)
+	cloud := startNode(t, config.Config{})
+	home, addr := linkHome(t, cloud)
+	waitFor(t, "the home node to link", func() bool { return cloud.links.parked(addr) > 0 })
+	home.Stop()
+	waitFor(t, "the dead links to leave the park", func() bool { return cloud.links.parked(addr) == 0 })
+}
+
 // A cloud node the others can dial, and two home nodes it cannot: they open
 // the connections, and the cloud node's writes come back down them. Every
 // node ends up holding what any of them wrote.
@@ -32,17 +60,8 @@ func TestCloudPeering(t *testing.T) {
 	cloud := startNode(t, config.Config{})
 	homes := []*Server{}
 	for range 2 {
-		cfg := config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0",
-			AdvertiseAddr: dead(t), LinkAddr: cloud.Addr(), PoolSize: 2, PeerPassword: testPeerPW}
-		s, err := New(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := s.Start(cfg.ListenAddr); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { s.Stop() })
-		homes = append(homes, s)
+		h, _ := linkHome(t, cloud)
+		homes = append(homes, h)
 	}
 	waitFor(t, "the cloud node to reach both homes", func() bool { return len(cloud.store.Replicas()) == 2 })
 	// Both ends of a link feed the other from a queue — a write must not wait

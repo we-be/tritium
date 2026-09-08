@@ -46,7 +46,9 @@ stops being a client and serves the connection; the node that answered parks it
 and, from then on, sends its fan-out and its repairs down a connection it never
 opened. `internal/server/peering.go` holds both halves: `links` parks inbound
 connections by the address their owner advertises, and `dialPeer` takes one from
-there instead of opening a socket to a name that does not resolve.
+there instead of opening a socket to a name that does not resolve. A parked
+connection is watched, and leaves the park the moment its peer closes it, so an
+attach or a fan-out after a home node restarts never takes a dead one.
 
 Two things fall out for free, because a parked connection is an ordinary peer
 connection:
