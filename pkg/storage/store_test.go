@@ -1,15 +1,23 @@
 package storage_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
 	"fmt"
 	"github.com/we-be/tritium/internal/resp"
+	"math/big"
 	"net"
 	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/we-be/tritium/internal/memstore"
 	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -330,4 +338,65 @@ func TestSyncMergesByStamp(t *testing.T) {
 	if v, _ := a.Get("merge:k"); string(v) != "later" {
 		t.Fatalf("the newer write did not reach the store holding the older one: %q", v)
 	}
+}
+
+// A TLS store round-trips; a plain dial to the same listener is refused
+// instead of exchanging AUTH and values in the clear.
+func TestStoreTLS(t *testing.T) {
+	cert, pool := selfSignedCert(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tln := tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{cert}})
+	st := memstore.New(memstore.Options{Version: "test"})
+	go st.Serve(tln)
+	t.Cleanup(func() { tln.Close(); st.Close() })
+
+	s, err := storage.NewStoreTLS(ln.Addr().String(), 1, "s3cret", &tls.Config{RootCAs: pool, ServerName: "127.0.0.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Set("tls:k", []byte("v"), 60); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := s.Get("tls:k"); err != nil || string(v) != "v" {
+		t.Fatalf("get: %q, %v", v, err)
+	}
+
+	if _, err := storage.NewStore(ln.Addr().String(), 1, "s3cret"); err == nil {
+		t.Fatal("a plain dial to a TLS store was accepted")
+	}
+}
+
+// selfSignedCert is a certificate that is its own CA, valid for 127.0.0.1.
+func selfSignedCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "tritium-test"},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		IPAddresses:           []net.IP{net.IPv4(127, 0, 0, 1)},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
 }

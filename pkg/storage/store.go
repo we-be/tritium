@@ -2,6 +2,7 @@ package storage
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -452,6 +453,17 @@ type backlog struct {
 // primary, and, until SetReplicaTransport says otherwise, to every replica.
 func NewStore(addr string, poolSize int, password string) (*Store, error) {
 	return NewStoreVia(direct(password), addr, poolSize)
+}
+
+// NewStoreTLS is NewStore over TLS: tlsCfg should carry the CA pool to
+// verify the primary against (nil RootCAs means the system roots) and its
+// ServerName. The dial still honors dialTimeout.
+func NewStoreTLS(addr string, poolSize int, password string, tlsCfg *tls.Config) (*Store, error) {
+	t := direct(password)
+	t.Dial = func(addr string) (net.Conn, error) {
+		return tls.DialWithDialer(&net.Dialer{Timeout: dialTimeout}, "tcp", addr, tlsCfg)
+	}
+	return NewStoreVia(t, addr, poolSize)
 }
 
 // NewStoreVia is NewStore over a transport of the caller's: how a node

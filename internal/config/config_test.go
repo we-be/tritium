@@ -24,7 +24,7 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 
-	for _, bad := range []string{"MAX_SERVER_CONNECTIONS=lots\n", "TLS_CERT=only.pem\n", "TLS_CLIENT_AUTH=true\n"} {
+	for _, bad := range []string{"MAX_SERVER_CONNECTIONS=lots\n", "TLS_CERT=only.pem\n", "TLS_CLIENT_AUTH=true\n", "SECURE_STORE_TLS=true\n"} {
 		if err := os.WriteFile(path, []byte(bad), 0o600); err != nil {
 			t.Fatal(err)
 		}

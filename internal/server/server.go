@@ -109,6 +109,12 @@ func New(cfg config.Config) (*Server, error) {
 		go s.memstore.Serve(s.embedded)
 		via := storage.Transport{Dial: func(string) (net.Conn, error) { return s.embedded.Dial() }}
 		s.store, err = storage.NewStoreVia(via, config.EmbeddedStore, cfg.PoolSize)
+	} else if cfg.StoreTLS {
+		var storeTLS *tls.Config
+		if storeTLS, err = storeTLSConfig(cfg); err != nil {
+			return nil, fmt.Errorf("store: %w", err)
+		}
+		s.store, err = storage.NewStoreTLS(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword, storeTLS)
 	} else {
 		s.store, err = storage.NewStore(cfg.StoreAddr, cfg.PoolSize, cfg.StorePassword)
 	}

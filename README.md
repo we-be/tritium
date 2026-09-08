@@ -127,7 +127,9 @@ nodes racing the same claim get one `OK` between them.
 
 Each node owns one RESP primary: its own, in-process, unless
 `SECURE_STORE_ADDRESS` points it at an external one (replicate that however
-you like; the compose file gives each one a replica). The embedded store
+you like; the compose file gives each one a replica). That connection is
+plaintext unless `SECURE_STORE_TLS=true`, so an external store belongs on
+loopback, on the same container network, or behind TLS. The embedded store
 holds strings and sorted sets, expires keys on time, walks `SCAN` without
 ever handing a key out twice, and is reached over RESP through connections
 that never leave the process, so it behaves exactly like an external store
@@ -297,8 +299,11 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `ALLOW_NO_AUTH`          | `false`          | A node with no `AUTH_PASSWORD` refuses to listen anywhere but loopback unless this says it is meant |
 | `AUTH_USER`              | none             | Which of them a client next to this node (`-config`) authenticates as     |
 | `PEER_PASSWORD`          | `AUTH_PASSWORD`  | Password nodes present to each other as `AUTH peer <password>`; set it so clients can't join the cluster |
-| `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process |
+| `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process. Plaintext without `SECURE_STORE_TLS`, so keep it loopback or container-local unless TLS is on |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |
+| `SECURE_STORE_TLS`       | `false`          | Verify the store's certificate instead of dialing it in the clear       |
+| `SECURE_STORE_CA`        | system roots     | What the store's certificate must chain to, under `SECURE_STORE_TLS`    |
+| `SECURE_STORE_SERVER_NAME` | store's host   | Name to verify and send as SNI, under `SECURE_STORE_TLS`                |
 | `STORE_MAX_MEMORY`       | none             | Bytes the embedded store keeps (`256M`, `1G`); past it the soonest-expiring keys are evicted, and a write with nothing left to evict is refused |
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
 | `MAX_CLIENTS`            | `10000`          | Connections a node accepts at once; more are turned away with an error. A connection that has not authenticated within 10 s, or is refused five `AUTH`s, is closed |

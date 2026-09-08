@@ -25,7 +25,8 @@ Who can do what, and what stops them:
 
 The node's AUTH and HELLO paths, what runs before authentication, the peer
 test under TLS_CLIENT_AUTH, the ACL table and prefix checks, TLS
-configuration (versions, verification, ServerName on dials, client auth),
+configuration (versions, verification, ServerName on dials, client auth,
+including the node-to-store link under SECURE_STORE_TLS),
 TRITIUM.PEERLINK, TRITIUM.FORWARD, TRITIUM.REPLICATE with stamps, gossip
 input, the embedded store's parsing and pattern matching, bulk-size limits,
 connection limits, error and log output, the CLI tools' handling of
@@ -133,6 +134,7 @@ came of each:
 | A right was a bare prefix: `fleet` also granted `fleet-master-key` | A right ending in `:` or `/` is a prefix; any other names one key |
 | The quickstart compose file had no passwords on every interface | Passwords from `.env`, ports on loopback |
 | A key of all zeros parsed | Refused |
+| `SECURE_STORE_ADDRESS` dialed a store in the clear, so a network observer between a node and an external Valkey/Redis saw `AUTH <password>` and every value | `SECURE_STORE_TLS=true` verifies the store's certificate (`SECURE_STORE_CA`, `SECURE_STORE_SERVER_NAME`); without it the store must stay loopback or container-local, never reachable over a WAN |
 
 Left as they are, with the reasons:
 

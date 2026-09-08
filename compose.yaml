@@ -6,6 +6,9 @@
 #   go run ./cmd/tritium-cli -addr localhost:8081 set hello world
 #   go run ./cmd/tritium-cli -addr localhost:8082 get hello
 
+# Stores publish no host port, so they're reachable only on the compose
+# network, never the internet; that's what makes the plaintext store link
+# safe here without SECURE_STORE_TLS.
 x-store: &store
   image: docker.io/valkey/valkey:8-alpine
   healthcheck:
