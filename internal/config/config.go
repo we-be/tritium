@@ -27,6 +27,7 @@ type Config struct {
 	AdvertiseAddr           string          // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
 	JoinAddr                string          // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
 	LinkAddr                string          // LINK_ADDRESS: peers this node cannot be dialed by, comma-separated; it opens the connections and is served over them
+	MetricsAddr             string          // METRICS_ADDRESS: where GET /metrics answers scrapes; unauthenticated, so loopback or a private interface. Empty serves none
 	Password                string          // AUTH_PASSWORD: required from clients when set
 	AuthUser                string          // AUTH_USER: the user a client next to this node authenticates as; empty is the default user
 	PeerPassword            string          // PEER_PASSWORD: what nodes AUTH to each other with; required, distinct from AUTH_PASSWORD, once this node peers
@@ -181,6 +182,7 @@ func Load(path string) (Config, error) {
 		AdvertiseAddr:   get("ADVERTISE_ADDRESS", ""),
 		JoinAddr:        get("JOIN_ADDRESS", ""),
 		LinkAddr:        get("LINK_ADDRESS", ""),
+		MetricsAddr:     get("METRICS_ADDRESS", ""),
 		PeerAllow:       list(get("PEER_ALLOW", "")),
 		Password:        get("AUTH_PASSWORD", ""),
 		AuthUser:        get("AUTH_USER", ""),

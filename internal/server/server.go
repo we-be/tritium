@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"runtime/debug"
 	"slices"
 	"strconv"
@@ -83,6 +84,8 @@ type Server struct {
 	tlsPeer   *tls.Config        // nil: plaintext peer dials
 	embedded  *memstore.Listener // set when the node runs its own store
 	memstore  *memstore.Store
+	metrics   *http.Server // the scrape endpoint; nil unless METRICS_ADDRESS is set
+	metricsLn net.Listener
 	pconns    peerConns // authenticated connections to peers, for forwards and gossip
 	clock     *clock    // stamps this node's writes
 	guesses   guesses   // refused AUTHs by client address
@@ -180,7 +183,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
 	s.startLinks()
 	s.connWG.Go(s.acceptLoop) // counted with the handlers it starts, so Stop never waits on an empty group one is about to join
-	return nil
+	return s.startMetrics()
 }
 
 func (s *Server) acceptLoop() {
@@ -374,6 +377,9 @@ func (s *Server) Stop() error {
 		}
 		if s.listener != nil {
 			err = s.listener.Close()
+		}
+		if s.metrics != nil {
+			s.metrics.Close() // closes the scrape listener and any connection on it
 		}
 		s.connMu.Lock()
 		for c := range s.conns {

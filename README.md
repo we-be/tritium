@@ -323,6 +323,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
 | `TLS_CLIENT_AUTH`        | `false`          | Require client certificates: mutual TLS for clients and between nodes   |
+| `METRICS_ADDRESS`        | none             | Serve `GET /metrics` here in the Prometheus text format — the node's INFO figures, plus each peer's state. Unset, nothing is served. The endpoint has no authentication, as every scraper expects, so bind it to loopback or a private interface, never the node's public address |
 
 ## Security
 
