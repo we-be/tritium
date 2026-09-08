@@ -10,6 +10,7 @@ import (
 	"net"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -296,12 +297,19 @@ func (s *Server) Nodes() map[string]storage.NodeInfo {
 }
 
 func (s *Server) Stats() storage.NodeStats {
-	return storage.NodeStats{
+	st := storage.NodeStats{
 		ActiveConnections: s.active.Load(),
 		BytesTransferred:  s.bytes.Load(),
 		Replicas:          len(s.store.Replicas()),
 		Held:              len(s.store.Held()),
+		Queued:            len(s.store.Queued()),
+		Writes:            s.store.Writes(),
 	}
+	if f, err := s.storeFields(); err == nil {
+		st.Keys = storeKeys(f)
+		st.Memory, _ = strconv.ParseInt(f["used_memory"], 10, 64)
+	}
+	return st
 }
 
 // Addr is the bound listener address, or "" before Start.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"slices"
 	"strings"
@@ -51,6 +52,24 @@ func TestDeadLinksAreDropped(t *testing.T) {
 	waitFor(t, "the home node to link", func() bool { return cloud.links.parked(addr) > 0 })
 	home.Stop()
 	waitFor(t, "the dead links to leave the park", func() bool { return cloud.links.parked(addr) == 0 })
+}
+
+// A node's load travels in its gossip record: a peer's view of it carries
+// the writes it carried out and its store's keys and memory, so a monitor
+// reads every node's figures from one.
+func TestStatsTravelInGossip(t *testing.T) {
+	hurry(t)
+	a := startNode(t, config.Config{})
+	b := startNode(t, config.Config{JoinAddr: a.Addr()})
+	waitFor(t, "the nodes to attach", func() bool { return len(a.store.Replicas()) == 1 && len(b.store.Replicas()) == 1 })
+	c := dial(t, a)
+	for i := range 3 {
+		c.want("OK", "SET", fmt.Sprintf("st:%d", i), "v", "EX", "60")
+	}
+	waitFor(t, "the load to show in the other node's view", func() bool {
+		va, vb := b.Nodes()[a.cluster.local.ID], a.Nodes()[b.cluster.local.ID]
+		return va.Stats.Writes+vb.Stats.Writes >= 3 && va.Stats.Keys >= 3 && va.Stats.Memory > 0
+	})
 }
 
 // Gossip reuses an authenticated connection between rounds: a node that

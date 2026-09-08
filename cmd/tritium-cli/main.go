@@ -239,16 +239,27 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 	}, func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ADDRESS\tSTATE\tVERSION\tWEIGHT\tSEEDS\tREPLICAS\tCONNS\tLAST SEEN")
+	fmt.Fprintln(w, "ADDRESS\tSTATE\tVERSION\tWEIGHT\tSEEDS\tREPLICAS\tKEYS\tMEM\tWRITES\tCONNS\tLAST SEEN")
 	for _, n := range rows {
 		replicas := strconv.Itoa(n.Stats.Replicas)
 		if n.Stats.Held > 0 {
 			replicas += fmt.Sprintf(" (%d held)", n.Stats.Held)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\n",
-			n.Addr, n.State, n.Version, n.Weight(), strings.Join(n.Seeds, ","), replicas, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\t%d\t%s\t%d\t%d\t%s\n",
+			n.Addr, n.State, n.Version, n.Weight(), strings.Join(n.Seeds, ","), replicas, n.Stats.Keys, mem(n.Stats.Memory), n.Stats.Writes, n.Stats.ActiveConnections, time.Since(n.LastSeen).Round(time.Second))
 	}
 	w.Flush()
+}
+
+// mem renders bytes the way a glance wants them.
+func mem(n int64) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1fM", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0fK", float64(n)/(1<<10))
+	}
+	return strconv.FormatInt(n, 10)
 }
 
 // printEvents prints one line per event, oldest first, filtered to nodes

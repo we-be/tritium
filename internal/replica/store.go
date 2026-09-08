@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/we-be/tritium/internal/resp"
@@ -423,6 +424,7 @@ func (p *pool) exchange(c *conn, buf []byte, n int) (out []any, first, err error
 type Store struct {
 	primary  *pool
 	size     int
+	writes   atomic.Int64           // fan-outs so far: the writes this node carried out as owner
 	via      Transport              // how replicas are reached; the primary's own by default
 	queue    int                    // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
 	far      func(addr string) bool // replicas fed from a queue of farDepth even when queue is 0: the ones across a link
@@ -520,6 +522,11 @@ func (s *Store) SetAsyncFor(depth int, far func(addr string) bool) {
 	defer s.mu.Unlock()
 	s.far, s.farDepth = far, depth
 }
+
+// Writes is how many writes this node has carried out as owner — its own
+// and the ones forwarded to it — since it started; replicated-in writes
+// are not counted.
+func (s *Store) Writes() int64 { return s.writes.Load() }
 
 // Queued lists the replicas fed from a queue rather than waited on.
 func (s *Store) Queued() []string {
@@ -688,6 +695,7 @@ func (s *Store) replicate(cmd resp.Command) {
 // no write waits on it — while one that answers with an error is merely
 // refusing this write.
 func (s *Store) replicateAll(cmds []resp.Command) {
+	s.writes.Add(1)
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
 	s.mu.RUnlock()

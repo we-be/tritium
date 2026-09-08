@@ -427,9 +427,10 @@ func (c *cluster) checkHealth() {
 }
 
 func (c *cluster) touchLocal() {
+	stats := c.server.Stats() // asks the store: never under the view lock
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.local.Stats = c.server.Stats()
+	c.local.Stats = stats
 	c.local.LastSeen = time.Now()
 }
 

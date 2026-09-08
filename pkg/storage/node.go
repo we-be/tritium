@@ -19,11 +19,18 @@ const (
 	NodeStateDown     NodeState = "down"
 )
 
+// NodeStats is a node's load as it gossips it, so any node's view carries
+// every node's figures without dialing each one. Writes is a counter: the
+// rate is its change between two views.
 type NodeStats struct {
 	ActiveConnections int64 `json:"active_connections"`
 	BytesTransferred  int64 `json:"bytes_transferred"`
-	Replicas          int   `json:"replicas"`      // peers this node fans writes out to
-	Held              int   `json:"held_replicas"` // of those, ones that stopped answering and await a repair
+	Replicas          int   `json:"replicas"`                  // peers this node fans writes out to
+	Held              int   `json:"held_replicas"`             // of those, ones that stopped answering and await a repair
+	Queued            int   `json:"queued_replicas,omitempty"` // of those, ones fed from a queue rather than waited on
+	Writes            int64 `json:"writes,omitempty"`          // writes this node has carried out as owner since it started
+	Keys              int64 `json:"keys,omitempty"`            // keys its store holds
+	Memory            int64 `json:"used_memory,omitempty"`     // bytes its store uses
 }
 
 // NodeInfo is one node's entry in the cluster view, exchanged as JSON over

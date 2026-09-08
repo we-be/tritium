@@ -91,7 +91,7 @@ go run ./cmd/tritium-cli get hello            # world
 valkey-cli -p 8080 get hello                  # "TE1..." ciphertext
 go run ./cmd/tritium-cli scan 'hel*'          # every matching key, its type and TTL
 go run ./cmd/tritium-cli del hello
-go run ./cmd/tritium-cli nodes
+go run ./cmd/tritium-cli nodes               # every node's state, weight, replicas, keys, memory and writes, from this node's view
 go run ./cmd/tritium-cli info tritium        # this node's replicas, held and queued ones, ownership, stamps
 go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's cluster events
 ```
