@@ -45,6 +45,32 @@ func TestUnauthenticatedConnectionsTimeOut(t *testing.T) {
 	}
 }
 
+// A command fed in one byte at a time is dropped once commandTimeout runs
+// out, but a connection sitting idle between commands, however long, is not.
+func TestCommandTimeout(t *testing.T) {
+	saved := commandTimeout
+	commandTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { commandTimeout = saved })
+	s := startNode(t, config.Config{})
+
+	stalled, err := net.Dial("tcp", s.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stalled.Close()
+	if _, err := stalled.Write([]byte("*2\r\n$4\r\nPING\r\n$1\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	stalled.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := resp.NewReader(stalled).ReadValue(); err == nil {
+		t.Fatal("expected the node to close a connection stalled mid-command")
+	}
+
+	idle := dial(t, s)
+	time.Sleep(2 * commandTimeout)
+	idle.want("PONG", "PING")
+}
+
 // Past MAX_CLIENTS a connection is turned away with an error.
 func TestMaxClients(t *testing.T) {
 	s := startNode(t, config.Config{MaxClients: 1})

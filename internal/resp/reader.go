@@ -68,6 +68,14 @@ func (r *Reader) read(depth int) (any, error) {
 	}
 }
 
+// Peek blocks until the next value's first byte is buffered, without
+// consuming it, so a caller can wait for a command with no read deadline and
+// then bound only the read that follows.
+func (r *Reader) Peek() error {
+	_, err := r.r.Peek(1)
+	return err
+}
+
 // ReadCommand reads a client command: an array of bulk strings.
 func (r *Reader) ReadCommand() ([]string, error) {
 	v, err := r.ReadValue()

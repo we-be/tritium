@@ -33,6 +33,12 @@ const asyncDepth = 4096
 // and each holds a file descriptor and a goroutine until it goes.
 var authTimeout = 10 * time.Second
 
+// commandTimeout bounds an authenticated command once its first byte has
+// arrived: idle time between commands stays unbounded (client pools and
+// watchers sit quiet for hours), but a command fed in one byte at a time
+// must finish within this or the connection is dropped.
+var commandTimeout = 60 * time.Second
+
 // Version is reported by INFO and HELLO. Release builds stamp it with -X;
 // a `go install ...@vX.Y.Z` build takes it from the module version instead.
 var Version = "dev"

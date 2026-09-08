@@ -66,6 +66,13 @@ last section.
    published bundle is the fingerprint read on the other machine, and sends
    to that identity alone; `recv -raw [-fp FP]` writes bodies exactly as
    sent, from the pinned sender only.
+8. **An authenticated connection's read deadline was cleared for good.**
+   Past AUTH, a read could block forever, so a client feeding a command one
+   byte at a time could hold up to `MAX_CLIENTS` connections open
+   mid-command (slowloris). Now: idle time between commands stays
+   unbounded — client pools and `tritium-msg recv -watch` sit quiet for
+   hours — but once a command's first byte arrives, the rest of it must
+   land within 60 s or the connection is closed.
 
 ## Looked at and left as is
 

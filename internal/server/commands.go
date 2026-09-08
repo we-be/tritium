@@ -123,14 +123,15 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 	}()
 
 	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == ""}
-	waiting := false // a deadline is set while the connection has not authenticated
 	for {
 		if !sess.authed {
 			c.SetReadDeadline(time.Now().Add(authTimeout))
-			waiting = true
-		} else if waiting {
-			c.SetReadDeadline(time.Time{})
-			waiting = false
+		} else {
+			c.SetReadDeadline(time.Time{}) // wait for the next command with no deadline: idle is legitimate
+			if err := sess.r.Peek(); err != nil {
+				return
+			}
+			c.SetReadDeadline(time.Now().Add(commandTimeout))
 		}
 		args, err := sess.r.ReadCommand()
 		if err != nil {
