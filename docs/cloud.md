@@ -92,19 +92,24 @@ unknown command`, and the linking node logs it and retries; an old node that
 links to a new one is simply a node with no `LINK_ADDRESS`. **Both fleet nodes
 must roll together only to get the reverse path**, never to keep working.
 
-### What this does not do
+### The relay (v0.18.0)
 
-**The cloud node is not a relay.** A write arrives as `TRITIUM.REPLICATE` and is
-applied to the local store only — it is never fanned out again, because the
-sender already sent it to everyone it knows. So two home nodes reach each other
-directly or not at all. On Hunter's fleet they are on one LAN and do; a future
-node on a third network would not.
+A write arrives as `TRITIUM.REPLICATE` and is applied to the local store only;
+the sender already sent it to everyone it could reach. Since v0.18.0 the sender
+says who it could not: a home node marks the copy it sends the cloud node with
+`RELAY n addr…` naming the peers that are not among its replicas or are held —
+the other side of a cut, or a machine on a network it cannot dial into — and the
+cloud node, after applying the write, sends the plain command on to those peers
+from its own pools (from a queue, since they are across links). Nothing relays
+twice: the copy the cloud node passes on carries no `RELAY`. The relayed write
+keeps its stamp, so a copy that also arrived directly, or arrives later when the
+cut heals and the hold is repaired, settles the same way it always has.
 
-Making the cloud node relay needs the sender's identity on the wire (a `via`
-argument on `TRITIUM.REPLICATE`, so a relayed write cannot echo back to the node
-that made it and cannot clobber a newer local write on the way). That is a real
-wire change that must roll to both fleet nodes together, which is why it is a
-separate item and not this one. It is in `BACKLOG.md`.
+On Hunter's fleet the two machines reach each other on the LAN, so no write is
+ever marked; a laptop on hotel wifi that links to the cloud node exchanges writes
+with the machines through it. A home node checks the cloud node's gossiped
+version and sends plain writes to one older than v0.18.0, so the cloud node
+rolls first and the machines follow.
 
 ---
 

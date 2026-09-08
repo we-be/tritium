@@ -180,6 +180,9 @@ func (s *Server) Serve(ln net.Listener) error {
 	if s.cfg.Async {
 		s.store.SetAsync(asyncDepth)
 	}
+	if links := s.cfg.Links(); len(links) > 0 {
+		s.store.SetRelay(links[0], s.relayTargets) // the hub carries our writes on to peers we cannot reach
+	}
 	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
 	s.startLinks()
 	s.connWG.Go(s.acceptLoop) // counted with the handlers it starts, so Stop never waits on an empty group one is about to join
@@ -262,6 +265,64 @@ func keepaliveConfig(intn func(int) int) net.KeepAliveConfig {
 		Interval: 15*time.Second + time.Duration(intn(15000))*time.Millisecond,
 		Count:    5,
 	}
+}
+
+// relayVersion is the first release whose TRITIUM.REPLICATE understands
+// RELAY; an older hub is sent plain writes and asked to carry nothing.
+const relayVersion = "v0.18.0"
+
+// relayTargets names the peers this node cannot deliver a write to itself
+// — not among its replicas, or held — for the hub to carry it on to: the
+// other side of a cut, or a machine on another network altogether. Nil
+// when the hub is too old to.
+func (s *Server) relayTargets() []string {
+	hub := s.cfg.Links()[0]
+	if !versionAtLeast(s.cluster.versionOf(hub), relayVersion) {
+		return nil
+	}
+	local := s.cluster.addr()
+	replicas, held := s.store.Replicas(), s.store.Held()
+	var out []string
+	for _, p := range s.cluster.peers() {
+		if p.Addr == local || p.Addr == hub {
+			continue
+		}
+		if !slices.Contains(replicas, p.Addr) || slices.Contains(held, p.Addr) {
+			out = append(out, p.Addr)
+		}
+	}
+	return out
+}
+
+// versionAtLeast compares two vMAJOR.MINOR.PATCH strings, any suffix
+// ignored; a version that does not parse — a checkout's "dev" — counts as
+// current, since only a release can be older.
+func versionAtLeast(v, want string) bool {
+	a, okA := parseVersion(v)
+	b, okB := parseVersion(want)
+	if !okA || !okB {
+		return true
+	}
+	return slices.Compare(a[:], b[:]) >= 0
+}
+
+func parseVersion(v string) (out [3]int, ok bool) {
+	v = strings.TrimPrefix(v, "v")
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return out, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // far reports whether addr is the peer on the other end of a link — one we

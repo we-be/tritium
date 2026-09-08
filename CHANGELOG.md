@@ -7,6 +7,15 @@ before bisecting a behaviour change, and add a line when you tag.
 Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative list;
 `https://github.com/we-be/tritium/compare/vA...vB` shows any range in full.
 
+## v0.18.x — the hub relays (2026-09-08)
+
+- **v0.18.0** — **Relay through the hub.** A node marks what it sends the hub with
+  `RELAY n addr…`, the peers it could not deliver to itself (held, or never reachable);
+  the hub applies the write and sends the plain command on from its own pools. Nothing
+  relays twice, stamps settle duplicates, and a hub older than this is sent plain writes,
+  so the hub rolls first. Also a Prometheus text endpoint behind `METRICS_ADDRESS`
+  (off by default, no auth — bind it to loopback or a private interface).
+
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
 - **v0.17.8** — a forwarded write costs one round trip: the owner answers with what it sent.

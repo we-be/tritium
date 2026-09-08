@@ -117,7 +117,7 @@ go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's
 | `CLIENT SETNAME name`, `CLIENT GETNAME`, `CLIENT ID`, `CLIENT LIST` | A connection says what it is — worker, bridge, CLI — and `LIST` says who is connected: id, address, name, age, idle, identity, last command. `LIST` is for the node's own identity and peers; a prefix user is refused |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
 | `TRITIUM.GOSSIP <node-json>`                | Peer-only. What nodes send each other; replies with the view |
-| `TRITIUM.REPLICATE cmd [args...]`           | Peer-only. A write's owner fans this out to every other node's primary |
+| `TRITIUM.REPLICATE [RELAY n addr...] cmd [args...]` | Peer-only. A write's owner fans this out to every other node's primary. With `RELAY`, the receiver also sends the write on to the named peers from its own pools — how a node both sides link to carries writes between two that cannot dial each other |
 | `TRITIUM.FORWARD [FROM addr] cmd [args...]` | Peer-only. A write for a key this node doesn't own, sent on to the owner. With `FROM`, the owner answers with the reply and what it sent the other replicas, and the sender applies that itself |
 | `TRITIUM.PEERLINK <node-json>`              | Peer-only. Hands this connection to the node that answers, which serves the peer over it from then on ([docs/cloud.md](docs/cloud.md)) |
 | `ACL WHOAMI`                                | Which identity the connection carries                   |
@@ -202,8 +202,11 @@ connections itself and is served over them with `TRITIUM.PEERLINK`, so
 gossip, replication, holding and repair all work unchanged over a socket it
 opened rather than one that dialed it. That is how a fleet gets a node that
 is always reachable — in the cloud, rather than behind a home NAT — without
-a VPN. See [docs/cloud.md](docs/cloud.md) for the design, what changed on the
-wire, and what it costs to run one.
+a VPN. Two nodes that link to the same hub but cannot reach each other still
+exchange writes: each marks what it sends the hub with the peers it could not
+deliver to, and the hub passes the write down the other link. See
+[docs/cloud.md](docs/cloud.md) for the design, what changed on the wire, and
+what it costs to run one.
 
 ## Messenger
 

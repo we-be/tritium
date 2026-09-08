@@ -71,6 +71,16 @@ func TestCommandTimeout(t *testing.T) {
 	idle.want("PONG", "PING")
 }
 
+// An older hub is sent plain writes: RELAY is asked only of v0.18.0 and up,
+// and of a checkout build, whose version does not parse.
+func TestRelayNeedsANewEnoughHub(t *testing.T) {
+	for v, want := range map[string]bool{"v0.17.8": false, "v0.18.0": true, "v0.18.1-dev.abc": true, "v1.0.0": true, "dev": true, "": true} {
+		if got := versionAtLeast(v, relayVersion); got != want {
+			t.Fatalf("%q at least %s: %v", v, relayVersion, got)
+		}
+	}
+}
+
 // Every connection's keepalive is its own: idle and interval drawn from
 // ranges wide enough that a fleet's connections never probe in step.
 func TestKeepaliveIsSpread(t *testing.T) {

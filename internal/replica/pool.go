@@ -67,6 +67,11 @@ type pool struct {
 	// and not attempted until a repair replays them. Otherwise every write
 	// waits out the deadline on a peer that is frozen or gone, and what it
 	// missed before the cluster noticed is never sent again.
+	// decorate, when set, rewrites a batch as it goes out — the store uses
+	// it to ask a hub to carry the write on to peers this node cannot reach
+	// — while what a hold notes stays the plain command.
+	decorate func([]resp.Command) []resp.Command
+
 	mu      sync.Mutex
 	held    bool
 	missed  map[string]struct{}
@@ -240,7 +245,11 @@ func (p *pool) writer() {
 // send runs one fan-out on the replica. A transport failure holds it; an
 // error reply is the peer refusing this write and nothing more.
 func (p *pool) send(cmds []resp.Command) {
-	_, err := p.doAll(cmds)
+	out := cmds
+	if p.decorate != nil {
+		out = p.decorate(cmds)
+	}
+	_, err := p.doAll(out)
 	if err == nil {
 		return
 	}

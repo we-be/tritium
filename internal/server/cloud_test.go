@@ -88,6 +88,26 @@ func TestGossipReusesConnections(t *testing.T) {
 	}
 }
 
+// Two home nodes that cannot dial each other still exchange writes when both
+// link to the cloud node: each marks what it sends the cloud node with the
+// peers it could not deliver to, and the cloud node passes the write down
+// the other link.
+func TestHomesExchangeWritesThroughTheHub(t *testing.T) {
+	hurry(t)
+	cloud := startNode(t, config.Config{})
+	a, _ := linkHome(t, cloud, "")
+	b, _ := linkHome(t, cloud, "")
+	waitFor(t, "the cloud node to reach both homes", func() bool { return len(cloud.store.Replicas()) == 2 })
+	waitFor(t, "each home to learn of the other", func() bool { return len(a.Nodes()) == 3 && len(b.Nodes()) == 3 })
+	ac, bc := dial(t, a), dial(t, b)
+	ac.want("OK", "SET", "relay:k", "v", "EX", "60")
+	waitFor(t, "a home write to reach the other home", func() bool {
+		v, _ := bc.do("GET", "relay:k")
+		got, _ := v.([]byte)
+		return string(got) == "v"
+	})
+}
+
 // A parked connection is a peer session on the home node's side from the
 // moment it is parked: the cloud node authenticates on it as it is handed
 // over, so the home's auth deadline never closes a spare link the cloud has

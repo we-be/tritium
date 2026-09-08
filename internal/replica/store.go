@@ -30,8 +30,13 @@ type Store struct {
 	queue    int                    // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
 	far      func(addr string) bool // replicas fed from a queue of farDepth even when queue is 0: the ones across a link
 	farDepth int
-	mu       sync.RWMutex
-	replicas []*pool
+	// relayVia names the replica that carries writes on to peers this node
+	// cannot reach itself — a hub both can reach — and relayTargets says
+	// which those are as each batch goes out; none means a plain write.
+	relayVia     string
+	relayTargets func() []string
+	mu           sync.RWMutex
+	replicas     []*pool
 	// holdHook and repairHook let a caller (the cluster's event log) learn
 	// of a replica newly held or fully repaired without this package
 	// depending on internal/server; see pool.onHold and Repair.
@@ -128,6 +133,73 @@ func (s *Store) SetAsyncFor(depth int, far func(addr string) bool) {
 // and the ones forwarded to it — since it started; replicated-in writes
 // are not counted.
 func (s *Store) Writes() int64 { return s.writes.Load() }
+
+// SetRelay makes the replica added later at via carry writes on to the
+// peers targets names — the ones this node cannot deliver to itself — by
+// prefixing what it sends via with RELAY n addr…; targets is consulted per
+// batch, so a peer that comes back within reach drops out on its own. Call
+// it before replicas are added, like SetAsyncFor.
+func (s *Store) SetRelay(via string, targets func() []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.relayVia, s.relayTargets = via, targets
+}
+
+// relayDecorate prefixes a batch with the relay targets of the moment.
+func (s *Store) relayDecorate(cmds []resp.Command) []resp.Command {
+	s.mu.RLock()
+	targets := s.relayTargets
+	s.mu.RUnlock()
+	if targets == nil {
+		return cmds
+	}
+	to := targets()
+	if len(to) == 0 {
+		return cmds
+	}
+	args := append([]string{"RELAY", strconv.Itoa(len(to))}, to...)
+	out := make([]resp.Command, len(cmds))
+	for i, c := range cmds {
+		out[i] = prefixed(c, args)
+	}
+	return out
+}
+
+// prefixed puts args in front of cmd's own.
+func prefixed(cmd resp.Command, args []string) resp.Command {
+	for i := len(args) - 1; i >= 0; i-- {
+		cmd = resp.Prefix(cmd, args[i])
+	}
+	return cmd
+}
+
+// ReplicateTo sends cmds to the replica at addr alone — what a node does
+// with a write it was asked to relay — from a queue when that replica is
+// fed from one, else in the background; a held replica notes them for its
+// repair. An address that is not a replica is ignored.
+func (s *Store) ReplicateTo(addr string, cmds ...resp.Command) {
+	s.mu.RLock()
+	i := slices.IndexFunc(s.replicas, func(r *pool) bool { return r.addr == addr })
+	var r *pool
+	if i >= 0 {
+		r = s.replicas[i]
+	}
+	s.mu.RUnlock()
+	if r == nil {
+		return
+	}
+	if r.queue != nil {
+		r.enqueue(cmds)
+		return
+	}
+	go func() {
+		if r.isHeld() {
+			r.hold(cmds)
+			return
+		}
+		r.send(cmds)
+	}()
+}
 
 // Queued lists the replicas fed from a queue rather than waited on.
 func (s *Store) Queued() []string {
@@ -393,6 +465,9 @@ func (s *Store) AddReplica(addr string) error {
 		return nil
 	}
 	p.onHold = s.holdHook
+	if addr == s.relayVia {
+		p.decorate = s.relayDecorate
+	}
 	if s.queue > 0 {
 		p.async(s.queue)
 	} else if s.far != nil && s.far(addr) {

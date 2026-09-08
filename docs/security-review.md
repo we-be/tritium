@@ -223,6 +223,9 @@ the plane by whoever can write `id:travel` is refused on both ends.
   wifi can connect to it. Local tools reach it on loopback.
 - `TLS_CA`, its own cert and key, `PEER_PASSWORD`; `TLS_CLIENT_AUTH=true`
   on the cloud node so only certificate holders reach AUTH there.
+- Its writes reach the home machines by relay through the cloud node, and
+  theirs reach it the same way (v0.18.0); every hop is a peer-authenticated
+  session, and a relayed write is applied exactly like a direct one.
 - A write on the laptop never waits for a hotel round trip: its link to
   the cloud node is fed from a queue on its own.
 - With `ELECTRONEGATIVITY=0` the laptop's node is never a key's owner and

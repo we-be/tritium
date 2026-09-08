@@ -447,6 +447,18 @@ func (c *cluster) localCopy() storage.NodeInfo {
 // addr is this node's advertised address; set once, so no lock.
 func (c *cluster) addr() string { return c.local.Addr }
 
+// versionOf is the build a peer gossiped, "" for one we do not know.
+func (c *cluster) versionOf(addr string) string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, n := range c.nodes {
+		if n.Addr == addr {
+			return n.Version
+		}
+	}
+	return ""
+}
+
 // weightOf is the electronegativity a peer gossiped, 1 for one that never said.
 func (c *cluster) weightOf(addr string) int {
 	c.mu.RLock()

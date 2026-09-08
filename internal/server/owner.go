@@ -303,8 +303,22 @@ var replicatable = map[string]bool{"SET": true, "SETEX": true, "DEL": true, "EXP
 
 // replicate applies a peer's write to this node's store only. It is how a
 // peer's SET reaches us without ever dialing our store, and it never fans
-// out again: the peer already sent it to everyone.
+// out again: the peer already sent it to everyone — except the peers it
+// names with RELAY, which it could not reach itself and which this node,
+// a hub both can reach, sends the plain write on to from its own pools.
 func (s *session) replicate(args []string) []byte {
+	var relay []string
+	if strings.EqualFold(args[0], "RELAY") {
+		if len(args) < 4 {
+			return errArity("TRITIUM.REPLICATE")
+		}
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 || len(args) < 3+n {
+			return resp.AppendError(nil, "ERR invalid RELAY count")
+		}
+		relay, args = args[2:2+n], args[2+n:]
+	}
+	relayed := resp.NewCommand(args...) // as the sender wrote it, stamp and all
 	inner := strings.ToUpper(args[0])
 	if inner == "STAMPED" { // a stamped write: our clock moves past it, and a store that keeps no stamps gets it plain
 		if len(args) < 3 {
@@ -331,6 +345,9 @@ func (s *session) replicate(args []string) []byte {
 	v, err := s.srv.store.Apply(resp.NewCommand(args...))
 	if err != nil {
 		return errMsg(err)
+	}
+	for _, addr := range relay {
+		s.srv.store.ReplicateTo(addr, relayed)
 	}
 	return resp.AppendValue(nil, v)
 }
