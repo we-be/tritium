@@ -419,8 +419,10 @@ func (p *pool) exchange(c *conn, buf []byte, n int) (out []any, first, err error
 type Store struct {
 	primary  *pool
 	size     int
-	via      Transport // how replicas are reached; the primary's own by default
-	queue    int       // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
+	via      Transport              // how replicas are reached; the primary's own by default
+	queue    int                    // asynchronous replication: fan-outs a replica may have queued; 0 waits for every replica
+	far      func(addr string) bool // replicas fed from a queue of farDepth even when queue is 0: the ones across a link
+	farDepth int
 	mu       sync.RWMutex
 	replicas []*pool
 	// holdHook and repairHook let a caller (the cluster's event log) learn
@@ -503,6 +505,29 @@ func (s *Store) Async() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.queue > 0
+}
+
+// SetAsyncFor makes the replicas added from now on that far names be fed
+// from a queue of depth fan-outs whatever SetAsync says: what a node does
+// for a peer on another network, so a write waits on the peers beside it
+// and never on one across the internet.
+func (s *Store) SetAsyncFor(depth int, far func(addr string) bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.far, s.farDepth = far, depth
+}
+
+// Queued lists the replicas fed from a queue rather than waited on.
+func (s *Store) Queued() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []string
+	for _, r := range s.replicas {
+		if r.queue != nil {
+			out = append(out, r.addr)
+		}
+	}
+	return out
 }
 
 // SetHoldHook is called for every replica added from now on, once per
@@ -774,6 +799,8 @@ func (s *Store) AddReplica(addr string) error {
 	p.onHold = s.holdHook
 	if s.queue > 0 {
 		p.async(s.queue)
+	} else if s.far != nil && s.far(addr) {
+		p.async(s.farDepth)
 	}
 	if b, ok := s.parked[addr]; ok { // back from a partition: held until its backlog is replayed
 		p.held, p.missed, p.spilled = true, b.keys, b.spilled

@@ -158,9 +158,10 @@ only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
 current value, or the deletion — until it answers again. Every write waits
 for its peers by default, so a key read from any node right after the answer
-is there; over a slow link `REPLICATION=async` answers once the local store
-has the write and feeds peers in order from a queue, and `tritium-load -peer`
-shows the lag that buys. A peer that falls too far behind is held and
+is there — except on a peer at the other end of a link, which is on another
+network and is fed in order from a queue, so no write waits out the internet.
+`REPLICATION=async` feeds every peer that way, answering once the local store
+has the write, and `tritium-load -peer` shows the lag that buys. A peer that falls too far behind is held and
 repaired like one that stopped answering.
 
 Each node keeps its own cluster events — attach, detach, hold, repair,
@@ -309,7 +310,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `MAX_SERVER_CONNECTIONS` | `4`              | Connections pooled per RESP server                                      |
 | `MAX_CLIENTS`            | `10000`          | Connections a node accepts at once; more are turned away with an error. A connection that has not authenticated within 10 s, or is refused five `AUTH`s, is closed |
 | `KEY_OWNERSHIP`          | `on`             | Each key's writes go through its owner node, so `NX` and write order hold cluster-wide; `off` writes locally first and fans out from there |
-| `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer has it. `async`: answered once this node's store has it; peers are fed in order from a queue |
+| `REPLICATION`            | `sync`           | `sync`: a write is answered once every peer on this network has it — a peer across a link (`LINK_ADDRESS`, or one that linked to us) is fed from a queue either way, so no write waits out the internet. `async`: answered once this node's store has it; every peer is fed in order from a queue |
 | `TLS_CERT`, `TLS_KEY`    | none             | Serve TLS, and dial peers with TLS presenting this certificate          |
 | `TLS_CA`                 | system roots     | What peers, and clients under `TLS_CLIENT_AUTH`, must chain to          |
 | `TLS_CLIENT_AUTH`        | `false`          | Require client certificates: mutual TLS for clients and between nodes   |

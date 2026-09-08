@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,6 +44,16 @@ func TestCloudPeering(t *testing.T) {
 		homes = append(homes, s)
 	}
 	waitFor(t, "the cloud node to reach both homes", func() bool { return len(cloud.store.Replicas()) == 2 })
+	// Both ends of a link feed the other from a queue — a write must not wait
+	// out the internet — while the two homes, on one network, wait on each other.
+	if q := cloud.store.Queued(); len(q) != 2 {
+		t.Fatalf("the cloud node queues for %v, want both homes", q)
+	}
+	for _, h := range homes {
+		if q := h.store.Queued(); !slices.Equal(q, []string{cloud.Addr()}) {
+			t.Fatalf("a home node queues for %v, want the cloud node alone", q)
+		}
+	}
 
 	cc := dial(t, cloud)
 	cc.want("OK", "SET", "cloud:k", "1", "EX", "60")

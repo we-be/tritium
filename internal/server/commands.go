@@ -608,8 +608,8 @@ func (s *session) info(args []string) []byte {
 		{"clients", fmt.Sprintf("connected_clients:%d\r\n", stats.ActiveConnections)},
 		{"stats", fmt.Sprintf("bytes_transferred:%d\r\n", stats.BytesTransferred)},
 		{"replication", "role:master\r\n"},
-		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\nstore_tls:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nreplication:%s\r\nkey_ownership:%s\r\nforwarded:%d\r\nforward_fallbacks:%d\r\nstamps:%s\r\nevents:%d\r\n",
-			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, onOff(s.srv.cfg.StoreTLS), len(s.srv.Nodes()), stats.Replicas, stats.Held, replicationMode(s.srv.store.Async()), onOff(s.srv.cfg.Ownership), s.srv.forwarded.Load(), s.srv.fallbacks.Load(), stampsMode(s.srv.store.Stamps()), s.srv.eventsKept(local.ID))},
+		{"tritium", fmt.Sprintf("node_id:%s\r\nnode_addr:%s\r\nversion:%s\r\nseeds:%s\r\nstore:%s\r\nstore_tls:%s\r\ncluster_nodes:%d\r\nreplicas:%d\r\nheld_replicas:%d\r\nqueued_replicas:%d\r\nreplication:%s\r\nkey_ownership:%s\r\nforwarded:%d\r\nforward_fallbacks:%d\r\nstamps:%s\r\nevents:%d\r\n",
+			local.ID, local.Addr, Version, strings.Join(local.Seeds, ","), local.StoreAddr, onOff(s.srv.cfg.StoreTLS), len(s.srv.Nodes()), stats.Replicas, stats.Held, len(s.srv.store.Queued()), replicationMode(s.srv.store.Async()), onOff(s.srv.cfg.Ownership), s.srv.forwarded.Load(), s.srv.fallbacks.Load(), stampsMode(s.srv.store.Stamps()), s.srv.eventsKept(local.ID))},
 		{"store", s.srv.storeInfo()},
 	}
 

@@ -60,6 +60,7 @@ finds nothing, or a cut. Not every iteration ships.
 
 ## Done
 
+- [x] A peer across a link is fed from a queue on its own, `REPLICATION` left alone: measured on the fleet, every write on a LAN machine waited on Lightsail (SET p50 30 ms, GET 0.1 ms) because no node had set `async` — v0.16.0, 2026-09-08
 - [x] Embedded store: a node is its own store when no store address is configured (`internal/memstore`: strings and sorted sets, expiry heap, bucketed SCAN, `STORE_MAX_MEMORY` with soonest-expiry eviction, reached over in-process RESP; the test store is the same code) — 2026-09-07
 - [x] SCAN/TYPE/DBSIZE for clients: `pkg/tritium.Scan`, `tritium-cli scan`, key browser in tritium-wails — 2026-09-07
 - [x] Cloud node + adapter so the mubs serverless worker can join the plane with a lesser credential (`LINK_ADDRESS`/`TRITIUM.PEERLINK` reverse peering, `USER_<name>` prefix rights, `docs/cloud.md`) — 2026-09-07

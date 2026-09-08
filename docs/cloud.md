@@ -162,12 +162,15 @@ is the old `AUTH <password>`), and `AUTH_USER` in a node's env file makes
 
 ## 3. Replication across the WAN
 
-**The cloud node runs `REPLICATION=async`, and so should the home nodes once it
-joins.** The knob is per node, not per peer: a home node left on `sync` would
-pay a WAN round trip on every `SET`, including the ones going to the machine
-next to it (the load test measured p50 5.9 ms → 0.2 ms on wifi alone). Async
-answers as soon as the local store has the write and feeds each peer in order
-from a queue.
+**Both ends of a link feed the other from a queue, on their own.** A home node
+left to wait on the cloud node pays a WAN round trip on every `SET`, including
+the ones going to the machine next to it: measured on the fleet at v0.15.0,
+where nothing had set `async`, SET p50 was 30 ms against 5.9 ms on wifi alone.
+So since v0.16.0 a peer named in `LINK_ADDRESS`, and on the cloud node a peer
+that linked in, is fed in order from a queue whatever `REPLICATION` says, while
+the machines beside each other still wait on each other. `REPLICATION=async`
+goes further: it answers as soon as the local store has the write and feeds
+every peer from a queue.
 
 What that costs: a moment in which a key written on one node is not yet on
 another. Nothing on the fleet reads its own write from a different node —
@@ -272,7 +275,6 @@ config reload (the store is RAM-only, so a bounce drops presence).
 # /etc/tritium/node.env
 LISTEN_ADDRESS=0.0.0.0:8080
 ADVERTISE_ADDRESS=tritium.mubs.example:8080
-REPLICATION=async
 AUTH_PASSWORD=...            # the fleet's client password
 PEER_PASSWORD=...            # the fleet's peer password
 TLS_CERT=/etc/tritium/node.crt
@@ -287,11 +289,10 @@ The advertised address must be the public name the home nodes dial.
 
 ### b. The two home nodes
 
-One line each in `~/.config/mubs/tritium.env`, plus the replication switch:
+One line each in `~/.config/mubs/tritium.env`:
 
 ```sh
 LINK_ADDRESS=tritium.mubs.example:8080
-REPLICATION=async
 ```
 
 Both nodes need a tritium build with `TRITIUM.PEERLINK` before either line goes

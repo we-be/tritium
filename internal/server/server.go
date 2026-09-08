@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,6 +168,7 @@ func (s *Server) Serve(ln net.Listener) error {
 	s.store.SetReplicaTransport(s.peerTransport())
 	s.clock = newClock(advertise)
 	s.store.SetStamper(s.clock.next, s.cfg.StoreAddr == "")
+	s.store.SetAsyncFor(asyncDepth, s.far)
 	if s.cfg.Async {
 		s.store.SetAsync(asyncDepth)
 	}
@@ -220,6 +222,13 @@ func loopbackListener(addr string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// far reports whether addr is the peer on the other end of a link — one we
+// opened (LINK_ADDRESS) or one it opened to us — and so on another network:
+// it is fed from a queue, so no write here waits out the internet.
+func (s *Server) far(addr string) bool {
+	return slices.Contains(s.cfg.Links(), addr) || s.links.has(addr)
 }
 
 // dialPeer opens a connection to another node, over TLS when this node

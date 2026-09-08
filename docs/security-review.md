@@ -223,8 +223,8 @@ the plane by whoever can write `id:travel` is refused on both ends.
   wifi can connect to it. Local tools reach it on loopback.
 - `TLS_CA`, its own cert and key, `PEER_PASSWORD`; `TLS_CLIENT_AUTH=true`
   on the cloud node so only certificate holders reach AUTH there.
-- `REPLICATION=async` on the laptop: a write should not wait for a hotel
-  round trip.
+- A write on the laptop never waits for a hotel round trip: its link to
+  the cloud node is fed from a queue on its own.
 - A linked node is never a key's owner and applies what it receives, so
   a stolen laptop's node has no more than a client has: the plane's keys
   as of its last sync, and the credentials in its files.
