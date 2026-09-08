@@ -71,6 +71,7 @@ in us-east-1 linked from both (`LINK_ADDRESS`; TCP handshake to it 21 ms).
 | v0.15.0 | the cloud node joined; every write waited for it | 29.7 ms | 30.1 ms | 36 ms |
 | v0.16.0 | a peer across a link is fed from a queue on its own | 12.3 ms | 5.6 ms | 19 ms |
 | v0.17.0 | `ELECTRONEGATIVITY`: the cloud node never owns a key | 7.2 ms | 11.3 ms | 13 ms |
+| v0.17.8 | a forwarded write costs one round trip, not two | 6.1 ms | 6.5 ms | 11 ms |
 
 GET stayed at 0.1 ms throughout: reads never leave the node. At v0.15.0
 every write paid the round trip to the cloud, including writes for the
@@ -81,8 +82,10 @@ then the write fed back to the writer from a queue — and the weights
 closed that. What is left in the 7 ms is one wifi round trip for a key the
 desktop owns and two in series for one the Air owns (the forward, then the
 owner's fan-out back); the ZADD column is a single key and lands on
-whichever node the hash picks. The backlog holds the one-round-trip design
-for the forwarded case.
+whichever node the hash picks. v0.17.8 took the second trip out of the
+forwarded case: the owner answers with what it sent the other replicas and
+the forwarder applies that itself, so SET p99 fell from 16.5 ms to 10.5 ms
+and the ZADD key stopped depending on who owns it.
 
 Between v0.16.0 and v0.17.0 the cloud node also stopped being churned: the
 spare link connections had died and been reopened every ten seconds on the
