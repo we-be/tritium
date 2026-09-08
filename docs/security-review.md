@@ -78,7 +78,9 @@ last section.
   valkey-cli) speaks 1.3; 1.2 stays for anything older. No cipher list is
   pinned; Go's defaults are current.
 - **512 MiB bulk strings.** A client with AUTH can send a value that large;
-  the embedded store's cap evicts around it. Same as Redis's default.
+  the embedded store's cap evicts around it. Same as Redis's default. Past
+  the first MiB the buffer grows as the bytes arrive, so a declared length
+  costs the sender before it costs the node.
 - **INFO is open to users.** It names the node, its address, the store's
   size. Useful to an operator holding a lesser credential, and nothing
   a lesser credential can act on.
@@ -120,6 +122,7 @@ came of each:
 | A stamp was observed before the command was judged | Judged first |
 | State files kept a mode they were restored with, and were truncated before rewritten | Written beside, synced, renamed; directory and files set to 0700/0600 |
 | A name could carry terminal control sequences | Refused at creation and at verification; the CLI prints the full fingerprint and no control characters |
+| An unauthenticated stream could declare an array of any length or depth, and the parser allocated for the length and recursed for the depth: a process crash before AUTH (found by an outside read of `main`, 2026-09-08) | An array is at most 2²⁰ elements and 32 deep, its slice grows as elements arrive, a bulk past a MiB is read in chunks, and a connection that panics is closed and logged instead of ending the node |
 | A right was a bare prefix: `fleet` also granted `fleet-master-key` | A right ending in `:` or `/` is a prefix; any other names one key |
 | The quickstart compose file had no passwords on every interface | Passwords from `.env`, ports on loopback |
 | A key of all zeros parsed | Refused |

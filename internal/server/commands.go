@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -109,6 +110,11 @@ func (s *Server) serveConn(c net.Conn) { s.serveConnWith(c, resp.NewReader(c)) }
 func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 	s.active.Add(1)
 	defer s.active.Add(-1)
+	defer func() { // one connection's bug must not take the node with it
+		if p := recover(); p != nil {
+			slog.Error("connection panicked", "remote", c.RemoteAddr(), "panic", p, "stack", string(debug.Stack()))
+		}
+	}()
 	handed := false
 	defer func() {
 		if !handed {

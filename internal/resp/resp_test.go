@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/we-be/tritium/internal/resp"
@@ -86,5 +87,19 @@ func TestPrefix(t *testing.T) {
 	got := resp.Prefix(resp.NewCommand("SETEX", "k", "60", "v"), "TRITIUM.REPLICATE")
 	if string(got) != string(resp.NewCommand("TRITIUM.REPLICATE", "SETEX", "k", "60", "v")) {
 		t.Fatalf("Prefix = %q", got)
+	}
+}
+
+// TestLimits: a stream declaring more than the node will hold — a huge or bottomless array, one nested too deep, an oversized bulk — is refused before anything is allocated, and a large bulk within the limit still arrives whole.
+func TestLimits(t *testing.T) {
+	for _, in := range []string{"*9223372036854775807\r\n", "*1048577\r\n", strings.Repeat("*1\r\n", 33), "$536870913\r\n"} {
+		if _, err := resp.NewReader(strings.NewReader(in)).ReadValue(); err == nil {
+			t.Fatalf("%.12q accepted", in)
+		}
+	}
+	big := bytes.Repeat([]byte("x"), 3<<20)
+	v, err := resp.NewReader(strings.NewReader("$3145728\r\n" + string(big) + "\r\n")).ReadValue()
+	if err != nil || !bytes.Equal(v.([]byte), big) {
+		t.Fatalf("3 MiB bulk: %v", err)
 	}
 }

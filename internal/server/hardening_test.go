@@ -174,3 +174,24 @@ func TestPeerAllowIgnoresStrangers(t *testing.T) {
 		t.Fatal("a node outside PEER_ALLOW joined the view")
 	}
 }
+
+// A stream that declares a bottomless or endlessly nested array before
+// authenticating loses its connection, and the node keeps serving.
+func TestParserAbuseKeepsServing(t *testing.T) {
+	s := startNode(t, config.Config{Password: "right"})
+	for _, in := range []string{"*9223372036854775807\r\n", strings.Repeat("*1\r\n", 40)} {
+		conn, err := net.Dial("tcp", s.Addr())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn.Write([]byte(in))
+		conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if _, err := resp.NewReader(conn).ReadValue(); err == nil {
+			t.Fatalf("%.8q was accepted", in)
+		}
+		conn.Close()
+	}
+	c := dial(t, s)
+	c.want("OK", "AUTH", "right")
+	c.want("PONG", "PING")
+}
