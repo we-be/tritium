@@ -149,6 +149,12 @@ func run(client *tritium.Client, cmd string, args []string) error {
 			return err
 		}
 		fmt.Print(bulk(v))
+	case "clients":
+		v, err := client.Do("CLIENT", "LIST")
+		if err != nil {
+			return err
+		}
+		fmt.Print(bulk(v))
 	case "events":
 		fs := flag.NewFlagSet("events", flag.ContinueOnError)
 		since := fs.Duration("since", 24*time.Hour, "how far back to look")
@@ -284,7 +290,7 @@ func printEvents(events []storage.Event, node string) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes | info [SECTION] | events [-since 1h] [-node NAME]")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
 	flag.PrintDefaults()
 }
 

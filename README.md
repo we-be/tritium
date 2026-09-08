@@ -82,7 +82,7 @@ opts, err := tritium.OptionsFromEnv(".env")          // or reach the node next d
 nodes, err := client.Nodes()                         // the cluster view
 ```
 
-`tritium-cli` wraps that client for the shell and adds `scan`, `nodes`, `info` and `events`:
+`tritium-cli` wraps that client for the shell and adds `scan`, `nodes`, `info`, `clients` and `events`:
 
 ```sh
 export TRITIUM_KEY=$(openssl rand -hex 32)
@@ -93,6 +93,7 @@ go run ./cmd/tritium-cli scan 'hel*'          # every matching key, its type and
 go run ./cmd/tritium-cli del hello
 go run ./cmd/tritium-cli nodes               # every node's state, weight, replicas, keys, memory and writes, from this node's view
 go run ./cmd/tritium-cli info tritium        # this node's replicas, held and queued ones, ownership, stamps
+go run ./cmd/tritium-cli clients             # who is connected to this node, and what each last did
 go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's cluster events
 ```
 
@@ -111,7 +112,8 @@ go run ./cmd/tritium-cli events -since 1h     # this node's view of every node's
 | `ZRANGEBYSCORE`, `ZREM`, `ZREMRANGEBYSCORE`, `ZCARD` | Passed through; writes replicate                |
 | `SCAN cursor [MATCH pattern] [COUNT n] [TYPE t]`, `TYPE key`, `DBSIZE` | Read the local primary, like `GET`; the cursor is opaque. `KEYS` stays unsupported — it has no cursor |
 | `PING`, `ECHO`, `AUTH`, `HELLO`, `QUIT`     | RESP2 by default, RESP3 after `HELLO 3`                 |
-| `INFO [section]`, `CLIENT`, `COMMAND`, `SELECT 0` | Enough for client libraries to connect cleanly    |
+| `INFO [section]`, `COMMAND`, `SELECT 0`       | Enough for client libraries to connect cleanly          |
+| `CLIENT SETNAME name`, `CLIENT GETNAME`, `CLIENT ID`, `CLIENT LIST` | A connection says what it is — worker, bridge, CLI — and `LIST` says who is connected: id, address, name, age, idle, identity, last command. `LIST` is for the node's own identity and peers; a prefix user is refused |
 | `TRITIUM.NODES`                             | The cluster view as JSON                                |
 | `TRITIUM.GOSSIP <node-json>`                | Peer-only. What nodes send each other; replies with the view |
 | `TRITIUM.REPLICATE cmd [args...]`           | Peer-only. A write's owner fans this out to every other node's primary |

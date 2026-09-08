@@ -114,6 +114,24 @@ func TestUsersHaveNoClusterView(t *testing.T) {
 	c := dial(t, s)
 	c.want("OK", "AUTH", "gateway", "pw")
 	c.wantErr("NOPERM", "TRITIUM.NODES")
+	c.wantErr("NOPERM", "CLIENT", "LIST") // nor who else is connected
+}
+
+// A connection can name itself, and CLIENT LIST names every connection.
+func TestClientList(t *testing.T) {
+	s := startNode(t, config.Config{})
+	worker, cli := dial(t, s), dial(t, s)
+	worker.want("OK", "CLIENT", "SETNAME", "worker")
+	worker.want("worker", "CLIENT", "GETNAME")
+	worker.wantErr("ERR Client names", "CLIENT", "SETNAME", "two words")
+	v, err := cli.do("CLIENT", "LIST")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := string(v.([]byte))
+	if !strings.Contains(list, "name=worker") || !strings.Contains(list, "cmd=client") || strings.Count(list, "\n") < 2 {
+		t.Fatalf("CLIENT LIST: %q", list)
+	}
 }
 
 func strconvU(n uint64) string { return strconv.FormatUint(n, 10) }

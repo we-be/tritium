@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"runtime/debug"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
@@ -39,6 +42,37 @@ type session struct {
 	user      *config.User      // nil: one of the built-in identities, with no restrictions
 	linked    *storage.NodeInfo // set by TRITIUM.PEERLINK: this connection is handed to the peer
 	forwarded bool              // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
+
+	// What CLIENT LIST reports about this connection, written by its own
+	// goroutine and read by another's, so under mu.
+	mu      sync.Mutex
+	name    string // CLIENT SETNAME
+	started time.Time
+	last    time.Time // when the last command arrived
+	lastCmd string
+}
+
+// touch notes a command arriving, for CLIENT LIST's idle and cmd.
+func (s *session) touch(name string) {
+	s.mu.Lock()
+	s.last, s.lastCmd = time.Now(), strings.ToLower(name)
+	s.mu.Unlock()
+}
+
+// describe is this connection's CLIENT LIST line.
+func (s *session) describe(now time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	who := "default"
+	switch {
+	case s.peer:
+		who = "peer"
+	case s.user != nil:
+		who = s.user.Name
+	case !s.authed:
+		who = ""
+	}
+	return fmt.Sprintf("id=%d addr=%s name=%s age=%d idle=%d user=%s cmd=%s", s.id, s.conn.RemoteAddr(), s.name, int(now.Sub(s.started).Seconds()), int(now.Sub(s.last).Seconds()), who, s.lastCmd)
 }
 
 func (s *Server) serveConn(c net.Conn) { s.serveConnWith(c, resp.NewReader(c)) }
@@ -61,7 +95,19 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 		}
 	}()
 
-	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == ""}
+	now := time.Now()
+	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == "", started: now, last: now}
+	s.sessMu.Lock()
+	if s.sessions == nil {
+		s.sessions = map[int64]*session{}
+	}
+	s.sessions[sess.id] = sess
+	s.sessMu.Unlock()
+	defer func() {
+		s.sessMu.Lock()
+		delete(s.sessions, sess.id)
+		s.sessMu.Unlock()
+	}()
 	for {
 		if !sess.authed {
 			c.SetReadDeadline(time.Now().Add(authTimeout))
@@ -96,6 +142,7 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 
 func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	name := strings.ToUpper(args[0])
+	s.touch(name)
 	switch name {
 	case "QUIT":
 		return replyOK, true
@@ -303,16 +350,52 @@ func (s *session) echo(args []string) []byte {
 
 // client accepts the CLIENT subcommands connection libraries send on
 // connect; nothing is recorded.
+// client handles CLIENT: SETNAME and GETNAME so a connection can say what
+// it is — worker, bridge, CLI — and LIST so a node can say who is
+// connected. LIST is for the node's own identity and peers; a user with
+// prefix rights learns nothing about other connections.
 func (s *session) client(args []string) []byte {
 	switch strings.ToUpper(args[0]) {
-	case "SETNAME", "SETINFO":
+	case "SETNAME":
+		if len(args) != 2 || args[1] == "" || strings.ContainsAny(args[1], " \t\r\n") {
+			return resp.AppendError(nil, "ERR Client names cannot contain spaces, newlines or special characters.")
+		}
+		s.mu.Lock()
+		s.name = args[1]
+		s.mu.Unlock()
+		return replyOK
+	case "GETNAME":
+		s.mu.Lock()
+		name := s.name
+		s.mu.Unlock()
+		if name == "" {
+			return s.null()
+		}
+		return resp.AppendBulkString(nil, name)
+	case "SETINFO":
 		return replyOK
 	case "ID":
 		return resp.AppendInt(nil, s.id)
-	case "GETNAME":
-		return s.null()
+	case "LIST":
+		if s.user != nil {
+			return replyNoPerm
+		}
+		return resp.AppendBulkString(nil, s.srv.clientList())
 	}
 	return resp.AppendError(nil, fmt.Sprintf("ERR unknown subcommand '%s'. Try CLIENT HELP.", args[0]))
+}
+
+// clientList is every connection being served, one line each, by id.
+func (s *Server) clientList() string {
+	now := time.Now()
+	s.sessMu.Lock()
+	ids := slices.Sorted(maps.Keys(s.sessions))
+	lines := make([]string, 0, len(ids))
+	for _, id := range ids {
+		lines = append(lines, s.sessions[id].describe(now))
+	}
+	s.sessMu.Unlock()
+	return strings.Join(lines, "\n") + "\n"
 }
 
 // command answers COMMAND [DOCS|INFO ...] with an empty array, which is

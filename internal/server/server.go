@@ -87,6 +87,8 @@ type Server struct {
 	guesses   guesses   // refused AUTHs by client address
 	connMu    sync.Mutex
 	conns     map[net.Conn]struct{} // accepted connections still being served: Stop closes them and waits, so no handler outlives the node
+	sessMu    sync.Mutex
+	sessions  map[int64]*session // every connection being served, links included, for CLIENT LIST
 	connWG    sync.WaitGroup
 	forwarded atomic.Int64 // writes carried to their owner, and writes done here because the owner was out of reach
 	fallbacks atomic.Int64
