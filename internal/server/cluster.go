@@ -224,25 +224,24 @@ func gossipTargets(peers []storage.NodeInfo) []storage.NodeInfo {
 	return out
 }
 
-// exchange sends one command to a peer, authenticating first when the
-// cluster has a password, and decodes the JSON view it replies with.
+// exchange sends one command to a peer over a pooled peer connection —
+// dialed and authenticated once, kept between rounds, so a gossip round
+// costs one round trip rather than a dial, a handshake and an AUTH — and
+// decodes the JSON view it replies with. A connection that fails is
+// dropped; the next round dials afresh.
 func (c *cluster) exchange(addr string, cmd resp.Command) (map[string]storage.NodeInfo, error) {
-	conn, err := c.server.dialPeer(addr)
+	conn, err := c.server.peerConn(addr)
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(peerTimeout))
-	r := resp.NewReader(conn)
-	if pw := c.server.peerPassword(); pw != "" {
-		if _, err := resp.NewCommand("AUTH", "peer", pw).Do(conn, r); err != nil {
-			return nil, fmt.Errorf("auth: %w", err)
-		}
-	}
-	v, err := cmd.Do(conn, r)
+	v, err := cmd.Do(conn, conn.r)
 	if err != nil {
+		conn.Close()
 		return nil, err
 	}
+	conn.SetDeadline(time.Time{})
+	c.server.pconns.put(addr, conn, c.server.cfg.PoolSize)
 	raw, ok := v.([]byte)
 	if !ok {
 		return nil, fmt.Errorf("unexpected reply %T", v)

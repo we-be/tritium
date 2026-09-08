@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"hash/fnv"
 	"log/slog"
 	"net"
@@ -80,14 +81,16 @@ func score(addr, key string) uint64 {
 	return x ^ x>>33
 }
 
-// forwarder keeps a few authenticated connections to each owner, apart from
-// the replication pool so a forward never queues behind a fan-out.
-type forwarder struct {
+// peerConns keeps a few authenticated connections to each peer for the
+// short exchanges — a forward, a gossip round — apart from the replication
+// pool, so none of them queues behind a fan-out and none pays a dial and a
+// handshake per exchange.
+type peerConns struct {
 	mu   sync.Mutex
-	idle map[string][]*fconn
+	idle map[string][]*pconn
 }
 
-type fconn struct {
+type pconn struct {
 	net.Conn
 	r *resp.Reader
 }
@@ -96,7 +99,7 @@ type fconn struct {
 // owner's answer to the command and goes to the client; any other error
 // means the owner was not reached and the write should happen here.
 func (s *Server) forward(addr string, args []string) (any, error) {
-	c, err := s.forwardConn(addr)
+	c, err := s.peerConn(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -109,69 +112,71 @@ func (s *Server) forward(addr string, args []string) (any, error) {
 		return nil, err
 	}
 	if se != nil && (strings.HasPrefix(se.Msg, "ERR unknown command") || strings.HasPrefix(se.Msg, "NOPERM") || strings.HasPrefix(se.Msg, "NOAUTH") || strings.HasPrefix(se.Msg, "ERR primary:")) {
-		s.fwd.put(addr, c, s.cfg.PoolSize)
+		s.pconns.put(addr, c, s.cfg.PoolSize)
 		// An older node, one we are not a peer of, or one whose own store is
 		// gone (it is stopping): nothing was applied there, so write here.
 		return nil, errors.New("owner refused the forward: " + se.Msg)
 	}
-	s.fwd.put(addr, c, s.cfg.PoolSize)
+	s.pconns.put(addr, c, s.cfg.PoolSize)
 	return v, err
 }
 
-func (s *Server) forwardConn(addr string) (*fconn, error) {
-	if c := s.fwd.take(addr); c != nil {
+// peerConn is an authenticated connection to the peer at addr: an idle one
+// from the pool, or a fresh dial.
+func (s *Server) peerConn(addr string) (*pconn, error) {
+	if c := s.pconns.take(addr); c != nil {
 		return c, nil
 	}
 	conn, err := s.dialPeer(addr)
 	if err != nil {
 		return nil, err
 	}
-	c := &fconn{Conn: conn, r: resp.NewReader(conn)}
+	c := &pconn{Conn: conn, r: resp.NewReader(conn)}
 	if pw := s.peerPassword(); pw != "" {
 		c.SetDeadline(time.Now().Add(peerTimeout))
 		if _, err := resp.NewCommand("AUTH", "peer", pw).Do(c, c.r); err != nil {
 			c.Close()
-			return nil, err
+			return nil, fmt.Errorf("auth %s: %w", addr, err)
 		}
 		c.SetDeadline(time.Time{})
 	}
 	return c, nil
 }
 
-func (f *forwarder) take(addr string) *fconn {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	idle := f.idle[addr]
+func (p *peerConns) take(addr string) *pconn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	idle := p.idle[addr]
 	if len(idle) == 0 {
 		return nil
 	}
 	c := idle[len(idle)-1]
-	f.idle[addr] = idle[:len(idle)-1]
+	p.idle[addr] = idle[:len(idle)-1]
 	return c
 }
 
-func (f *forwarder) put(addr string, c *fconn, keep int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.idle == nil {
-		f.idle = map[string][]*fconn{}
+func (p *peerConns) put(addr string, c *pconn, keep int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.idle == nil {
+		p.idle = map[string][]*pconn{}
 	}
-	if len(f.idle[addr]) >= max(keep, 1) {
+	if len(p.idle[addr]) >= max(keep, 1) {
 		c.Close()
 		return
 	}
-	f.idle[addr] = append(f.idle[addr], c)
+	p.idle[addr] = append(p.idle[addr], c)
 }
 
-func (f *forwarder) close() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, idle := range f.idle {
+func (p *peerConns) close() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, idle := range p.idle {
 		for _, c := range idle {
 			c.Close()
 		}
 	}
-	f.idle = nil
+	p.idle = nil
 }
 
 // forwardTo carries one owned write to its owner and renders the answer for

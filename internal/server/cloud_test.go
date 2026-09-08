@@ -53,6 +53,22 @@ func TestDeadLinksAreDropped(t *testing.T) {
 	waitFor(t, "the dead links to leave the park", func() bool { return cloud.links.parked(addr) == 0 })
 }
 
+// Gossip reuses an authenticated connection between rounds: a node that
+// gossips every five seconds must not open a TCP and TLS connection to each
+// peer every five seconds.
+func TestGossipReusesConnections(t *testing.T) {
+	hurry(t)
+	a := startNode(t, config.Config{})
+	b := startNode(t, config.Config{JoinAddr: a.Addr()})
+	waitFor(t, "the nodes to attach", func() bool { return len(a.store.Replicas()) == 1 && len(b.store.Replicas()) == 1 })
+	time.Sleep(5 * gossipInterval) // the resync and the pools have opened what they open
+	before := a.clientSeq.Load()
+	time.Sleep(10 * gossipInterval)
+	if opened := a.clientSeq.Load() - before; opened > 2 {
+		t.Fatalf("%d connections accepted over ten gossip rounds, want the pooled one", opened)
+	}
+}
+
 // A parked connection is a peer session on the home node's side from the
 // moment it is parked: the cloud node authenticates on it as it is handed
 // over, so the home's auth deadline never closes a spare link the cloud has

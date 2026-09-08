@@ -80,7 +80,7 @@ type Server struct {
 	tlsPeer   *tls.Config        // nil: plaintext peer dials
 	embedded  *memstore.Listener // set when the node runs its own store
 	memstore  *memstore.Store
-	fwd       forwarder // connections to the owners of keys written here
+	pconns    peerConns // authenticated connections to peers, for forwards and gossip
 	clock     *clock    // stamps this node's writes
 	guesses   guesses   // refused AUTHs by client address
 	connMu    sync.Mutex
@@ -319,7 +319,7 @@ func (s *Server) Stop() error {
 		close(s.linkDone)
 		s.linkWG.Wait()
 		s.links.close()
-		s.fwd.close()
+		s.pconns.close()
 		if s.cluster != nil {
 			s.cluster.stop()
 		}
