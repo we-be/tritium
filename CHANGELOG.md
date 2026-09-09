@@ -28,6 +28,11 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
 - **v0.18.3** — **`tritium-cli prefixes`**, the keyspace census: every node's keys by
   prefix and type, two SCAN walks per node. Increment 1 of the trust program
   (`docs/trust-plan.md`). CLI only; nothing to roll.
+- **v0.18.4** — **Surfaces.** `SURFACE_<name>=<rights>` names a rights set in the
+  `USER_` grammar, and a credential holds it as `@<name>` in place of inline clauses,
+  or beside them; a surface names key prefixes, never another surface, so a name is
+  one hop from the keys. Increment 2 of the trust program (`docs/trust-plan.md`).
+  No behaviour change; nothing to roll.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

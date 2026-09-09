@@ -23,34 +23,35 @@ const (
 const EmbeddedStore = "embedded"
 
 type Config struct {
-	ListenAddr              string          // LISTEN_ADDRESS: where this node accepts clients and peers
-	AdvertiseAddr           string          // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
-	JoinAddr                string          // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
-	LinkAddr                string          // LINK_ADDRESS: peers this node cannot be dialed by, comma-separated; it opens the connections and is served over them
-	MetricsAddr             string          // METRICS_ADDRESS: where GET /metrics answers scrapes; unauthenticated, so loopback or a private interface. Empty serves none
-	Password                string          // AUTH_PASSWORD: required from clients when set
-	AuthUser                string          // AUTH_USER: the user a client next to this node authenticates as; empty is the default user
-	PeerPassword            string          // PEER_PASSWORD: what nodes AUTH to each other with; required, distinct from AUTH_PASSWORD, once this node peers
-	StoreAddr               string          // SECURE_STORE_ADDRESS: RESP server this node writes through; empty runs the node's own store in-process
-	StorePassword           string          // SECURE_STORE_PASSWORD: AUTH for the store and every replica
-	StoreTLS                bool            // SECURE_STORE_TLS: verify the store's certificate instead of dialing it in the clear
-	StoreCA                 string          // SECURE_STORE_CA: PEM bundle the store's certificate must chain to; empty verifies against the system roots
-	StoreServerName         string          // SECURE_STORE_SERVER_NAME: name to verify and send as SNI; defaults to the host part of SECURE_STORE_ADDRESS
-	StoreMaxMemory          int64           // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
-	PoolSize                int             // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
-	MaxClients              int             // MAX_CLIENTS: connections a node accepts at once; more are refused. 0: no limit
-	PeerAllow               []string        // PEER_ALLOW: the only addresses this node will take as peers, comma-separated; empty takes what gossip says
-	AllowNoAuth             bool            // ALLOW_NO_AUTH=true: run without AUTH_PASSWORD on a listener that is not loopback
-	AllowSharedPeerPassword bool            // ALLOW_SHARED_PEER_PASSWORD=true: let a peering node start with PEER_PASSWORD unset or equal to AUTH_PASSWORD
-	Async                   bool            // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
-	Ownership               bool            // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
-	Electronegativity       *int            // ELECTRONEGATIVITY: this node's pull on key ownership — rendezvous points per key; nil is 1, 0 never owns a key
-	TLSCert                 string          // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
-	TLSKey                  string          // TLS_KEY: PEM private key
-	TLSCA                   string          // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
-	TLSClientAuth           bool            // TLS_CLIENT_AUTH: require client certificates (mutual TLS)
-	UsersFile               string          // USERS_FILE: a file of USER_<name> entries, one per line, with the bare name on the left
-	Users                   map[string]User // USER_<name>=<password>:<rights>: clients with only the key prefixes they name
+	ListenAddr              string            // LISTEN_ADDRESS: where this node accepts clients and peers
+	AdvertiseAddr           string            // ADVERTISE_ADDRESS: address peers dial us on; defaults to the bound address
+	JoinAddr                string            // JOIN_ADDRESS: nodes to join, comma-separated, retried for as long as they are unreachable; empty seeds a new cluster
+	LinkAddr                string            // LINK_ADDRESS: peers this node cannot be dialed by, comma-separated; it opens the connections and is served over them
+	MetricsAddr             string            // METRICS_ADDRESS: where GET /metrics answers scrapes; unauthenticated, so loopback or a private interface. Empty serves none
+	Password                string            // AUTH_PASSWORD: required from clients when set
+	AuthUser                string            // AUTH_USER: the user a client next to this node authenticates as; empty is the default user
+	PeerPassword            string            // PEER_PASSWORD: what nodes AUTH to each other with; required, distinct from AUTH_PASSWORD, once this node peers
+	StoreAddr               string            // SECURE_STORE_ADDRESS: RESP server this node writes through; empty runs the node's own store in-process
+	StorePassword           string            // SECURE_STORE_PASSWORD: AUTH for the store and every replica
+	StoreTLS                bool              // SECURE_STORE_TLS: verify the store's certificate instead of dialing it in the clear
+	StoreCA                 string            // SECURE_STORE_CA: PEM bundle the store's certificate must chain to; empty verifies against the system roots
+	StoreServerName         string            // SECURE_STORE_SERVER_NAME: name to verify and send as SNI; defaults to the host part of SECURE_STORE_ADDRESS
+	StoreMaxMemory          int64             // STORE_MAX_MEMORY: bytes the embedded store keeps before evicting the soonest-expiring keys; 0 is no limit
+	PoolSize                int               // MAX_SERVER_CONNECTIONS: connections pooled per RESP server
+	MaxClients              int               // MAX_CLIENTS: connections a node accepts at once; more are refused. 0: no limit
+	PeerAllow               []string          // PEER_ALLOW: the only addresses this node will take as peers, comma-separated; empty takes what gossip says
+	AllowNoAuth             bool              // ALLOW_NO_AUTH=true: run without AUTH_PASSWORD on a listener that is not loopback
+	AllowSharedPeerPassword bool              // ALLOW_SHARED_PEER_PASSWORD=true: let a peering node start with PEER_PASSWORD unset or equal to AUTH_PASSWORD
+	Async                   bool              // REPLICATION=async: answer once the primary has a write, feed peers from a queue; sync (default) waits for every peer
+	Ownership               bool              // KEY_OWNERSHIP=on (default): each key's writes go through one owner node, so NX and order hold cluster-wide; off writes locally first
+	Electronegativity       *int              // ELECTRONEGATIVITY: this node's pull on key ownership — rendezvous points per key; nil is 1, 0 never owns a key
+	TLSCert                 string            // TLS_CERT: PEM certificate; with TLS_KEY, serves TLS and dials peers with it
+	TLSKey                  string            // TLS_KEY: PEM private key
+	TLSCA                   string            // TLS_CA: PEM bundle that peers, and clients under TLS_CLIENT_AUTH, must chain to
+	TLSClientAuth           bool              // TLS_CLIENT_AUTH: require client certificates (mutual TLS)
+	UsersFile               string            // USERS_FILE: a file of USER_<name> entries, one per line, with the bare name on the left
+	Users                   map[string]User   // USER_<name>=<password>:<rights>: clients with only the key prefixes they name
+	Surfaces                map[string]Rights // SURFACE_<name>=<rights>: a named rights set a credential holds as @<name>
 }
 
 // Local is how to reach the node a dotenv file configures from the same
@@ -282,7 +283,10 @@ func Load(path string) (Config, error) {
 	if cfg.StoreTLS && cfg.StoreAddr == "" {
 		return Config{}, errors.New("SECURE_STORE_TLS needs SECURE_STORE_ADDRESS: the embedded store has no network to secure")
 	}
-	if cfg.Users, err = users(vals, cfg.UsersFile); err != nil {
+	if cfg.Surfaces, err = surfaces(vals); err != nil { // before the users that name them
+		return Config{}, err
+	}
+	if cfg.Users, err = users(vals, cfg.UsersFile, cfg.Surfaces); err != nil {
 		return Config{}, err
 	}
 	if cfg.AuthUser != "" {

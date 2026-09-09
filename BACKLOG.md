@@ -37,7 +37,7 @@ the loop takes the next unchecked increment from there before anything
 below, and checks it off here with its commit.
 
 - [x] 1. `tritium-cli prefixes` — the keyspace census as a command — v0.18.3, 2026-09-09
-- [ ] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name`
+- [x] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name` — v0.18.4, 2026-09-09
 - [ ] 3. the policy in one place; `peer` becomes a principal
 - [ ] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement
 - [ ] 5–8. phase 1: fan-out, weight, queued, chaos with a scoped node — then the gate

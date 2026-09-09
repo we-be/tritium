@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +70,47 @@ func TestUsersComeFromTheRightPlace(t *testing.T) {
 	}
 	if _, ok := cfg.Users["ID"]; ok || cfg.Users["svc"].Password != "pw" {
 		t.Fatalf("users: %v", cfg.Users)
+	}
+}
+
+// A surface held by name grants exactly what writing its clauses inline would.
+func TestSurfaceGrantsWhatItNames(t *testing.T) {
+	const rights = "rw:hello:,mbx:,msg:;w:id:;r:id:,devices:,grp:"
+	dir := t.TempDir()
+	named, inline := filepath.Join(dir, "named.env"), filepath.Join(dir, "inline.env")
+	os.WriteFile(named, []byte("SURFACE_public="+rights+"\nUSER_bob=pw:@public\n"), 0o600)
+	os.WriteFile(inline, []byte("USER_bob=pw:"+rights+"\n"), 0o600)
+
+	a, err := Load(named)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Load(inline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(a.Users["bob"].Rights, b.Users["bob"].Rights) {
+		t.Fatalf("@public = %+v, inline = %+v", a.Users["bob"].Rights, b.Users["bob"].Rights)
+	}
+}
+
+// A credential naming a surface that is not configured must not start as a
+// credential with fewer rights than meant; the error says which name failed.
+func TestUnconfiguredSurfaceIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	os.WriteFile(path, []byte("USER_bob=pw:@public\n"), 0o600)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "public") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A surface is one hop from a name to key prefixes: it may not hold another.
+func TestSurfacesDoNotNest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	os.WriteFile(path, []byte("SURFACE_base=r:board:\nSURFACE_more=@base;w:sig:\n"), 0o600)
+	if _, err := Load(path); err == nil {
+		t.Fatal("a surface naming a surface loaded")
 	}
 }
 
