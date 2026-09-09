@@ -53,8 +53,6 @@ type Config struct {
 	Users                   map[string]User // USER_<name>=<password>:<rights>: clients with only the key prefixes they name
 }
 
-// Load reads path as a dotenv file (empty path: none), then lets process
-// environment variables override it.
 // Local is how to reach the node a dotenv file configures from the same
 // machine: its port on loopback and what it demands of a client. Tools take
 // it through -config so the one file serves the node and its clients.
@@ -96,21 +94,21 @@ func (c Config) StoreLabel() string {
 	return c.StoreAddr
 }
 
-// ParseBytes reads a size such as 268435456, 256M, 1G or 512K.
+// ParseBytes reads a size such as 268435456, 256M, 1G, 512K or 64MB.
 func ParseBytes(raw string) (int64, error) {
-	s := strings.TrimSpace(raw)
+	s := strings.TrimSuffix(strings.ToUpper(strings.TrimSpace(raw)), "B")
 	mult := int64(1)
 	if n := len(s); n > 0 {
-		switch strings.ToUpper(s[n-1:]) {
-		case "K":
+		switch s[n-1] {
+		case 'K':
 			mult, s = 1<<10, s[:n-1]
-		case "M":
+		case 'M':
 			mult, s = 1<<20, s[:n-1]
-		case "G":
+		case 'G':
 			mult, s = 1<<30, s[:n-1]
 		}
 	}
-	n, err := strconv.ParseInt(strings.TrimSuffix(s, "B"), 10, 64)
+	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil || n < 0 {
 		return 0, fmt.Errorf("%q is not a size", raw)
 	}
@@ -158,6 +156,45 @@ func list(raw string) []string {
 	return out
 }
 
+// env is what Load reads a setting through: the process environment, then
+// the dotenv file, then a default.
+type env map[string]string
+
+func (e env) get(key, def string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return v
+	}
+	if v, ok := e[key]; ok {
+		return v
+	}
+	return def
+}
+
+func (e env) boolean(key string) (bool, error) {
+	raw := e.get(key, "false")
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("%s: %q is not a boolean", key, raw)
+	}
+	return v, nil
+}
+
+// integer reads a count no smaller than floor.
+func (e env) integer(key string, def, floor int) (int, error) {
+	raw := e.get(key, strconv.Itoa(def))
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < floor {
+		what := "a non-negative integer"
+		if floor > 0 {
+			what = "a positive integer"
+		}
+		return 0, fmt.Errorf("%s: %q is not %s", key, raw, what)
+	}
+	return n, nil
+}
+
+// Load reads path as a dotenv file (empty path: none), then lets process
+// environment variables override it.
 func Load(path string) (Config, error) {
 	vals := map[string]string{}
 	if path != "" {
@@ -167,15 +204,7 @@ func Load(path string) (Config, error) {
 		}
 		warnIfShared(path)
 	}
-	get := func(key, def string) string {
-		if v, ok := os.LookupEnv(key); ok {
-			return v
-		}
-		if v, ok := vals[key]; ok {
-			return v
-		}
-		return def
-	}
+	get := env(vals).get
 
 	cfg := Config{
 		ListenAddr:      get("LISTEN_ADDRESS", get("RPC_ADDRESS", DefaultListenAddr)), // RPC_ADDRESS: pre-RESP name
@@ -194,46 +223,49 @@ func Load(path string) (Config, error) {
 		TLSCert:         get("TLS_CERT", ""),
 		TLSKey:          get("TLS_KEY", ""),
 		TLSCA:           get("TLS_CA", ""),
+		UsersFile:       get(UsersFileVar, ""),
 	}
 
+	var err error
 	if raw := get("STORE_MAX_MEMORY", ""); raw != "" {
-		size, err := ParseBytes(raw)
-		if err != nil {
+		if cfg.StoreMaxMemory, err = ParseBytes(raw); err != nil {
 			return Config{}, fmt.Errorf("STORE_MAX_MEMORY: %w", err)
 		}
-		cfg.StoreMaxMemory = size
 	}
-
-	raw := get("MAX_CLIENTS", strconv.Itoa(DefaultMaxClients))
-	clients, err := strconv.Atoi(raw)
-	if err != nil || clients < 0 {
-		return Config{}, fmt.Errorf("MAX_CLIENTS: %q is not a non-negative integer", raw)
+	e := env(vals)
+	if cfg.MaxClients, err = e.integer("MAX_CLIENTS", DefaultMaxClients, 0); err != nil {
+		return Config{}, err
 	}
-	cfg.MaxClients = clients
-
-	raw = get("ELECTRONEGATIVITY", "1")
-	weight, err := strconv.Atoi(raw)
-	if err != nil || weight < 0 {
-		return Config{}, fmt.Errorf("ELECTRONEGATIVITY: %q is not a non-negative integer", raw)
+	weight, err := e.integer("ELECTRONEGATIVITY", 1, 0)
+	if err != nil {
+		return Config{}, err
 	}
 	cfg.Electronegativity = &weight
-
-	raw = get("MAX_SERVER_CONNECTIONS", strconv.Itoa(DefaultPoolSize))
-	n, err := strconv.Atoi(raw)
-	if err != nil || n < 1 {
-		return Config{}, fmt.Errorf("MAX_SERVER_CONNECTIONS: %q is not a positive integer", raw)
+	if cfg.PoolSize, err = e.integer("MAX_SERVER_CONNECTIONS", DefaultPoolSize, 1); err != nil {
+		return Config{}, err
 	}
-	cfg.PoolSize = n
+	for _, b := range []struct {
+		key string
+		dst *bool
+	}{
+		{"TLS_CLIENT_AUTH", &cfg.TLSClientAuth},
+		{"ALLOW_NO_AUTH", &cfg.AllowNoAuth},
+		{"SECURE_STORE_TLS", &cfg.StoreTLS},
+		{"ALLOW_SHARED_PEER_PASSWORD", &cfg.AllowSharedPeerPassword},
+	} {
+		if *b.dst, err = e.boolean(b.key); err != nil {
+			return Config{}, err
+		}
+	}
 
-	switch raw = get("KEY_OWNERSHIP", "on"); strings.ToLower(raw) {
+	switch raw := get("KEY_OWNERSHIP", "on"); strings.ToLower(raw) {
 	case "on", "true", "1":
 		cfg.Ownership = true
 	case "off", "false", "0":
 	default:
 		return Config{}, fmt.Errorf("KEY_OWNERSHIP: %q is not on or off", raw)
 	}
-
-	switch raw = get("REPLICATION", "sync"); strings.ToLower(raw) {
+	switch raw := get("REPLICATION", "sync"); strings.ToLower(raw) {
 	case "sync":
 	case "async":
 		cfg.Async = true
@@ -241,22 +273,6 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("REPLICATION: %q is not sync or async", raw)
 	}
 
-	raw = get("TLS_CLIENT_AUTH", "false")
-	if cfg.TLSClientAuth, err = strconv.ParseBool(raw); err != nil {
-		return Config{}, fmt.Errorf("TLS_CLIENT_AUTH: %q is not a boolean", raw)
-	}
-	raw = get("ALLOW_NO_AUTH", "false")
-	if cfg.AllowNoAuth, err = strconv.ParseBool(raw); err != nil {
-		return Config{}, fmt.Errorf("ALLOW_NO_AUTH: %q is not a boolean", raw)
-	}
-	raw = get("SECURE_STORE_TLS", "false")
-	if cfg.StoreTLS, err = strconv.ParseBool(raw); err != nil {
-		return Config{}, fmt.Errorf("SECURE_STORE_TLS: %q is not a boolean", raw)
-	}
-	raw = get("ALLOW_SHARED_PEER_PASSWORD", "false")
-	if cfg.AllowSharedPeerPassword, err = strconv.ParseBool(raw); err != nil {
-		return Config{}, fmt.Errorf("ALLOW_SHARED_PEER_PASSWORD: %q is not a boolean", raw)
-	}
 	if (cfg.TLSCert == "") != (cfg.TLSKey == "") {
 		return Config{}, errors.New("TLS_CERT and TLS_KEY must be set together")
 	}
@@ -266,7 +282,6 @@ func Load(path string) (Config, error) {
 	if cfg.StoreTLS && cfg.StoreAddr == "" {
 		return Config{}, errors.New("SECURE_STORE_TLS needs SECURE_STORE_ADDRESS: the embedded store has no network to secure")
 	}
-	cfg.UsersFile = get(UsersFileVar, "")
 	if cfg.Users, err = users(vals, cfg.UsersFile); err != nil {
 		return Config{}, err
 	}

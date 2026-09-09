@@ -81,3 +81,17 @@ func TestMayIsExactWithoutASeparator(t *testing.T) {
 		}
 	}
 }
+
+// A size takes a K, M or G suffix, with or without a B, and nothing else.
+func TestParseBytes(t *testing.T) {
+	for raw, want := range map[string]int64{"268435456": 268435456, "256M": 256 << 20, "1G": 1 << 30, "512K": 512 << 10, "64MB": 64 << 20, " 2k ": 2 << 10} {
+		if got, err := ParseBytes(raw); err != nil || got != want {
+			t.Fatalf("ParseBytes(%q) = %d, %v; want %d", raw, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "-1", "1T", "lots"} {
+		if _, err := ParseBytes(bad); err == nil {
+			t.Fatalf("ParseBytes(%q) was accepted", bad)
+		}
+	}
+}
