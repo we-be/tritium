@@ -98,197 +98,241 @@ func run(conn *tritium.Client, dir, cmd string, args []string) error {
 			defer func() { serveFlags = nil }()
 		}
 	}
-
 	if cmd == "init" {
-		if len(args) != 1 {
-			return errors.New("usage: init NAME")
-		}
-		if _, err := os.Stat(idFile); err == nil {
-			return fmt.Errorf("%s already exists; remove it to start over", idFile)
-		}
-		id, err := messenger.NewIdentity(args[0])
-		if err != nil {
+		if err := initIdentity(conn, dir, idFile, args, serveFlags != nil); err != nil || serveFlags == nil {
 			return err
-		}
-		if err := messenger.New(conn, id).Publish(); err != nil {
-			return err
-		}
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-		if err := writeJSON(idFile, id); err != nil {
-			return err
-		}
-		out := os.Stdout
-		if serveFlags != nil {
-			out = os.Stderr // serve's stdout is the message stream
-		}
-		fmt.Fprintf(out, "%s  %s\n", id.Name, id.Fingerprint())
-		if serveFlags == nil {
-			return nil
 		}
 		cmd = "serve" // created for serve: carry on
 	}
 
-	var id messenger.Identity
-	if err := readJSON(idFile, &id); err != nil {
-		return fmt.Errorf("no identity yet; run: tritium-msg init NAME (%w)", err)
+	st, err := open(conn, idFile, stateFile)
+	if err != nil {
+		return err
 	}
-	client := messenger.New(conn, &id)
-	if data, err := os.ReadFile(stateFile); err == nil {
-		if err := client.Restore(data); err != nil {
-			return fmt.Errorf("%s: %w", stateFile, err)
-		}
-	}
-	save := func() error {
-		st, err := client.State()
-		if err != nil {
-			return err
-		}
-		return writeFile(stateFile, st)
-	}
-	publish := func() error { // rotation may have changed the identity
-		if err := client.Publish(); err != nil {
-			return err
-		}
-		return writeJSON(idFile, &id)
-	}
-
 	switch cmd {
 	case "serve":
-		return serve(client, &id, idFile, save, serveFlags)
+		return serve(st, serveFlags)
 	case "me":
-		fmt.Printf("%s  %s\n", id.Name, id.Fingerprint())
+		fmt.Printf("%s  %s\n", st.id.Name, st.id.Fingerprint())
 	case "status":
-		sessions, hellos, err := client.Status()
-		if err != nil {
-			return err
-		}
-		fmt.Printf("%s  %s\n", id.Name, id.Fingerprint())
-		if hellos > 0 {
-			fmt.Printf("%d hello(s) waiting\n", hellos)
-		}
-		if len(sessions) == 0 {
-			fmt.Println("no sessions")
-			return nil
-		}
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "PEER\tFINGERPRINT\tLAST USED\tSENT\tRECEIVED\tWAITING")
-		for _, s := range sessions {
-			fmt.Fprintf(w, "%s\t%s\t%s ago\t%d\t%d\t%d\n", s.Peer.Name, s.Peer.Fingerprint(), time.Since(s.Touched).Round(time.Second), s.Sent, s.Received, s.Waiting)
-		}
-		w.Flush()
+		return status(st)
 	case "lookup":
 		if len(args) != 1 {
 			return errors.New("usage: lookup NAME")
 		}
-		b, err := client.Lookup(args[0])
+		b, err := st.client.Lookup(args[0])
 		if err != nil {
 			return err
 		}
 		fmt.Printf("%s  %s\n", b.Name, b.Fingerprint())
 	case "send":
-		fs := flag.NewFlagSet("send", flag.ContinueOnError)
-		fp := fs.String("fp", "", "refuse unless NAME's published fingerprint is exactly this; the message then goes to that identity alone")
-		if err := fs.Parse(args); err != nil {
-			return err
-		}
-		if fs.NArg() < 2 {
-			return errors.New("usage: send [-fp FP] NAME TEXT | send [-fp FP] NAME -file PATH | send [-fp FP] NAME -   (stdin)")
-		}
-		name := fs.Arg(0)
-		body, err := messageBody(fs.Args()[1:])
-		if err != nil {
-			return err
-		}
-		if err := publish(); err != nil {
-			return err
-		}
-		if *fp != "" { // a secret goes to the fingerprint read on the other machine, whatever the store says
-			b, err := client.Lookup(name)
-			if err != nil {
-				return err
-			}
-			if b.Fingerprint() != *fp {
-				return fmt.Errorf("%s is published by %s, not %s: refusing to send", name, b.Fingerprint(), *fp)
-			}
-			if err := client.Send(b, body); err != nil {
-				return err
-			}
-			return save()
-		}
-		// fans out to every device certified under NAME, not just its primary identity
-		if err := client.SendAll(name, body); err != nil {
-			return err
-		}
-		return save()
+		return send(st, args)
 	case "device":
-		if err := publish(); err != nil {
+		if err := st.publish(); err != nil {
 			return err
 		}
-		return device(client, &id, args)
+		return device(st.client, st.id, args)
 	case "group":
-		if err := publish(); err != nil {
+		if err := st.publish(); err != nil {
 			return err
 		}
-		return group(client, args)
+		return group(st.client, args)
 	case "recv":
-		fs := flag.NewFlagSet("recv", flag.ContinueOnError)
-		watch := fs.Bool("watch", false, "keep polling until interrupted")
-		every := fs.Duration("every", 2*time.Second, "poll interval with -watch")
-		raw := fs.Bool("raw", false, "print each body alone, nothing else — a received file lands as sent")
-		fromFP := fs.String("fp", "", "with -raw: print only what this fingerprint sent, so a secret is taken from the sender you expect")
-		if err := fs.Parse(args); err != nil {
-			return err
-		}
-		if err := publish(); err != nil {
-			return err
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		for {
-			msgs, err := client.Receive()
-			if err != nil {
-				return err
-			}
-			if err := save(); err != nil { // before printing: a message is deleted only once its receipt is on disk
-				return err
-			}
-			for _, m := range msgs {
-				if *raw {
-					if *fromFP == "" || m.From.Fingerprint() == *fromFP {
-						os.Stdout.Write(m.Body)
-					} else {
-						fmt.Fprintf(os.Stderr, "tritium-msg: dropped a message from %s (%s), not the pinned sender\n", m.From.Name, m.From.Fingerprint())
-					}
-					continue
-				}
-				via := ""
-				if m.Group != "" {
-					via = " #" + plain(m.Group)
-				}
-				who := plain(m.From.Name)
-				if !m.Verified {
-					who += " (unverified name)"
-				}
-				fmt.Printf("[%s] %s %s%s: %s\n", m.Time.Local().Format("15:04:05"), who, m.From.Fingerprint(), via, plain(string(m.Body)))
-			}
-			if len(msgs) > 0 {
-				continue // another batch may be waiting, and this one is deleted by the next call
-			}
-			if !*watch {
-				return nil
-			}
-			select {
-			case <-ctx.Done():
-				return nil
-			case <-time.After(*every):
-			}
-		}
+		return recv(st, args)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
 	return nil
+}
+
+// initIdentity creates and publishes NAME and stores it. Created on serve's
+// behalf, the announcement goes to stderr, since serve's stdout is the
+// message stream.
+func initIdentity(conn *tritium.Client, dir, idFile string, args []string, forServe bool) error {
+	if len(args) != 1 {
+		return errors.New("usage: init NAME")
+	}
+	if _, err := os.Stat(idFile); err == nil {
+		return fmt.Errorf("%s already exists; remove it to start over", idFile)
+	}
+	id, err := messenger.NewIdentity(args[0])
+	if err != nil {
+		return err
+	}
+	if err := messenger.New(conn, id).Publish(); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := writeJSON(idFile, id); err != nil {
+		return err
+	}
+	out := os.Stdout
+	if forServe {
+		out = os.Stderr
+	}
+	fmt.Fprintf(out, "%s  %s\n", id.Name, id.Fingerprint())
+	return nil
+}
+
+// state is an identity at home in its -state directory: the client speaking
+// for it, and the two files written back after anything that changes them.
+type state struct {
+	client            *messenger.Client
+	id                *messenger.Identity
+	idFile, stateFile string
+}
+
+// open reads the identity and its sessions from the state files.
+func open(conn *tritium.Client, idFile, stateFile string) (*state, error) {
+	st := &state{id: &messenger.Identity{}, idFile: idFile, stateFile: stateFile}
+	if err := readJSON(idFile, st.id); err != nil {
+		return nil, fmt.Errorf("no identity yet; run: tritium-msg init NAME (%w)", err)
+	}
+	st.client = messenger.New(conn, st.id)
+	if data, err := os.ReadFile(stateFile); err == nil {
+		if err := st.client.Restore(data); err != nil {
+			return nil, fmt.Errorf("%s: %w", stateFile, err)
+		}
+	}
+	return st, nil
+}
+
+// save writes the sessions back.
+func (st *state) save() error {
+	data, err := st.client.State()
+	if err != nil {
+		return err
+	}
+	return writeFile(st.stateFile, data)
+}
+
+// publish republishes the identity and stores it again, since publishing
+// may rotate the prekey.
+func (st *state) publish() error {
+	if err := st.client.Publish(); err != nil {
+		return err
+	}
+	return writeJSON(st.idFile, st.id)
+}
+
+// status lists every session: peer, last use, messages each way, unread waiting.
+func status(st *state) error {
+	sessions, hellos, err := st.client.Status()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s  %s\n", st.id.Name, st.id.Fingerprint())
+	if hellos > 0 {
+		fmt.Printf("%d hello(s) waiting\n", hellos)
+	}
+	if len(sessions) == 0 {
+		fmt.Println("no sessions")
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "PEER\tFINGERPRINT\tLAST USED\tSENT\tRECEIVED\tWAITING")
+	for _, s := range sessions {
+		fmt.Fprintf(w, "%s\t%s\t%s ago\t%d\t%d\t%d\n", s.Peer.Name, s.Peer.Fingerprint(), time.Since(s.Touched).Round(time.Second), s.Sent, s.Received, s.Waiting)
+	}
+	return w.Flush()
+}
+
+// send delivers to every device certified under NAME, or with -fp to the
+// one identity with that fingerprint alone, whatever the store says.
+func send(st *state, args []string) error {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	fp := fs.String("fp", "", "refuse unless NAME's published fingerprint is exactly this; the message then goes to that identity alone")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
+		return errors.New("usage: send [-fp FP] NAME TEXT | send [-fp FP] NAME -file PATH | send [-fp FP] NAME -   (stdin)")
+	}
+	name := fs.Arg(0)
+	body, err := messageBody(fs.Args()[1:])
+	if err != nil {
+		return err
+	}
+	if err := st.publish(); err != nil {
+		return err
+	}
+	if *fp != "" { // a secret goes to the fingerprint read on the other machine
+		b, err := st.client.Lookup(name)
+		if err != nil {
+			return err
+		}
+		if b.Fingerprint() != *fp {
+			return fmt.Errorf("%s is published by %s, not %s: refusing to send", name, b.Fingerprint(), *fp)
+		}
+		if err := st.client.Send(b, body); err != nil {
+			return err
+		}
+		return st.save()
+	}
+	if err := st.client.SendAll(name, body); err != nil {
+		return err
+	}
+	return st.save()
+}
+
+// recv prints what is waiting, and with -watch keeps polling. A message is
+// deleted from the node by the next Receive, so its receipt is on disk
+// before it is printed.
+func recv(st *state, args []string) error {
+	fs := flag.NewFlagSet("recv", flag.ContinueOnError)
+	watch := fs.Bool("watch", false, "keep polling until interrupted")
+	every := fs.Duration("every", 2*time.Second, "poll interval with -watch")
+	raw := fs.Bool("raw", false, "print each body alone, nothing else — a received file lands as sent")
+	fromFP := fs.String("fp", "", "with -raw: print only what this fingerprint sent, so a secret is taken from the sender you expect")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := st.publish(); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	for {
+		msgs, err := st.client.Receive()
+		if err != nil {
+			return err
+		}
+		if err := st.save(); err != nil {
+			return err
+		}
+		for _, m := range msgs {
+			if *raw {
+				if *fromFP == "" || m.From.Fingerprint() == *fromFP {
+					os.Stdout.Write(m.Body)
+				} else {
+					fmt.Fprintf(os.Stderr, "tritium-msg: dropped a message from %s (%s), not the pinned sender\n", m.From.Name, m.From.Fingerprint())
+				}
+				continue
+			}
+			via := ""
+			if m.Group != "" {
+				via = " #" + plain(m.Group)
+			}
+			who := plain(m.From.Name)
+			if !m.Verified {
+				who += " (unverified name)"
+			}
+			fmt.Printf("[%s] %s %s%s: %s\n", m.Time.Local().Format("15:04:05"), who, m.From.Fingerprint(), via, plain(string(m.Body)))
+		}
+		if len(msgs) > 0 {
+			continue // another batch may be waiting
+		}
+		if !*watch {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(*every):
+		}
+	}
 }
 
 // plain keeps a string from steering the terminal: control characters other
@@ -483,19 +527,14 @@ type outbound struct {
 // line and sends back whatever JSON lines arrive on stdin. It ends when stdin
 // closes (the parent went away) or on SIGTERM. The identity is republished
 // hourly, which also rotates the prekey, and idle sessions are pruned.
-func serve(client *messenger.Client, id *messenger.Identity, idFile string, save func() error, o *serveOptions) error {
+func serve(st *state, o *serveOptions) error {
+	client := st.client
 	client.TTL = o.ttl
-	var mu sync.Mutex           // the client is not goroutine-safe: one lock for it and for state.json
-	republish := func() error { // Publish may rotate the prekey, so the identity is stored again
-		if err := client.Publish(); err != nil {
-			return err
-		}
-		return writeJSON(idFile, id)
-	}
-	if err := republish(); err != nil {
+	var mu sync.Mutex // the client is not goroutine-safe: one lock for it and for state.json
+	if err := st.publish(); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "serving as %s  %s\n", id.Name, id.Fingerprint())
+	fmt.Fprintf(os.Stderr, "serving as %s  %s\n", st.id.Name, st.id.Fingerprint())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -515,7 +554,7 @@ func serve(client *messenger.Client, id *messenger.Identity, idFile string, save
 			mu.Lock()
 			if err := client.Reply(out.FP, body); err != nil {
 				fmt.Fprintln(os.Stderr, "tritium-msg: reply:", err)
-			} else if err := save(); err != nil {
+			} else if err := st.save(); err != nil {
 				fmt.Fprintln(os.Stderr, "tritium-msg: save:", err)
 			}
 			mu.Unlock()
@@ -528,12 +567,12 @@ func serve(client *messenger.Client, id *messenger.Identity, idFile string, save
 		mu.Lock()
 		msgs, err := client.Receive()
 		if err == nil {
-			err = save()
+			err = st.save()
 		}
 		if time.Since(lastHousekeeping) > time.Hour {
 			lastHousekeeping = time.Now()
 			client.Prune(o.prune)
-			if perr := republish(); perr != nil {
+			if perr := st.publish(); perr != nil {
 				fmt.Fprintln(os.Stderr, "tritium-msg: republish:", perr)
 			}
 		}

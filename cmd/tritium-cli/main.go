@@ -68,21 +68,7 @@ func run(client *tritium.Client, opts tritium.ClientOptions, cmd string, args []
 		if len(args) != 1 {
 			return errors.New("usage: get KEY")
 		}
-		typ, err := client.Type(args[0])
-		if err != nil {
-			return err
-		}
-		if typ == "zset" {
-			return printZSet(client, args[0])
-		}
-		v, err := client.Get(args[0])
-		if err != nil {
-			return err
-		}
-		os.Stdout.Write(v)
-		if len(v) == 0 || v[len(v)-1] != '\n' {
-			fmt.Println()
-		}
+		return get(client, args[0])
 	case "set":
 		fs := flag.NewFlagSet("set", flag.ContinueOnError)
 		ttl := fs.Int("ttl", 0, "seconds until the key expires (0: server default)")
@@ -131,28 +117,52 @@ func run(client *tritium.Client, opts tritium.ClientOptions, cmd string, args []
 		}
 		fmt.Print(bulk(v))
 	case "events":
-		fs := flag.NewFlagSet("events", flag.ContinueOnError)
-		since := fs.Duration("since", 24*time.Hour, "how far back to look")
-		node := fs.String("node", "", "only a node whose id contains this")
-		if err := fs.Parse(args); err != nil {
-			return err
-		}
-		nodes, err := client.Nodes()
-		if err != nil {
-			return err
-		}
-		ids := make([]string, 0, len(nodes))
-		for id := range nodes {
-			ids = append(ids, id)
-		}
-		events, err := client.Events(ids, *since)
-		if err != nil {
-			return err
-		}
-		printEvents(events, *node)
+		return events(client, args)
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+	return nil
+}
+
+// get prints a string as stored, with a newline unless it ends in one, or
+// a sorted set one member per line.
+func get(client *tritium.Client, key string) error {
+	typ, err := client.Type(key)
+	if err != nil {
+		return err
+	}
+	if typ == "zset" {
+		return printZSet(client, key)
+	}
+	v, err := client.Get(key)
+	if err != nil {
+		return err
+	}
+	os.Stdout.Write(v)
+	if len(v) == 0 || v[len(v)-1] != '\n' {
+		fmt.Println()
+	}
+	return nil
+}
+
+// events prints the fleet's log from this node's store: every node's
+// entries since -since, oldest first, narrowed to one node by -node.
+func events(client *tritium.Client, args []string) error {
+	fs := flag.NewFlagSet("events", flag.ContinueOnError)
+	since := fs.Duration("since", 24*time.Hour, "how far back to look")
+	node := fs.String("node", "", "only a node whose id contains this")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	nodes, err := client.Nodes()
+	if err != nil {
+		return err
+	}
+	events, err := client.Events(slices.Collect(maps.Keys(nodes)), *since)
+	if err != nil {
+		return err
+	}
+	printEvents(events, *node)
 	return nil
 }
 
