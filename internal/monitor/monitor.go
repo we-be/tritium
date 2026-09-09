@@ -17,7 +17,7 @@ const dialTimeout = time.Second
 
 type Monitor struct {
 	addrs []string
-	opts  tritium.ClientOptions // Password and TLS are used; Address and Timeout are set per node
+	opts  tritium.ClientOptions // User, Password and TLS are used; Address and Timeout are set per node
 }
 
 // New polls the given node addresses in order until one answers.

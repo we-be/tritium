@@ -18,7 +18,7 @@ func OptionsFromEnv(path string) (ClientOptions, error) {
 		return ClientOptions{}, err
 	}
 	opts := ClientOptions{Address: loc.Addr, User: loc.User, Password: loc.Password, Timeout: 5 * time.Second}
-	if loc.CA != "" {
+	if loc.CA != "" || loc.TLS { // a node serving TLS under a public certificate has no CA to name
 		if opts.TLS, err = TLSConfig(loc.CA); err != nil {
 			return ClientOptions{}, err
 		}

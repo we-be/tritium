@@ -40,64 +40,33 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/cli"
 	"github.com/we-be/tritium/pkg/messenger"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
 	home, _ := os.UserHomeDir()
-	var configTLS bool // the node the -config file describes serves TLS
-	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
-	addr := flag.String("addr", "localhost:8080", "node address")
-	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
-	user := flag.String("user", os.Getenv("TRITIUM_USER"), "AUTH as this user instead of the default one (default $TRITIUM_USER)")
-	useTLS := flag.Bool("tls", false, "connect with TLS")
-	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
+	node := cli.Flags(flag.CommandLine, "addr", "localhost:8080", "node address")
 	dir := flag.String("state", filepath.Join(home, ".tritium-msg"), "directory holding identity and session state")
 	flag.Usage = usage
 	flag.Parse()
-	if *configPath != "" {
-		loc, err := config.LoadLocal(*configPath)
-		if err != nil {
-			fail(err)
-		}
-		configTLS = loc.TLS
-		set := map[string]bool{}
-		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		if !set["addr"] {
-			*addr = loc.Addr
-		}
-		if !set["password"] {
-			*password = loc.Password
-		}
-		if !set["user"] && *user == "" {
-			*user = loc.User
-		}
-		if !set["ca"] && loc.CA != "" {
-			*ca = loc.CA
-		}
-	}
 	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-
-	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, User: *user, Password: *password}
-	if *useTLS || *ca != "" || configTLS {
-		var err error
-		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
-			fail(err)
-		}
+	opts, err := node.Options()
+	if err != nil {
+		cli.Fail(err)
 	}
 	conn, err := tritium.NewClient(&opts)
 	if err != nil {
-		fail(err)
+		cli.Fail(err)
 	}
 	defer conn.Close()
 
 	if err := run(conn, *dir, flag.Arg(0), flag.Args()[1:]); err != nil {
-		fail(err)
+		cli.Fail(err)
 	}
 }
 
@@ -641,9 +610,4 @@ func readJSON(path string, v any) error {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: tritium-msg [flags] init NAME | me | status | lookup NAME | send NAME TEXT | recv [-watch] | ask [-fp FP] NAME [TEXT] | serve [-name NAME] | device authorize DEVICE FINGERPRINT | device list | group create/add/remove/send/list NAME ...")
 	flag.PrintDefaults()
-}
-
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, "tritium-msg:", err)
-	os.Exit(1)
 }

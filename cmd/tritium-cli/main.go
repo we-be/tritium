@@ -23,69 +23,37 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/cli"
 	"github.com/we-be/tritium/pkg/storage"
 	"github.com/we-be/tritium/pkg/tritium"
 )
 
 func main() {
-	var configTLS bool // the node the -config file describes serves TLS
-	configPath := flag.String("config", "", "a node's dotenv file: fills -addr, -password and -ca from it (explicit flags win)")
-	addr := flag.String("addr", "localhost:8080", "node address")
-	password := flag.String("password", os.Getenv("TRITIUM_PASSWORD"), "AUTH password (default $TRITIUM_PASSWORD, which keeps it off the command line)")
-	user := flag.String("user", os.Getenv("TRITIUM_USER"), "AUTH as this user instead of the default one (default $TRITIUM_USER)")
-	useTLS := flag.Bool("tls", false, "connect with TLS")
-	ca := flag.String("ca", "", "PEM bundle to verify the node against (implies -tls)")
+	node := cli.Flags(flag.CommandLine, "addr", "localhost:8080", "node address")
 	key := flag.String("key", os.Getenv("TRITIUM_KEY"), "32-byte encryption key as hex or base64; values are sealed client-side (default $TRITIUM_KEY)")
 	flag.Usage = usage
 	flag.Parse()
-	if *configPath != "" {
-		loc, err := config.LoadLocal(*configPath)
-		if err != nil {
-			fail(err)
-		}
-		configTLS = loc.TLS
-		set := map[string]bool{}
-		flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
-		if !set["addr"] {
-			*addr = loc.Addr
-		}
-		if !set["password"] {
-			*password = loc.Password
-		}
-		if !set["user"] && *user == "" {
-			*user = loc.User
-		}
-		if !set["ca"] && loc.CA != "" {
-			*ca = loc.CA
-		}
-	}
 	if flag.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-
-	opts := tritium.ClientOptions{Address: *addr, Timeout: 5 * time.Second, User: *user, Password: *password}
-	if *key != "" {
-		var err error
-		if opts.Key, err = tritium.ParseKey(*key); err != nil {
-			fail(err)
-		}
+	opts, err := node.Options()
+	if err != nil {
+		cli.Fail(err)
 	}
-	if *useTLS || *ca != "" || configTLS {
-		var err error
-		if opts.TLS, err = tritium.TLSConfig(*ca); err != nil {
-			fail(err)
+	if *key != "" {
+		if opts.Key, err = tritium.ParseKey(*key); err != nil {
+			cli.Fail(err)
 		}
 	}
 	client, err := tritium.NewClient(&opts)
 	if err != nil {
-		fail(err)
+		cli.Fail(err)
 	}
 	defer client.Close()
 
 	if err := run(client, opts, flag.Arg(0), flag.Args()[1:]); err != nil {
-		fail(err)
+		cli.Fail(err)
 	}
 }
 
@@ -188,8 +156,6 @@ func run(client *tritium.Client, opts tritium.ClientOptions, cmd string, args []
 	return nil
 }
 
-// scanKeys walks every SCAN page for pattern and prints each key with its
-// type and TTL — what KEYS would show, without the O(n) footgun.
 // printZSet lists a sorted set (a mubs board, the fleet index) as one
 // "score<TAB>member" line each, lowest score first, since GET refuses the type.
 func printZSet(client *tritium.Client, key string) error {
@@ -214,6 +180,8 @@ func bulk(v any) string {
 	return fmt.Sprint(v)
 }
 
+// scanKeys walks every SCAN page for pattern and prints each key with its
+// type and TTL — what KEYS would show, without the O(n) footgun.
 func scanKeys(client *tritium.Client, pattern string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "KEY\tTYPE\tTTL")
@@ -362,9 +330,4 @@ func printEvents(events []storage.Event, node string) {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | where KEY | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
 	flag.PrintDefaults()
-}
-
-func fail(err error) {
-	fmt.Fprintln(os.Stderr, "tritium-cli:", err)
-	os.Exit(1)
 }
