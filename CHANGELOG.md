@@ -18,6 +18,13 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
 - **v0.18.1** — **Homebrew.** Every release attaches its own `tritium.rb` (version and
   checksums filled in by `make formula`), and the tap `we-be/homebrew-tritium` copies the
   latest one, so `brew install we-be/tritium/tritium` installs the current release.
+- **v0.18.2** — **Code quality.** One flags package behind every tool: `-config` fills
+  `-user` as well, a flag given wins, then the file, then the environment, and
+  `tritium-load` and `tritium-monitor` read `$TRITIUM_PASSWORD` and reach a TLS node like
+  the others. `OptionsFromEnv` dials a TLS node with a public certificate over TLS. The
+  embedded store dispatches through a command table (`DEL` and `EXISTS` want a key, as a
+  real server does), `STORE_MAX_MEMORY=64MB` reads, and the long functions in
+  `tritium-msg`, `config` and `load` are split. No wire change; nothing to roll.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
