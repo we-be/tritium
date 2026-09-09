@@ -11,6 +11,7 @@ import (
 
 const askPoll = 200 * time.Millisecond
 
+// What Ask ends with when no reply can be taken.
 var (
 	ErrFingerprint = errors.New("messenger: the peer's fingerprint is not the pinned one")
 	ErrTimeout     = errors.New("messenger: no reply before the deadline")

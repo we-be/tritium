@@ -53,6 +53,7 @@ const (
 	prekeyGrace    = 30 * 24 * time.Hour // how long a replaced prekey still answers hellos made against it
 )
 
+// What a bundle, a name or a hello is refused for.
 var (
 	ErrBadBundle     = errors.New("messenger: bundle is malformed or its prekey signature is invalid")
 	ErrBadName       = errors.New("messenger: a name is printable text of at most 128 bytes")
@@ -66,7 +67,7 @@ var (
 // newest prekey is the published one; replaced ones answer hellos made
 // against earlier bundles until their grace period ends.
 type Identity struct {
-	Name      string
+	Name      string // published under id:<Name>; ValidName says what one may be
 	signing   ed25519.PrivateKey
 	agreement *ecdh.PrivateKey
 	prekeys   []prekey // newest first
@@ -82,6 +83,8 @@ func newPrekey(now time.Time) (prekey, error) {
 	return prekey{k, now}, err
 }
 
+// NewIdentity makes fresh keys under name, with one prekey; Publish puts
+// its bundle on the plane.
 func NewIdentity(name string) (*Identity, error) {
 	if !ValidName(name) {
 		return nil, ErrBadName
@@ -141,11 +144,11 @@ func (id *Identity) prekeyFor(pub []byte) *ecdh.PrivateKey {
 // id:<name>.
 type Bundle struct {
 	V         int    `json:"v,omitempty"` // 2: the signature covers the signing key too; absent: the first form
-	Name      string `json:"name"`
-	Signing   []byte `json:"signing"`    // Ed25519 public key
-	Agreement []byte `json:"agreement"`  // X25519 public key
-	Prekey    []byte `json:"prekey"`     // X25519 public key
-	PrekeySig []byte `json:"prekey_sig"` // Ed25519 signature over the name and every public key
+	Name      string `json:"name"`        // what the identity calls itself; Verified on a Message says whether the plane agrees
+	Signing   []byte `json:"signing"`     // Ed25519 public key
+	Agreement []byte `json:"agreement"`   // X25519 public key
+	Prekey    []byte `json:"prekey"`      // X25519 public key
+	PrekeySig []byte `json:"prekey_sig"`  // Ed25519 signature over the name and every public key
 }
 
 // bundleVersion is what Bundle() signs now: form 2 puts the signing key
@@ -180,6 +183,7 @@ func ValidName(name string) bool {
 	return true
 }
 
+// Bundle is the identity's public half, carrying its newest prekey.
 func (id *Identity) Bundle() Bundle {
 	b := Bundle{
 		V:         bundleVersion,
@@ -192,6 +196,7 @@ func (id *Identity) Bundle() Bundle {
 	return b
 }
 
+// Fingerprint is the identity's, as its bundle renders it.
 func (id *Identity) Fingerprint() string { return id.Bundle().Fingerprint() }
 
 // Verify checks the bundle's shape and that its name and keys were signed
@@ -241,6 +246,7 @@ func (id *Identity) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
+// UnmarshalJSON reads what MarshalJSON wrote, checking every key's length.
 func (id *Identity) UnmarshalJSON(data []byte) error {
 	var j identityJSON
 	if err := json.Unmarshal(data, &j); err != nil {

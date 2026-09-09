@@ -24,6 +24,8 @@ import (
 // ErrNotFound is returned by Get for a missing or expired key.
 var ErrNotFound = storage.ErrNotFound
 
+// ClientOptions says where the node is and how to speak to it. The zero
+// value reaches localhost:8080 in the clear, without AUTH.
 type ClientOptions struct {
 	Address  string        // host:port of a node; default localhost:8080
 	Timeout  time.Duration // dial timeout and per-call deadline; default 10s
@@ -286,6 +288,8 @@ func (c *Client) Events(nodeIDs []string, since time.Duration) ([]storage.Event,
 	return events, nil
 }
 
+// Ping checks that the node answers, redialing first if the connection
+// had dropped.
 func (c *Client) Ping() error {
 	_, err := c.do("PING")
 	return err
@@ -297,6 +301,8 @@ func (c *Client) Do(args ...string) (any, error) {
 	return c.do(args...)
 }
 
+// Close drops the connection. The client stays usable: the next call
+// redials.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

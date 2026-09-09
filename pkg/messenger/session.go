@@ -23,6 +23,7 @@ const (
 	maxSkippedKeys = 2000 // keys kept for messages that never arrived; oldest go first
 )
 
+// What a message is refused for.
 var (
 	ErrReplay      = errors.New("messenger: message already received")
 	ErrTooFarAhead = errors.New("messenger: too many messages missing before this one")
@@ -40,29 +41,29 @@ const sessionFormat = 4 // bumped with the wire format; older sessions are dropp
 // ratchet header travels encrypted under a per-direction header key that
 // advances with the root, so a node cannot even count messages per chain.
 type Session struct {
-	Format        int                `json:"fmt"`
-	Peer          Bundle             `json:"peer"`
-	Root          []byte             `json:"rk"`
-	Ratchet       []byte             `json:"dhs"`           // our current ratchet private key
-	PeerRatchet   []byte             `json:"dhr,omitempty"` // the peer's current ratchet public key
-	SendChain     []byte             `json:"cks,omitempty"`
-	RecvChain     []byte             `json:"ckr,omitempty"`
+	Format        int                `json:"fmt"`            // the wire format it speaks; an older one is dropped on restore
+	Peer          Bundle             `json:"peer"`           // who it is with
+	Root          []byte             `json:"rk"`             // root key: advanced by every Diffie-Hellman ratchet step
+	Ratchet       []byte             `json:"dhs"`            // our current ratchet private key
+	PeerRatchet   []byte             `json:"dhr,omitempty"`  // the peer's current ratchet public key
+	SendChain     []byte             `json:"cks,omitempty"`  // chain key for what we send, advanced per message
+	RecvChain     []byte             `json:"ckr,omitempty"`  // chain key for what we receive
 	SendHeader    []byte             `json:"hks,omitempty"`  // header key for what we send
 	RecvHeader    []byte             `json:"hkr,omitempty"`  // header key for what we receive
 	NextSend      []byte             `json:"nhks,omitempty"` // header keys for after the next ratchet step
 	NextRecv      []byte             `json:"nhkr,omitempty"`
-	Ns            uint32             `json:"ns"`
-	Nr            uint32             `json:"nr"`
-	PN            uint32             `json:"pn"`                // length of our previous sending chain
-	Skipped       map[string]skipped `json:"skipped,omitempty"` // message keys for messages that arrived out of order, by header key and number
-	Outbox        string             `json:"outbox"`            // mailbox we post to
-	Inbox         string             `json:"inbox"`             // mailbox we poll
-	Seen          []string           `json:"seen,omitempty"`    // inbox entries read by the last Receive, deleted by the next
-	Hello         *helloHeader       `json:"hello,omitempty"`   // our opening keys, sent until the peer answers
-	PeerEphemeral []byte             `json:"peer_ephemeral,omitempty"`
-	Touched       time.Time          `json:"touched,omitzero"`  // last send or successful receive; Prune uses it
-	Checked       bool               `json:"checked,omitempty"` // whether Verified has been settled against id:<name>
-	Verified      bool               `json:"verified,omitempty"`
+	Ns            uint32             `json:"ns"`                       // messages sent in the current chain
+	Nr            uint32             `json:"nr"`                       // messages received in the current chain
+	PN            uint32             `json:"pn"`                       // length of our previous sending chain
+	Skipped       map[string]skipped `json:"skipped,omitempty"`        // message keys for messages that arrived out of order, by header key and number
+	Outbox        string             `json:"outbox"`                   // mailbox we post to
+	Inbox         string             `json:"inbox"`                    // mailbox we poll
+	Seen          []string           `json:"seen,omitempty"`           // inbox entries read by the last Receive, deleted by the next
+	Hello         *helloHeader       `json:"hello,omitempty"`          // our opening keys, sent until the peer answers
+	PeerEphemeral []byte             `json:"peer_ephemeral,omitempty"` // the ephemeral key the peer's hello carried, so the same hello resent is known
+	Touched       time.Time          `json:"touched,omitzero"`         // last send or successful receive; Prune uses it
+	Checked       bool               `json:"checked,omitempty"`        // whether Verified has been settled against id:<name>
+	Verified      bool               `json:"verified,omitempty"`       // Peer.Name is published under Peer's fingerprint
 }
 
 // helloHeader is what first contact carries: the initiator's bundle, its

@@ -11,8 +11,12 @@ import (
 // ErrNotFound is what a read of a key that is missing or expired reports.
 var ErrNotFound = errors.New("key not found")
 
+// NodeState is what a node's view says of a peer, by how long since its
+// gossip last arrived.
 type NodeState string
 
+// A peer is healthy while its gossip arrives, degraded once none has for
+// ten seconds, and down after fifteen, when writes stop going to it.
 const (
 	NodeStateHealthy  NodeState = "healthy"
 	NodeStateDegraded NodeState = "degraded"
@@ -23,8 +27,8 @@ const (
 // every node's figures without dialing each one. Writes is a counter: the
 // rate is its change between two views.
 type NodeStats struct {
-	ActiveConnections int64 `json:"active_connections"`
-	BytesTransferred  int64 `json:"bytes_transferred"`
+	ActiveConnections int64 `json:"active_connections"`        // connections the node is serving now
+	BytesTransferred  int64 `json:"bytes_transferred"`         // bytes moved over them since it started
 	Replicas          int   `json:"replicas"`                  // peers this node fans writes out to
 	Held              int   `json:"held_replicas"`             // of those, ones that stopped answering and await a repair
 	Queued            int   `json:"queued_replicas,omitempty"` // of those, ones fed from a queue rather than waited on
@@ -37,16 +41,16 @@ type NodeStats struct {
 // the TRITIUM.NODES and TRITIUM.GOSSIP commands. IsLeader only marks the
 // node that seeded the cluster and has a weight; there is no election.
 type NodeInfo struct {
-	ID        string    `json:"id"`
-	Addr      string    `json:"addr"`       // where clients and peers reach this node
-	StoreAddr string    `json:"store_addr"` // the RESP store it writes through
-	State     NodeState `json:"state"`
-	LastSeen  time.Time `json:"last_seen"`
-	IsLeader  bool      `json:"is_leader"`
+	ID        string    `json:"id"`                // "node-" + Addr
+	Addr      string    `json:"addr"`              // where clients and peers reach this node
+	StoreAddr string    `json:"store_addr"`        // the RESP store it writes through
+	State     NodeState `json:"state"`             // by LastSeen, as the viewing node judges it
+	LastSeen  time.Time `json:"last_seen"`         // when its gossip last arrived
+	IsLeader  bool      `json:"is_leader"`         // it seeded the cluster: informational, there is no election
 	Started   time.Time `json:"started,omitzero"`  // this incarnation's start: a peer that restarted has a new one
 	Version   string    `json:"version,omitempty"` // the tritium build it runs, so a fleet upgrade can be watched
 	Seeds     []string  `json:"seeds,omitempty"`   // the peers it dials to join and rejoin
-	Stats     NodeStats `json:"stats"`
+	Stats     NodeStats `json:"stats"`             // its load, as it last gossiped it
 	// Electronegativity is the node's pull on key ownership, as its
 	// ELECTRONEGATIVITY says: absent is 1; 0 never owns a key.
 	Electronegativity *int `json:"electronegativity,omitempty"`
@@ -70,7 +74,7 @@ const EventsKeyPrefix = "tritium:events:"
 // set at EventsKeyPrefix+Node, scored by At in unix milliseconds. Fields not
 // meaningful for a given Event are left zero and omitted from the JSON.
 type Event struct {
-	At    int64  `json:"at"`
+	At    int64  `json:"at"`             // unix milliseconds
 	Node  string `json:"node"`           // the node whose log this is
 	Event string `json:"event"`          // attach, detach, hold, repair, stall, evict, resync, start
 	Peer  string `json:"peer,omitempty"` // the peer address involved, when there is one

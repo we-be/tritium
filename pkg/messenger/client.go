@@ -24,6 +24,9 @@ const (
 	version    = 4 // envelope format: encrypted ratchet header on every message, sealed hello on first contact
 )
 
+// ErrNameTaken is Publish's answer when another identity holds the name:
+// names are first come, and a bundle is replaced only by one signed with
+// the same key.
 var ErrNameTaken = errors.New("messenger: name is registered to another identity")
 
 var seq atomic.Uint32 // messages sent by this process, for messageID
@@ -40,6 +43,8 @@ type Client struct {
 	rosters   map[string]int      // highest version seen per device or group roster: an older one replayed is refused
 }
 
+// New is id's messenger over the connection t, with no sessions yet;
+// Restore brings back the ones a previous run saved.
 func New(t *tritium.Client, id *Identity) *Client {
 	return &Client{t: t, id: id, sessions: map[string]*Session{}, rosters: map[string]int{}}
 }
@@ -49,11 +54,11 @@ func New(t *tritium.Client, id *Identity) *Client {
 // message sent to you directly, or a group tag that didn't verify, leaves it
 // empty.
 type Message struct {
-	From     Bundle
-	Verified bool // From.Name is published under From's fingerprint; a bundle names whatever it likes, the plane says who holds the name
-	Time     time.Time
+	From     Bundle    // the sender, as its bundle names it
+	Verified bool      // From.Name is published under From's fingerprint; a bundle names whatever it likes, the plane says who holds the name
+	Time     time.Time // when it was sent, by the sender's clock
 	Body     []byte
-	Group    string
+	Group    string // the group it was sent to, once that checked out
 	seq      uint32 // the message's number in its sender's chain: order within one millisecond
 }
 
@@ -394,10 +399,10 @@ func (c *Client) checkName(s *Session) {
 // its inbox unread.
 type SessionInfo struct {
 	Peer     Bundle
-	Touched  time.Time
-	Sent     uint32
-	Received uint32
-	Waiting  int64
+	Touched  time.Time // last send or successful receive
+	Sent     uint32    // messages sent in the current chain
+	Received uint32    // messages received in the current chain
+	Waiting  int64     // messages in the inbox not yet received
 }
 
 // Status describes every session, most recently used first, and how many
@@ -447,6 +452,8 @@ func (c *Client) State() ([]byte, error) {
 	return json.Marshal(state{c.sessions, c.helloSeen, c.rosters})
 }
 
+// Restore loads what State produced. A session saved in an older wire
+// format is dropped: it cannot be spoken over now, and the peer starts over.
 func (c *Client) Restore(data []byte) error {
 	var st state
 	if err := json.Unmarshal(data, &st); err != nil {

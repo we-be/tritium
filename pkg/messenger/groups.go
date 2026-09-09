@@ -22,6 +22,7 @@ import (
 
 const groupLabel = "tritium-messenger-v1 group"
 
+// What a group roster is refused for.
 var (
 	ErrBadGroup   = errors.New("messenger: group roster is malformed or its signature is invalid")
 	ErrNotCreator = errors.New("messenger: only the group's creator can change its roster")
@@ -31,9 +32,9 @@ var (
 type Group struct {
 	Name    string   `json:"name"`
 	Creator string   `json:"creator"` // the name whose identity signs this roster
-	Version int      `json:"version"`
-	Members []string `json:"members"`
-	Sig     []byte   `json:"sig"`
+	Version int      `json:"version"` // orders publications; one older than already seen is refused
+	Members []string `json:"members"` // names; each member's devices are reached through its own roster
+	Sig     []byte   `json:"sig"`     // the creator's signature over the rest
 }
 
 func (g Group) signed() []byte {
@@ -116,6 +117,7 @@ func (c *Client) AddMember(group, member string) (Group, error) {
 	})
 }
 
+// RemoveMember is AddMember's inverse.
 func (c *Client) RemoveMember(group, member string) (Group, error) {
 	return c.editGroup(group, func(g *Group) {
 		g.Members = slices.DeleteFunc(g.Members, func(m string) bool { return m == member })

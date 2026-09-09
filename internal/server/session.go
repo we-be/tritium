@@ -368,8 +368,6 @@ func (s *session) echo(args []string) []byte {
 	return resp.AppendBulkString(nil, args[0])
 }
 
-// client accepts the CLIENT subcommands connection libraries send on
-// connect; nothing is recorded.
 // client handles CLIENT: SETNAME and GETNAME so a connection can say what
 // it is — worker, bridge, CLI — and LIST so a node can say who is
 // connected. LIST is for the node's own identity and peers; a user with

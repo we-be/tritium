@@ -23,6 +23,7 @@ import (
 
 const deviceRosterLabel = "tritium-messenger-v1 device-roster"
 
+// What a device roster is refused for.
 var (
 	ErrBadDeviceRoster = errors.New("messenger: device roster is malformed or its signature is invalid")
 	ErrNotDevice       = errors.New("messenger: bundle's name or keys do not match the device being authorized")
@@ -76,8 +77,8 @@ func validVersion(v int) bool { return v >= 0 && int64(v) < maxRosterVersion }
 // DeviceRoster is every device certified under one name, signed as a unit so
 // a change is atomic and Version orders successive publications.
 type DeviceRoster struct {
-	Name    string       `json:"name"`
-	Version int          `json:"version"`
+	Name    string       `json:"name"`    // the primary identity the devices are certified onto
+	Version int          `json:"version"` // orders publications; one older than already seen is refused
 	Devices []DeviceCert `json:"devices"`
 	Sig     []byte       `json:"sig"` // the primary identity's signature over Name, Version and every cert
 }

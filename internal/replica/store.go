@@ -412,14 +412,13 @@ func (s *Store) TTL(key string) (int64, error) {
 	return s.primary.integer(resp.NewCommand("TTL", key))
 }
 
-// replicateAll runs cmds on every replica concurrently. Failures are logged,
-// not returned: the primary write already succeeded. A replica the transport
-// fails to reach is held from then on — its keys are noted for Repair, and
-// no write waits on it — while one that answers with an error is merely
-// refusing this write.
-// replicateAllExcept is the fan-out, leaving out the replica at except —
-// the node a forwarded write came from, which applies it itself; "" leaves
-// nobody out.
+// replicateAllExcept runs cmds on every replica concurrently but the one
+// at except — the node a forwarded write came from, which applies it
+// itself; "" leaves nobody out. Failures are logged, not returned: the
+// primary write already succeeded. A replica the transport fails to reach
+// is held from then on — its keys are noted for Repair, and no write waits
+// on it — while one that answers with an error is merely refusing this
+// write.
 func (s *Store) replicateAllExcept(cmds []resp.Command, except string) {
 	s.writes.Add(1)
 	s.mu.RLock()
