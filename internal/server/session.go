@@ -232,13 +232,18 @@ func (s *session) authenticate(args []string) []byte {
 		want = s.srv.peerPassword()
 	default:
 		u, ok := s.srv.cfg.Users[user]
+		node := false
 		if !ok {
-			u.Password = strings.Repeat("\x00", len(password)) // an unknown user takes as long as a wrong password
+			u, ok = s.srv.cfg.Peers[user]
+			node = ok
+		}
+		if !ok {
+			u.Password = strings.Repeat("\x00", len(password)) // an unknown name takes as long as a wrong password
 		}
 		if subtle.ConstantTimeCompare([]byte(password), []byte(u.Password)) != 1 || !ok {
 			return s.refuse()
 		}
-		s.who = &principal{name: user, rights: &u.Rights}
+		s.who = &principal{name: user, rights: &u.Rights, node: node}
 		return nil
 	}
 	if want == "" || subtle.ConstantTimeCompare([]byte(password), []byte(want)) != 1 {
@@ -280,11 +285,8 @@ func hostOf(addr string) string {
 // authenticated as the peer user when a password is configured, and under
 // TLS_CLIENT_AUTH it presented a certificate the listener verified.
 func (s *session) isPeer() bool {
-	if s.who.limited() {
-		return false // a configured user is never a node, however the node is set up
-	}
-	if s.srv.peerPassword() != "" && !s.who.node {
-		return false
+	if !s.who.node && (s.who.limited() || s.srv.peerPassword() != "") {
+		return false // a user is never a node, however the node is set up; without a peer password the node's own client counts
 	}
 	if s.srv.cfg.TLSClientAuth {
 		tc, ok := s.conn.(*tls.Conn)

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 )
 
@@ -341,6 +342,16 @@ func (s *session) replicate(args []string) []byte {
 	}
 	if !replicatable[inner] {
 		return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[0]+"'")
+	}
+	if s.who.limited() { // a peer held to rights writes only the keys they name, and relays nothing
+		if relay != nil {
+			return replyNoPerm
+		}
+		for _, key := range replica.KeysOf(args) {
+			if !s.who.rights.MayWrite(key) {
+				return noPermKey(s.who.name, key)
+			}
+		}
 	}
 	v, err := s.srv.store.Apply(resp.NewCommand(args...))
 	if err != nil {

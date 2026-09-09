@@ -59,7 +59,7 @@ var commands = map[string]command{
 	"COMMAND":           {min: 0, max: -1, fn: (*session).command, access: open},
 	"SELECT":            {min: 1, max: 1, fn: (*session).selectDB, access: open},
 	"ACL":               {min: 1, max: -1, fn: (*session).acl, access: open},
-	"TRITIUM.NODES":     {min: 0, max: 0, fn: (*session).nodes},
+	"TRITIUM.NODES":     {min: 0, max: 0, fn: (*session).nodes, access: nodes},
 	"TRITIUM.GOSSIP":    {min: 1, max: 1, fn: (*session).gossip, peer: true},
 	"TRITIUM.REPLICATE": {min: 2, max: -1, fn: (*session).replicate, peer: true},
 	"TRITIUM.PEERLINK":  {min: 1, max: 1, fn: (*session).peerlink, peer: true},

@@ -12,9 +12,10 @@ import (
 // the one place a command is allowed or refused. The node's own two
 // credentials hold every right: "default", a client with the whole keyspace,
 // and "peer", another node. A USER_ holds only what its rights name and is
-// never a node, however the node is set up: rights that cannot be checked
-// are rights that are refused, so a command the table does not classify,
-// or whose keys it cannot find, is NOPERM to a limited principal.
+// never a node; a PEER_ is a node held to what its rights name. Rights that
+// cannot be checked are rights that are refused, so a command the table
+// does not classify, or whose keys it cannot find, is NOPERM to a limited
+// principal.
 
 type principal struct {
 	name   string
@@ -37,10 +38,12 @@ type access struct {
 	read, write bool
 	all         bool // every argument is a key; otherwise only the first
 	open        bool // touches no key: every principal may run it
+	node        bool // a node's business whatever its rights; never a user's
 }
 
 var (
 	open      = access{open: true}
+	nodes     = access{node: true}
 	reads     = access{read: true}
 	readsAll  = access{read: true, all: true}
 	writes    = access{write: true}
@@ -52,14 +55,17 @@ var (
 // command needs a node on the connection, and a limited principal reaches
 // only the keys its rights name. nil means run it.
 func (s *session) allow(cmd command, name string, args []string) []byte {
-	if cmd.peer && !s.isPeer() {
-		return replyNoPerm
+	if cmd.peer { // its handler checks a scoped peer's keys itself
+		if !s.isPeer() {
+			return replyNoPerm
+		}
+		return nil
 	}
 	return s.who.allow(name, cmd.access, args)
 }
 
 func (p *principal) allow(name string, a access, args []string) []byte {
-	if !p.limited() || a.open {
+	if !p.limited() || a.open || a.node && p.node {
 		return nil
 	}
 	if !a.read && !a.write {
@@ -71,10 +77,14 @@ func (p *principal) allow(name string, a access, args []string) []byte {
 	}
 	for _, key := range keys {
 		if a.read && !p.rights.MayRead(key) || a.write && !p.rights.MayWrite(key) {
-			return resp.AppendError(nil, fmt.Sprintf("NOPERM User %s has no permissions to access the '%s' key", p.name, key))
+			return noPermKey(p.name, key)
 		}
 	}
 	return nil
+}
+
+func noPermKey(name, key string) []byte {
+	return resp.AppendError(nil, fmt.Sprintf("NOPERM User %s has no permissions to access the '%s' key", name, key))
 }
 
 // acl answers ACL WHOAMI, so a client can see which identity a connection

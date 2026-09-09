@@ -38,6 +38,11 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   whether it is a node's alone and what it does to which keys; one gate reads both. The
   separate peer-only list and the ACL's own command tables are gone. Increment 3 of the
   trust program. Same answers to every command; rolled to the fleet to prove it.
+- **v0.18.6** — **Peers are principals.** `PEER_<name>=<password>:<rights>` is a node held to
+  the keys its rights name: it authenticates by name, may replicate or forward a write only
+  for those keys, and may relay nothing; `TRITIUM.NODES` still answers it, since a node
+  joins through the view. The built-in `peer` is unchanged. Increment 4 of the trust
+  program, the first with a behaviour: off until a `PEER_` line exists, so nothing rolled.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

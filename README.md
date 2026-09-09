@@ -315,6 +315,7 @@ Read from `.env` (or the file given by `-config`), then overridden by the enviro
 | `ALLOW_NO_AUTH`          | `false`          | A node with no `AUTH_PASSWORD` refuses to listen anywhere but loopback unless this says it is meant |
 | `AUTH_USER`              | none             | Which of them a client next to this node (`-config`) authenticates as     |
 | `PEER_PASSWORD`          | none             | Password nodes present to each other as `AUTH peer <password>`. Required, and must differ from `AUTH_PASSWORD`, on any node that peers (`JOIN_ADDRESS`, `ADVERTISE_ADDRESS` or `LINK_ADDRESS` set) — otherwise the node refuses to start |
+| `PEER_<name>`            | none             | `<password>:<rights>` — another node, authenticating as `AUTH <name> <password>`, held to the keys its rights name: it may replicate or forward writes only for those, and may relay nothing. Same grammar as `USER_<name>`, `@<surface>` included; a name is either a peer's or a user's, never both. In the process environment the entry is `TRITIUM_PEER_<name>` |
 | `ALLOW_SHARED_PEER_PASSWORD` | `false`      | Start anyway on a `PEER_PASSWORD` that is unset or equal to `AUTH_PASSWORD`, with a warning instead of a refusal |
 | `SECURE_STORE_ADDRESS`   | none             | RESP server this node writes through; unset, the node runs its own store in-process. Plaintext without `SECURE_STORE_TLS`, so keep it loopback or container-local unless TLS is on |
 | `SECURE_STORE_PASSWORD`  | none             | `AUTH` for that store and every replica                                 |

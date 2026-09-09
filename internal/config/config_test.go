@@ -137,3 +137,18 @@ func TestParseBytes(t *testing.T) {
 		}
 	}
 }
+
+// A name is one credential: a PEER_ and a USER_ of the same name would
+// leave AUTH <name> to guess which, so the config is refused.
+func TestPeerAndUserNamesAreDistinct(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	os.WriteFile(path, []byte("USER_x=pw:r:a:\nPEER_x=pw:rw:b:\n"), 0o600)
+	if _, err := Load(path); err == nil {
+		t.Fatal("a peer and a user shared a name")
+	}
+	os.WriteFile(path, []byte("SURFACE_public=rw:pub:\nPEER_x=pw:@public\n"), 0o600)
+	cfg, err := Load(path)
+	if err != nil || cfg.Peers["x"].Write[0] != "pub:" {
+		t.Fatalf("PEER_x: %+v, %v", cfg.Peers, err)
+	}
+}

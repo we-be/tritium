@@ -315,6 +315,12 @@ func keysOf(cmd resp.Command) []string {
 	if err != nil {
 		return nil
 	}
+	return KeysOf(args)
+}
+
+// KeysOf names the keys a replicated write touches, stamp or not: every
+// argument of a DEL, the first of anything else.
+func KeysOf(args []string) []string {
 	if len(args) > 2 && strings.EqualFold(args[0], "STAMPED") { // the stamp is not a key
 		args = args[2:]
 	}

@@ -39,7 +39,7 @@ below, and checks it off here with its commit.
 - [x] 1. `tritium-cli prefixes` — the keyspace census as a command — v0.18.3, 2026-09-09
 - [x] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name` — v0.18.4, 2026-09-09
 - [x] 3. the policy in one place; `peer` becomes a principal — v0.18.5, 2026-09-09
-- [ ] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement
+- [x] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement — v0.18.6, 2026-09-09
 - [ ] 5–8. phase 1: fan-out, weight, queued, chaos with a scoped node — then the gate
 - [ ] 9–12. phase 2: the view, relay, links, a second cloud node
 - [ ] 13–15. phase 3: identity by certificate, invite, bounds

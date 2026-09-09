@@ -291,3 +291,34 @@ func TestCLIHandshake(t *testing.T) {
 	}
 	c.want("hi", "ECHO", "hi")
 }
+
+// A peer held to rights replicates and forwards only the keys they name,
+// relays nothing, and still sees the view it needs to join.
+func TestScopedPeerWritesOnlyItsKeys(t *testing.T) {
+	t.Setenv("TRITIUM_PEER_pub", "pw:rw:pub:")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Password = "boss"
+	s := startNode(t, cfg)
+	c := dial(t, s)
+	c.want("OK", "AUTH", "pub", "pw")
+	c.want("pub", "ACL", "WHOAMI")
+	c.want("OK", "TRITIUM.REPLICATE", "SET", "pub:k", "v", "EX", "60")
+	c.wantErr("NOPERM", "TRITIUM.REPLICATE", "SET", "fleet:k", "v", "EX", "60")
+	c.wantErr("NOPERM", "TRITIUM.REPLICATE", "DEL", "pub:k", "fleet:k")
+	c.wantErr("NOPERM", "TRITIUM.REPLICATE", "RELAY", "1", "127.0.0.1:1", "SET", "pub:k", "v", "EX", "60")
+	c.wantErr("NOPERM", "TRITIUM.FORWARD", "SET", "fleet:k", "v")
+	c.want("OK", "TRITIUM.FORWARD", "SET", "pub:k2", "v")
+	if _, err := c.do("TRITIUM.NODES"); err != nil {
+		t.Fatalf("a scoped peer cannot see the view: %v", err)
+	}
+	owner := dial(t, s)
+	owner.want("OK", "AUTH", "boss")
+	owner.want("v", "GET", "pub:k")
+	owner.want("v", "GET", "pub:k2")
+	if v, err := owner.do("GET", "fleet:k"); err != nil || v != nil {
+		t.Fatalf("fleet:k was written through a scoped peer: %v, %v", v, err)
+	}
+}

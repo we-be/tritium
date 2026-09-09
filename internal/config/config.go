@@ -52,6 +52,7 @@ type Config struct {
 	UsersFile               string            // USERS_FILE: a file of USER_<name> entries, one per line, with the bare name on the left
 	Users                   map[string]User   // USER_<name>=<password>:<rights>: clients with only the key prefixes they name
 	Surfaces                map[string]Rights // SURFACE_<name>=<rights>: a named rights set a credential holds as @<name>
+	Peers                   map[string]User   // PEER_<name>=<password>:<rights>: nodes held to the keys their rights name
 }
 
 // Local is how to reach the node a dotenv file configures from the same
@@ -287,6 +288,9 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Users, err = users(vals, cfg.UsersFile, cfg.Surfaces); err != nil {
+		return Config{}, err
+	}
+	if cfg.Peers, err = peers(vals, cfg.Surfaces, cfg.Users); err != nil {
 		return Config{}, err
 	}
 	if cfg.AuthUser != "" {
