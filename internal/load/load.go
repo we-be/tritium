@@ -78,35 +78,13 @@ func Run(ctx context.Context, opts tritium.ClientOptions, peer *tritium.ClientOp
 	ctx, cancel := context.WithTimeout(ctx, o.Duration)
 	defer cancel()
 
-	var tick <-chan time.Time
+	var rnd [4]byte
+	rand.Read(rnd[:])
+	r := &run{opts: opts, o: o, prefix: "load:" + hex.EncodeToString(rnd[:]) + ":", value: strings.Repeat("x", max(o.Size, 1))}
 	if o.Rate > 0 {
 		t := time.NewTicker(time.Second / time.Duration(o.Rate))
 		defer t.Stop()
-		tick = t.C
-	}
-	var r [4]byte
-	rand.Read(r[:])
-	prefix := "load:" + hex.EncodeToString(r[:]) + ":"
-	value := strings.Repeat("x", max(o.Size, 1))
-
-	var mu sync.Mutex
-	var set, get, zadd, lag []time.Duration
-	var errs, lagMissed int
-	record := func(kind int, d time.Duration, err error) {
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil && !errors.Is(err, tritium.ErrNotFound) {
-			errs++
-			return
-		}
-		switch kind {
-		case 0:
-			set = append(set, d)
-		case 1:
-			get = append(get, d)
-		case 2:
-			zadd = append(zadd, d)
-		}
+		r.tick = t.C
 	}
 
 	start := time.Now()
@@ -118,87 +96,131 @@ func Run(ctx context.Context, opts tritium.ClientOptions, peer *tritium.ClientOp
 			wg.Wait()
 			return Report{}, err
 		}
-		wg.Go(func() {
-			defer c.Close()
-			n := i
-			for {
-				if tick != nil {
-					select {
-					case <-ctx.Done():
-						return
-					case <-tick:
-					}
-				} else if ctx.Err() != nil {
-					return
-				}
-				n += o.Conns
-				key := prefix + strconv.Itoa(n%o.Keys)
-				kind := pick(o.Mix, n)
-				t0 := time.Now()
-				var err error
-				switch kind {
-				case 0:
-					err = c.Set(key, []byte(value), &o.TTL)
-				case 1:
-					_, err = c.Get(key)
-				case 2:
-					_, err = c.Do("ZADD", prefix+"z", strconv.Itoa(n), key)
-				}
-				record(kind, time.Since(t0), err)
-			}
-		})
+		wg.Go(func() { r.drive(ctx, c, i) })
 	}
 	if peer != nil {
-		wg.Go(func() {
-			w, err := tritium.NewClient(&opts)
-			if err != nil {
-				return
-			}
-			defer w.Close()
-			p, err := tritium.NewClient(peer)
-			if err != nil {
-				return
-			}
-			defer p.Close()
-			every := o.LagEvery
-			if every <= 0 {
-				every = 200 * time.Millisecond
-			}
-			for i := 0; ctx.Err() == nil; i++ {
-				key := prefix + "lag:" + strconv.Itoa(i)
-				t0 := time.Now()
-				if err := w.Set(key, []byte(strconv.FormatInt(t0.UnixNano(), 10)), &o.TTL); err != nil {
-					mu.Lock()
-					errs++
-					mu.Unlock()
-					continue
-				}
-				seen := false
-				for time.Since(t0) < 2*time.Second && ctx.Err() == nil {
-					if _, err := p.Get(key); err == nil {
-						seen = true
-						break
-					}
-					time.Sleep(time.Millisecond)
-				}
-				mu.Lock()
-				if seen {
-					lag = append(lag, time.Since(t0))
-				} else if ctx.Err() == nil {
-					lagMissed++
-				}
-				mu.Unlock()
-				select {
-				case <-ctx.Done():
-				case <-time.After(every):
-				}
-			}
-		})
+		wg.Go(func() { r.watchLag(ctx, peer) })
 	}
 	wg.Wait()
-	rep := Report{Elapsed: time.Since(start), Errors: errs, Set: sample(set), Get: sample(get), ZAdd: sample(zadd), Lag: sample(lag), LagMissed: lagMissed}
-	rep.Ops = len(set) + len(get) + len(zadd)
-	return rep, nil
+	return r.report(time.Since(start)), nil
+}
+
+// run is one run's shared state: the key space, the pace, and the tallies
+// every connection adds to.
+type run struct {
+	opts   tritium.ClientOptions
+	o      Options
+	prefix string // this run's keys, so two runs against one node do not collide
+	value  string
+	tick   <-chan time.Time // nil: as fast as the node answers
+
+	mu                  sync.Mutex
+	set, get, zadd, lag []time.Duration
+	errs, lagMissed     int
+}
+
+// drive is one connection's share of the mix: operations n, n+Conns, …
+// until ctx ends.
+func (r *run) drive(ctx context.Context, c *tritium.Client, n int) {
+	defer c.Close()
+	for {
+		if r.tick != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-r.tick:
+			}
+		} else if ctx.Err() != nil {
+			return
+		}
+		n += r.o.Conns
+		key := r.prefix + strconv.Itoa(n%r.o.Keys)
+		kind := pick(r.o.Mix, n)
+		t0 := time.Now()
+		var err error
+		switch kind {
+		case 0:
+			err = c.Set(key, []byte(r.value), &r.o.TTL)
+		case 1:
+			_, err = c.Get(key)
+		case 2:
+			_, err = c.Do("ZADD", r.prefix+"z", strconv.Itoa(n), key)
+		}
+		r.record(kind, time.Since(t0), err)
+	}
+}
+
+// watchLag writes a timestamped key to the node every LagEvery and polls
+// the peer until it shows, giving up on one after two seconds.
+func (r *run) watchLag(ctx context.Context, peer *tritium.ClientOptions) {
+	w, err := tritium.NewClient(&r.opts)
+	if err != nil {
+		return
+	}
+	defer w.Close()
+	p, err := tritium.NewClient(peer)
+	if err != nil {
+		return
+	}
+	defer p.Close()
+	every := r.o.LagEvery
+	if every <= 0 {
+		every = 200 * time.Millisecond
+	}
+	for i := 0; ctx.Err() == nil; i++ {
+		key := r.prefix + "lag:" + strconv.Itoa(i)
+		t0 := time.Now()
+		if err := w.Set(key, []byte(strconv.FormatInt(t0.UnixNano(), 10)), &r.o.TTL); err != nil {
+			r.mu.Lock()
+			r.errs++
+			r.mu.Unlock()
+			continue
+		}
+		seen := false
+		for time.Since(t0) < 2*time.Second && ctx.Err() == nil {
+			if _, err := p.Get(key); err == nil {
+				seen = true
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		r.mu.Lock()
+		if seen {
+			r.lag = append(r.lag, time.Since(t0))
+		} else if ctx.Err() == nil {
+			r.lagMissed++
+		}
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+		case <-time.After(every):
+		}
+	}
+}
+
+// record tallies one operation. A missing key on GET is a hit on an
+// unwritten slot, not an error.
+func (r *run) record(kind int, d time.Duration, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err != nil && !errors.Is(err, tritium.ErrNotFound) {
+		r.errs++
+		return
+	}
+	switch kind {
+	case 0:
+		r.set = append(r.set, d)
+	case 1:
+		r.get = append(r.get, d)
+	case 2:
+		r.zadd = append(r.zadd, d)
+	}
+}
+
+func (r *run) report(elapsed time.Duration) Report {
+	rep := Report{Elapsed: elapsed, Errors: r.errs, Set: sample(r.set), Get: sample(r.get), ZAdd: sample(r.zadd), Lag: sample(r.lag), LagMissed: r.lagMissed}
+	rep.Ops = len(r.set) + len(r.get) + len(r.zadd)
+	return rep
 }
 
 // pick chooses SET, GET or ZADD for the n-th operation by the mix weights.
