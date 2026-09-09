@@ -6,15 +6,19 @@
 //	tritium-cli [flags] set [-ttl SECONDS] KEY VALUE
 //	tritium-cli [flags] del KEY
 //	tritium-cli [flags] scan [PATTERN]
+//	tritium-cli [flags] where KEY
+//	tritium-cli [flags] prefixes
 //	tritium-cli [flags] nodes
 //	tritium-cli [flags] events [-since 1h] [-node NAME]
 package main
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -64,6 +68,8 @@ func run(client *tritium.Client, opts tritium.ClientOptions, cmd string, args []
 			return errors.New("usage: where KEY")
 		}
 		return where(client, opts, args[0])
+	case "prefixes":
+		return prefixes(os.Stdout, client, opts)
 	case "get":
 		if len(args) != 1 {
 			return errors.New("usage: get KEY")
@@ -247,11 +253,10 @@ func printNodes(nodes map[string]storage.NodeInfo) {
 // or is missing from one, shows. Each node is reached with the same
 // credentials as the first, so a node with its own password says so.
 func where(client *tritium.Client, opts tritium.ClientOptions, key string) error {
-	nodes, err := client.Nodes()
+	rows, err := view(client)
 	if err != nil {
 		return err
 	}
-	rows := slices.SortedFunc(maps.Values(nodes), func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) })
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "NODE\tTYPE\tTTL\tHOLDS")
 	for _, n := range rows {
@@ -271,6 +276,130 @@ func where(client *tritium.Client, opts tritium.ClientOptions, key string) error
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", n.Addr, typ, ttl, holds)
 	}
 	return w.Flush()
+}
+
+// view is the cluster as this node sees it, by address.
+func view(client *tritium.Client) ([]storage.NodeInfo, error) {
+	nodes, err := client.Nodes()
+	if err != nil {
+		return nil, err
+	}
+	return slices.SortedFunc(maps.Values(nodes), func(a, b storage.NodeInfo) int { return strings.Compare(a.Addr, b.Addr) }), nil
+}
+
+// prefixes counts every node's keys by prefix and type: the keyspace
+// census. A prefix is what a right names, so the rows are what the
+// keyspace would partition into as surfaces; a bare key is a row of its
+// own, since a right names it exactly. Two SCAN walks per node, one per
+// type, so a node is never asked about keys one at a time.
+func prefixes(w io.Writer, client *tritium.Client, opts tritium.ClientOptions) error {
+	rows, err := view(client)
+	if err != nil {
+		return err
+	}
+	type cell struct{ prefix, typ string }
+	counts := map[cell][]int{}
+	failed := make([]error, len(rows))
+	for i, n := range rows {
+		if n.State != storage.NodeStateHealthy {
+			failed[i] = errors.New(string(n.State))
+			continue
+		}
+		o := opts
+		o.Address = n.Addr
+		c, err := tritium.NewClient(&o)
+		if err != nil {
+			failed[i] = err
+			continue
+		}
+		for _, typ := range []string{"string", "zset"} {
+			err = keysOfType(c, typ, func(key string) {
+				k := cell{prefixOf(key), typ}
+				if counts[k] == nil {
+					counts[k] = make([]int, len(rows))
+				}
+				counts[k][i]++
+			})
+			if err != nil {
+				failed[i] = err
+				break
+			}
+		}
+		c.Close()
+	}
+
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprint(tw, "PREFIX\tTYPE")
+	for _, n := range rows {
+		fmt.Fprint(tw, "\t", n.Addr)
+	}
+	fmt.Fprintln(tw)
+	cells := slices.SortedFunc(maps.Keys(counts), func(a, b cell) int {
+		return cmp.Or(strings.Compare(a.prefix, b.prefix), strings.Compare(a.typ, b.typ))
+	})
+	total := make([]int, len(rows))
+	for _, k := range cells {
+		fmt.Fprintf(tw, "%s\t%s", k.prefix, k.typ)
+		for i, n := range counts[k] {
+			fmt.Fprint(tw, "\t", count(n, failed[i]))
+			total[i] += n
+		}
+		fmt.Fprintln(tw)
+	}
+	fmt.Fprint(tw, "TOTAL\t")
+	for i, n := range total {
+		fmt.Fprint(tw, "\t", count(n, failed[i]))
+	}
+	fmt.Fprintln(tw)
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	for i, err := range failed {
+		if err != nil {
+			fmt.Fprintf(w, "%s: %v\n", rows[i].Addr, err)
+		}
+	}
+	return nil
+}
+
+// count renders one census cell: a node that could not be walked shows "?"
+// rather than a number that would read as zero keys.
+func count(n int, failed error) string {
+	if failed != nil {
+		return "?"
+	}
+	return strconv.Itoa(n)
+}
+
+// prefixOf is the part of a key a prefix right would name: up to and
+// including its first colon, or the whole key when it has none.
+func prefixOf(key string) string {
+	if i := strings.IndexByte(key, ':'); i >= 0 {
+		return key[:i+1]
+	}
+	return key
+}
+
+// keysOfType walks every SCAN page of one type and hands each key to fn.
+func keysOfType(c *tritium.Client, typ string, fn func(string)) error {
+	cursor := "0"
+	for {
+		v, err := c.Do("SCAN", cursor, "COUNT", "200", "TYPE", typ)
+		if err != nil {
+			return err
+		}
+		page, _ := v.([]any)
+		if len(page) != 2 {
+			return fmt.Errorf("SCAN: unexpected reply %T", v)
+		}
+		keys, _ := page[1].([]any)
+		for _, k := range keys {
+			fn(bulk(k))
+		}
+		if cursor = bulk(page[0]); cursor == "0" {
+			return nil
+		}
+	}
 }
 
 // lookup is one node's answer about a key: its type, its TTL and what it
@@ -338,6 +467,6 @@ func printEvents(events []storage.Event, node string) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | where KEY | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
+	fmt.Fprintln(os.Stderr, "usage: tritium-cli [flags] get KEY | set [-ttl SECONDS] KEY VALUE | del KEY | scan [PATTERN] | where KEY | prefixes | nodes | info [SECTION] | clients | events [-since 1h] [-node NAME]")
 	flag.PrintDefaults()
 }

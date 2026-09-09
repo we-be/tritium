@@ -25,6 +25,9 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   embedded store dispatches through a command table (`DEL` and `EXISTS` want a key, as a
   real server does), `STORE_MAX_MEMORY=64MB` reads, and the long functions in
   `tritium-msg`, `config` and `load` are split. No wire change; nothing to roll.
+- **v0.18.3** — **`tritium-cli prefixes`**, the keyspace census: every node's keys by
+  prefix and type, two SCAN walks per node. Increment 1 of the trust program
+  (`docs/trust-plan.md`). CLI only; nothing to roll.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

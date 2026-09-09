@@ -36,7 +36,7 @@ rules and the phase gates are in [docs/trust-plan.md](docs/trust-plan.md);
 the loop takes the next unchecked increment from there before anything
 below, and checks it off here with its commit.
 
-- [ ] 1. `tritium-cli prefixes` — the keyspace census as a command
+- [x] 1. `tritium-cli prefixes` — the keyspace census as a command — v0.18.3, 2026-09-09
 - [ ] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name`
 - [ ] 3. the policy in one place; `peer` becomes a principal
 - [ ] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement

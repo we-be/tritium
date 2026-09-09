@@ -84,7 +84,7 @@ opts, err := tritium.OptionsFromEnv(".env")          // or reach the node next d
 nodes, err := client.Nodes()                         // the cluster view
 ```
 
-`tritium-cli` wraps that client for the shell and adds `scan`, `where`, `nodes`, `info`, `clients` and `events`:
+`tritium-cli` wraps that client for the shell and adds `scan`, `where`, `prefixes`, `nodes`, `info`, `clients` and `events`:
 
 ```sh
 export TRITIUM_KEY=$(openssl rand -hex 32)
@@ -93,6 +93,7 @@ go run ./cmd/tritium-cli get hello            # world
 valkey-cli -p 8080 get hello                  # "TE1..." ciphertext
 go run ./cmd/tritium-cli scan 'hel*'          # every matching key, its type and TTL
 go run ./cmd/tritium-cli where hello          # which nodes hold it, the TTL on each, and whether they agree
+go run ./cmd/tritium-cli prefixes             # every node's keys by prefix and type: what the keyspace partitions into
 go run ./cmd/tritium-cli del hello
 go run ./cmd/tritium-cli nodes               # every node's state, weight, replicas, keys, memory and writes, from this node's view
 go run ./cmd/tritium-cli info tritium        # this node's replicas, held and queued ones, ownership, stamps
