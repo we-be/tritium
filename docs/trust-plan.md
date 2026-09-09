@@ -1,7 +1,8 @@
 # Trust levels and replication surfaces — the plan
 
-Opened 2026-09-09; the aim is to finish in Q1 2027. This is the plan of
-the plan: what the long-run primitive is, what keeps it from turning into
+Opened 2026-09-09; the aim is to finish in Q1 2027. Phases are ordered,
+not dated: a phase ends when its gate is read, not when a month does. This
+is the plan of the plan: what the long-run primitive is, what keeps it from turning into
 spaghetti, what can only be learned by running it, and the order — which
 is the real lever. The loop takes increments from the order below, one per
 iteration, top-down; the phase gates are Hunter's read.
@@ -104,7 +105,7 @@ has an instrument, and each phase gate reads them before the next phase
 is committed to.
 
 - **Q1 — does a prefix partition the keyspace?** Instrument: the census
-  command. Answered yes at n=26; re-read monthly, since mubs adds prefixes.
+  command. Answered yes at n=26; re-read at every gate, since mubs adds prefixes.
 - **Q2 — what does a queued replica look like over a WAN for weeks?** The
   cloud node already is one: weight 0, fed from a queue when held. Its
   `tritium_*` metrics and `tritium-load -peer` say what lag and backlog
@@ -123,7 +124,7 @@ is committed to.
 
 ## The order
 
-### Phase 0 — measure and name (September–October 2026). No behaviour changes.
+### Phase 0 — measure and name. No behaviour changes.
 
 1. **`tritium-cli prefixes`** — keys by prefix and type across every node,
    the census as a command. Answers Q1 on demand.
@@ -141,7 +142,7 @@ is committed to.
    from one is refused. Test: a scoped peer writing outside its rights is
    NOPERM, and a fleet write it sends for a key it may write lands.
 
-### Phase 1 — the surface is real (October–November 2026).
+### Phase 1 — the surface is real.
 
 5. **Fan-out honours read rights.** The replica store knows each replica's
    rights and skips a command whose key the replica may not hold — one
@@ -158,7 +159,7 @@ is committed to.
 *Gate:* a fourth node on bazzite joins the real fleet as a `public` replica
 for two weeks. Read Q2, Q3 and Q4 from it.
 
-### Phase 2 — the view and the edges (December 2026).
+### Phase 2 — the view and the edges.
 
 9. **View scoping**, designed from the phase-1 dump: a scoped peer's
    `TRITIUM.NODES` and gossip carry only the nodes that share a surface
@@ -171,7 +172,7 @@ for two weeks. Read Q2, Q3 and Q4 from it.
     the fleet's own machines do.
 12. **Second cloud node** (Q5), a month.
 
-### Phase 3 — identity and admission (January 2027).
+### Phase 3 — identity and admission.
 
 13. **Peer identity by certificate.** Under `TLS_CLIENT_AUTH` a peer's
     name is its certificate's, rights looked up by name, no shared
@@ -183,7 +184,7 @@ for two weeks. Read Q2, Q3 and Q4 from it.
     held, so a guest can neither fill the store nor spend the cloud node's
     packet allowance.
 
-### Phase 4 — legible and shipped (February–March 2027).
+### Phase 4 — legible and shipped.
 
 16. **Surfaces are visible**: INFO, the attach event, the monitor, the
     desktop browser and `tritium-cli nodes` all say which surface a peer
