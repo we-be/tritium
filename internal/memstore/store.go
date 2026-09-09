@@ -6,9 +6,7 @@
 package memstore
 
 import (
-	"fmt"
 	"hash/maphash"
-	"math"
 	"net"
 	"runtime/debug"
 	"strconv"
@@ -124,205 +122,19 @@ func (s *Store) exec(b []byte, args []string) []byte {
 
 // run answers one command; the caller holds mu.
 func (s *Store) run(b []byte, args []string) []byte {
-	cmd := strings.ToUpper(args[0])
-	switch cmd {
-	case "PING":
-		if len(args) == 2 {
-			return resp.AppendBulkString(b, args[1])
-		}
-		return resp.AppendSimpleString(b, "PONG")
-	case "ECHO":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		return resp.AppendBulkString(b, args[1])
-	case "AUTH", "SELECT", "QUIT":
-		return resp.AppendSimpleString(b, "OK")
-	case "STAMPED":
-		return s.stamped(b, args)
-	case "STAMPOF":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		return resp.AppendInt(b, int64(s.stampOf(args[1])))
-	case "SET":
-		return s.set(b, args)
-	case "SETEX":
-		if len(args) != 4 {
-			return errArgs(b, cmd)
-		}
-		ttl, err := strconv.Atoi(args[2])
-		if err != nil || ttl <= 0 {
-			return resp.AppendError(b, "ERR invalid expire time in 'setex' command")
-		}
-		return s.setString(b, args[1], []byte(args[3]), s.now().Add(time.Duration(ttl)*time.Second))
-	case "GET":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		if s.isZSet(args[1]) {
-			return wrongType(b)
-		}
-		return resp.AppendBulk(b, s.get(args[1]))
-	case "GETDEL":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		if s.isZSet(args[1]) {
-			return wrongType(b)
-		}
-		v := s.get(args[1])
-		if e := s.kv[args[1]]; e != nil {
-			s.remove(args[1], e)
-		}
-		return resp.AppendBulk(b, v)
-	case "MGET":
-		if len(args) < 2 {
-			return errArgs(b, cmd)
-		}
-		b = resp.AppendArray(b, len(args)-1)
-		for _, k := range args[1:] {
-			b = resp.AppendBulk(b, s.get(k))
-		}
-		return b
-	case "DEL":
-		var n int64
-		for _, k := range args[1:] {
-			if e := s.live(k); e != nil {
-				s.remove(k, e)
-				n++
-			}
-		}
-		return resp.AppendInt(b, n)
-	case "EXISTS":
-		var n int64
-		for _, k := range args[1:] {
-			if s.live(k) != nil {
-				n++
-			}
-		}
-		return resp.AppendInt(b, n)
-	case "TTL", "PTTL":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		e := s.live(args[1])
-		switch {
-		case e == nil:
-			return resp.AppendInt(b, -2)
-		case e.exp.IsZero():
-			return resp.AppendInt(b, -1)
-		case cmd == "PTTL":
-			return resp.AppendInt(b, int64(e.exp.Sub(s.now())/time.Millisecond))
-		default:
-			return resp.AppendInt(b, int64((e.exp.Sub(s.now())+500*time.Millisecond)/time.Second))
-		}
-	case "EXPIRE":
-		return s.expire(b, args)
-	case "TYPE":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		return resp.AppendSimpleString(b, typeOf(s.live(args[1])))
-	case "SCAN":
-		return s.scan(b, args)
-	case "DBSIZE":
-		s.sweep(math.MaxInt)
-		return resp.AppendInt(b, int64(len(s.kv)))
-	case "FLUSHALL", "FLUSHDB":
-		for k, e := range s.kv {
-			s.remove(k, e)
-		}
-		for k := range s.tomb {
-			s.untomb(k)
-		}
-		s.exp = s.exp[:0]
-		return resp.AppendSimpleString(b, "OK")
-	case "ZADD":
-		return s.zadd(b, args)
-	case "ZRANGEBYSCORE":
-		return s.zrangebyscore(b, args)
-	case "ZREM":
-		if len(args) < 3 {
-			return errArgs(b, cmd)
-		}
-		var n int64
-		if e := s.live(args[1]); e != nil && e.zset != nil {
-			for _, m := range args[2:] {
-				if _, ok := e.zset[m]; ok {
-					s.zdel(e, m)
-					n++
-				}
-			}
-			s.dropEmpty(args[1], e)
-		}
-		return resp.AppendInt(b, n)
-	case "ZREMRANGEBYSCORE":
-		if len(args) != 4 {
-			return errArgs(b, cmd)
-		}
-		lo, loEx, err1 := parseBound(args[2])
-		hi, hiEx, err2 := parseBound(args[3])
-		if err1 != nil || err2 != nil {
-			return resp.AppendError(b, "ERR min or max is not a float")
-		}
-		members := s.zrange(args[1], lo, loEx, hi, hiEx)
-		if e := s.live(args[1]); e != nil {
-			for _, m := range members {
-				s.zdel(e, m)
-			}
-			s.dropEmpty(args[1], e)
-		}
-		return resp.AppendInt(b, int64(len(members)))
-	case "ZREMRANGEBYRANK":
-		if len(args) != 4 {
-			return errArgs(b, cmd)
-		}
-		start, err1 := strconv.Atoi(args[2])
-		stop, err2 := strconv.Atoi(args[3])
-		if err1 != nil || err2 != nil {
-			return resp.AppendError(b, "ERR value is not an integer or out of range")
-		}
-		e := s.live(args[1])
-		if e == nil || e.zset == nil {
-			return resp.AppendInt(b, 0)
-		}
-		members := sorted(e)
-		n := len(members)
-		if start < 0 {
-			start += n
-		}
-		if stop < 0 {
-			stop += n
-		}
-		start = max(start, 0) // a stop still negative means the range is empty, as on a real server
-		if start > stop || start >= n {
-			return resp.AppendInt(b, 0)
-		}
-		stop = min(stop, n-1)
-		for _, m := range members[start : stop+1] {
-			s.zdel(e, m)
-		}
-		s.dropEmpty(args[1], e)
-		return resp.AppendInt(b, int64(stop-start+1))
-	case "ZCARD":
-		if len(args) != 2 {
-			return errArgs(b, cmd)
-		}
-		if e := s.live(args[1]); e != nil && e.zset != nil {
-			return resp.AppendInt(b, int64(len(e.zset)))
-		}
-		return resp.AppendInt(b, 0)
-	case "INFO":
-		return resp.AppendBulkString(b, s.info())
+	name := strings.ToUpper(args[0])
+	cmd, ok := commands[name]
+	if !ok {
+		return resp.AppendError(b, "ERR unknown command '"+args[0]+"'")
 	}
-	return resp.AppendError(b, "ERR unknown command '"+args[0]+"'")
+	if n := len(args) - 1; n < cmd.min || (cmd.max >= 0 && n > cmd.max) {
+		return errArgs(b, name)
+	}
+	return cmd.fn(s, b, args)
 }
 
+// set handles SET key value [EX seconds | PX milliseconds] [NX | XX] [KEEPTTL].
 func (s *Store) set(b []byte, args []string) []byte {
-	if len(args) < 3 {
-		return errArgs(b, "SET")
-	}
 	var exp time.Time
 	nx, xx, keep := false, false, false
 	for i := 3; i < len(args); i++ {
@@ -370,10 +182,8 @@ func (s *Store) setString(b []byte, k string, v []byte, exp time.Time) []byte {
 	return resp.AppendSimpleString(b, "OK")
 }
 
+// expire handles EXPIRE key seconds [NX | XX | GT | LT].
 func (s *Store) expire(b []byte, args []string) []byte {
-	if len(args) != 3 && len(args) != 4 {
-		return errArgs(b, "EXPIRE")
-	}
 	n, err := strconv.Atoi(args[2])
 	e := s.live(args[1])
 	if err != nil || e == nil {
@@ -402,20 +212,6 @@ func (s *Store) expire(b []byte, args []string) []byte {
 	}
 	s.setExpiry(args[1], e, exp)
 	return resp.AppendInt(b, 1)
-}
-
-func (s *Store) info() string {
-	var expiring int
-	for _, e := range s.kv {
-		if !e.exp.IsZero() {
-			expiring++
-		}
-	}
-	return fmt.Sprintf("# Server\r\ntritium_version:%s\r\nuptime_in_seconds:%d\r\n"+
-		"# Memory\r\nused_memory:%d\r\nmaxmemory:%d\r\nmaxmemory_policy:volatile-ttl\r\n"+
-		"# Replication\r\nrole:master\r\nconnected_slaves:0\r\n"+
-		"# Keyspace\r\ndb0:keys=%d,expires=%d,avg_ttl=0\r\ntombstones:%d\r\n",
-		s.version, int64(s.now().Sub(s.started)/time.Second), s.used, s.max, len(s.kv), expiring, len(s.tomb))
 }
 
 // ── keys ──────────────────────────────────────────────────────────────────

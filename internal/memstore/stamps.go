@@ -28,9 +28,6 @@ type tombstone struct {
 // whichever order they arrive in. Only strings are stamped: a sorted set's
 // members are written independently, so its writes apply as they come.
 func (s *Store) stamped(b []byte, args []string) []byte {
-	if len(args) < 3 {
-		return errArgs(b, "STAMPED")
-	}
 	n, err := strconv.ParseUint(args[1], 10, 64)
 	if err != nil {
 		return resp.AppendError(b, "ERR invalid stamp")
@@ -39,7 +36,7 @@ func (s *Store) stamped(b []byte, args []string) []byte {
 	switch strings.ToUpper(inner[0]) {
 	case "SET", "SETEX":
 		if len(inner) < 3 {
-			return errArgs(b, inner[0])
+			return s.run(b, inner) // the arity error, from the table
 		}
 		if n <= s.stampOf(inner[1]) {
 			return resp.AppendSimpleString(b, "OK") // an older write, already superseded here

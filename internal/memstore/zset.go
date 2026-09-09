@@ -64,10 +64,8 @@ func (s *Store) zadd(b []byte, args []string) []byte {
 	return resp.AppendInt(b, added)
 }
 
+// zrangebyscore handles ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count].
 func (s *Store) zrangebyscore(b []byte, args []string) []byte {
-	if len(args) < 4 {
-		return errArgs(b, "ZRANGEBYSCORE")
-	}
 	lo, loEx, err1 := parseBound(args[2])
 	hi, hiEx, err2 := parseBound(args[3])
 	if err1 != nil || err2 != nil {
@@ -107,6 +105,75 @@ func (s *Store) zrangebyscore(b []byte, args []string) []byte {
 		}
 	}
 	return b
+}
+
+func (s *Store) zrem(b []byte, args []string) []byte {
+	var n int64
+	if e := s.live(args[1]); e != nil && e.zset != nil {
+		for _, m := range args[2:] {
+			if _, ok := e.zset[m]; ok {
+				s.zdel(e, m)
+				n++
+			}
+		}
+		s.dropEmpty(args[1], e)
+	}
+	return resp.AppendInt(b, n)
+}
+
+func (s *Store) zremrangebyscore(b []byte, args []string) []byte {
+	lo, loEx, err1 := parseBound(args[2])
+	hi, hiEx, err2 := parseBound(args[3])
+	if err1 != nil || err2 != nil {
+		return resp.AppendError(b, "ERR min or max is not a float")
+	}
+	members := s.zrange(args[1], lo, loEx, hi, hiEx)
+	if e := s.live(args[1]); e != nil {
+		for _, m := range members {
+			s.zdel(e, m)
+		}
+		s.dropEmpty(args[1], e)
+	}
+	return resp.AppendInt(b, int64(len(members)))
+}
+
+// zremrangebyrank removes members by position in score order; a negative
+// rank counts from the end, as on a real server.
+func (s *Store) zremrangebyrank(b []byte, args []string) []byte {
+	start, err1 := strconv.Atoi(args[2])
+	stop, err2 := strconv.Atoi(args[3])
+	if err1 != nil || err2 != nil {
+		return resp.AppendError(b, "ERR value is not an integer or out of range")
+	}
+	e := s.live(args[1])
+	if e == nil || e.zset == nil {
+		return resp.AppendInt(b, 0)
+	}
+	members := sorted(e)
+	n := len(members)
+	if start < 0 {
+		start += n
+	}
+	if stop < 0 {
+		stop += n
+	}
+	start = max(start, 0) // a stop still negative means the range is empty
+	if start > stop || start >= n {
+		return resp.AppendInt(b, 0)
+	}
+	stop = min(stop, n-1)
+	for _, m := range members[start : stop+1] {
+		s.zdel(e, m)
+	}
+	s.dropEmpty(args[1], e)
+	return resp.AppendInt(b, int64(stop-start+1))
+}
+
+func (s *Store) zcard(b []byte, args []string) []byte {
+	if e := s.live(args[1]); e != nil && e.zset != nil {
+		return resp.AppendInt(b, int64(len(e.zset)))
+	}
+	return resp.AppendInt(b, 0)
 }
 
 func (s *Store) zdel(e *entry, m string) {

@@ -208,3 +208,19 @@ func TestGetWrongType(t *testing.T) {
 		t.Fatalf("MGET on a sorted set: %v", v)
 	}
 }
+
+// The table refuses a command with the wrong number of arguments before its
+// handler runs, and says which command, as a real server does.
+func TestArity(t *testing.T) {
+	s := New(Options{})
+	defer s.Close()
+	for _, args := range [][]string{{"GET", "k", "extra"}, {"DEL"}, {"STAMPED", "7", "SET", "k"}} {
+		err, ok := do(t, s, args...).(error)
+		if !ok || !strings.Contains(err.Error(), "wrong number of arguments") {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	if err, _ := do(t, s, "NOPE").(error); err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("NOPE: %v", err)
+	}
+}

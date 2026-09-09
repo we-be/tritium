@@ -16,9 +16,6 @@ const scanPageMax = 10000
 // scan walks the buckets from the cursor until it has COUNT keys, and hands
 // back the next bucket as the cursor; 0 once the last bucket is done.
 func (s *Store) scan(b []byte, args []string) []byte {
-	if len(args) < 2 {
-		return errArgs(b, "SCAN")
-	}
 	cursor, err := strconv.ParseUint(args[1], 10, 64)
 	if err != nil {
 		return resp.AppendError(b, "ERR invalid cursor")
