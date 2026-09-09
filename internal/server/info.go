@@ -40,7 +40,7 @@ func (s *session) info(args []string) []byte {
 		if !all && !containsFold(args, sec.name) {
 			continue
 		}
-		if s.user != nil && (sec.name == "tritium" || sec.name == "store") {
+		if s.who.limited() && (sec.name == "tritium" || sec.name == "store") {
 			continue // a user gets the node's health, not its address, its seeds, or its store
 		}
 		sb.WriteString("# " + strings.ToUpper(sec.name[:1]) + sec.name[1:] + "\r\n" + sec.body + "\r\n")

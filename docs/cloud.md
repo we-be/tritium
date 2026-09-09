@@ -143,7 +143,7 @@ connection carries.
 
 ### The rules
 
-- **Deny by default.** `internal/server/acl.go` knows where each command's keys
+- **Deny by default.** `internal/server/principal.go` knows where each command's keys
   are. A command that is not in that table and not in the short list of
   key-less ones (`PING`, `ECHO`, `INFO`, `CLIENT`, `COMMAND`, `SELECT`,
   `TRITIUM.NODES`, `ACL`) is `NOPERM` for a user. A command added later — `SCAN`

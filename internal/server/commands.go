@@ -25,51 +25,51 @@ var (
 type command struct {
 	min, max    int // argument counts after the name; max -1 means unbounded
 	fn          func(*session, []string) []byte
-	passthrough bool // fn receives the command name as args[0]
+	passthrough bool   // fn receives the command name as args[0]
+	peer        bool   // changes membership or writes straight into the store: another node only
+	access      access // what it does to which keys, for a limited principal; zero refuses it
 }
 
-// commands are dispatched after authentication. AUTH, HELLO and QUIT are
-// handled before it in dispatch.
+// commands are dispatched after authentication, each through allow. AUTH,
+// HELLO and QUIT are handled before it in dispatch. SCAN, TYPE, DBSIZE and
+// the cluster view have no access: a limited principal learns nothing about
+// keys it was not granted, or about the fleet.
 var commands = map[string]command{
-	"PING":              {min: 0, max: 1, fn: (*session).ping},
-	"ECHO":              {min: 1, max: 1, fn: (*session).echo},
-	"SET":               {min: 2, max: -1, fn: (*session).set},
-	"SETEX":             {min: 3, max: 3, fn: (*session).setex},
-	"GET":               {min: 1, max: 1, fn: (*session).get},
-	"GETDEL":            {min: 1, max: 1, fn: (*session).getdel},
-	"MGET":              {min: 1, max: -1, fn: (*session).mget},
-	"DEL":               {min: 1, max: -1, fn: (*session).del},
-	"EXISTS":            {min: 1, max: -1, fn: (*session).exists},
-	"TTL":               {min: 1, max: 1, fn: (*session).ttl},
-	"EXPIRE":            {min: 2, max: 3, fn: (*session).expire},
-	"ZADD":              {min: 3, max: -1, fn: (*session).zadd},
-	"ZRANGEBYSCORE":     {min: 3, max: -1, fn: (*session).query, passthrough: true},
-	"ZREM":              {min: 2, max: -1, fn: (*session).mutate, passthrough: true},
-	"ZREMRANGEBYSCORE":  {min: 3, max: 3, fn: (*session).mutate, passthrough: true},
-	"ZCARD":             {min: 1, max: 1, fn: (*session).query, passthrough: true},
+	"PING":              {min: 0, max: 1, fn: (*session).ping, access: open},
+	"ECHO":              {min: 1, max: 1, fn: (*session).echo, access: open},
+	"SET":               {min: 2, max: -1, fn: (*session).set, access: writes},
+	"SETEX":             {min: 3, max: 3, fn: (*session).setex, access: writes},
+	"GET":               {min: 1, max: 1, fn: (*session).get, access: reads},
+	"GETDEL":            {min: 1, max: 1, fn: (*session).getdel, access: readWrite},
+	"MGET":              {min: 1, max: -1, fn: (*session).mget, access: readsAll},
+	"DEL":               {min: 1, max: -1, fn: (*session).del, access: writesAll},
+	"EXISTS":            {min: 1, max: -1, fn: (*session).exists, access: readsAll},
+	"TTL":               {min: 1, max: 1, fn: (*session).ttl, access: reads},
+	"EXPIRE":            {min: 2, max: 3, fn: (*session).expire, access: writes},
+	"ZADD":              {min: 3, max: -1, fn: (*session).zadd, access: writes},
+	"ZRANGEBYSCORE":     {min: 3, max: -1, fn: (*session).query, passthrough: true, access: reads},
+	"ZREM":              {min: 2, max: -1, fn: (*session).mutate, passthrough: true, access: writes},
+	"ZREMRANGEBYSCORE":  {min: 3, max: 3, fn: (*session).mutate, passthrough: true, access: writes},
+	"ZCARD":             {min: 1, max: 1, fn: (*session).query, passthrough: true, access: reads},
 	"SCAN":              {min: 1, max: -1, fn: (*session).query, passthrough: true},
 	"TYPE":              {min: 1, max: 1, fn: (*session).query, passthrough: true},
 	"DBSIZE":            {min: 0, max: 0, fn: (*session).query, passthrough: true},
-	"INFO":              {min: 0, max: -1, fn: (*session).info},
-	"CLIENT":            {min: 1, max: -1, fn: (*session).client},
-	"COMMAND":           {min: 0, max: -1, fn: (*session).command},
-	"SELECT":            {min: 1, max: 1, fn: (*session).selectDB},
-	"ACL":               {min: 1, max: -1, fn: (*session).acl},
+	"INFO":              {min: 0, max: -1, fn: (*session).info, access: open},
+	"CLIENT":            {min: 1, max: -1, fn: (*session).client, access: open},
+	"COMMAND":           {min: 0, max: -1, fn: (*session).command, access: open},
+	"SELECT":            {min: 1, max: 1, fn: (*session).selectDB, access: open},
+	"ACL":               {min: 1, max: -1, fn: (*session).acl, access: open},
 	"TRITIUM.NODES":     {min: 0, max: 0, fn: (*session).nodes},
-	"TRITIUM.GOSSIP":    {min: 1, max: 1, fn: (*session).gossip},
-	"TRITIUM.REPLICATE": {min: 2, max: -1, fn: (*session).replicate},
-	"TRITIUM.PEERLINK":  {min: 1, max: 1, fn: (*session).peerlink},
+	"TRITIUM.GOSSIP":    {min: 1, max: 1, fn: (*session).gossip, peer: true},
+	"TRITIUM.REPLICATE": {min: 2, max: -1, fn: (*session).replicate, peer: true},
+	"TRITIUM.PEERLINK":  {min: 1, max: 1, fn: (*session).peerlink, peer: true},
 }
 
 // TRITIUM.FORWARD dispatches the command it carries, so it joins the table
 // at init rather than in the literal that dispatch reads.
 func init() {
-	commands["TRITIUM.FORWARD"] = command{min: 2, max: -1, fn: (*session).forwardHandler}
+	commands["TRITIUM.FORWARD"] = command{min: 2, max: -1, fn: (*session).forwardHandler, peer: true}
 }
-
-// peerOnly commands change membership or write straight into the store, so
-// only another node may run them.
-var peerOnly = map[string]bool{"TRITIUM.GOSSIP": true, "TRITIUM.REPLICATE": true, "TRITIUM.PEERLINK": true, "TRITIUM.FORWARD": true}
 
 // set handles SET key value [EX seconds | PX milliseconds] [NX]. A write
 // without an expiry gets DefaultTTL; XX, KEEPTTL and GET are not supported.
@@ -143,7 +143,7 @@ func (s *session) setex(args []string) []byte {
 // ordered by expiry, a key living for years would outlast everyone else's
 // in the store and push theirs out first.
 func (s *session) userTTL(ttl int) int {
-	if s.user != nil && ttl > DefaultTTL {
+	if s.who.limited() && ttl > DefaultTTL {
 		return DefaultTTL
 	}
 	return ttl

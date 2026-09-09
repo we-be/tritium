@@ -134,6 +134,7 @@ func TestUsersHaveNoClusterView(t *testing.T) {
 	c.want("OK", "AUTH", "gateway", "pw")
 	c.wantErr("NOPERM", "TRITIUM.NODES")
 	c.wantErr("NOPERM", "CLIENT", "LIST") // nor who else is connected
+	c.wantErr("NOPERM", "SCAN", "0")      // nor what keys exist beyond its own
 }
 
 // A connection can name itself, and CLIENT LIST names every connection.

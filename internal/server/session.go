@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
@@ -28,19 +27,16 @@ import (
 // for RESP3 with HELLO 3; for what tritium sends, the two differ only in how
 // nulls and the HELLO reply are encoded.
 //
-// Two identities exist: the "default" user, a client, and the "peer" user,
-// another node. Only peers may change membership with TRITIUM.GOSSIP.
-// A node may configure further users with fewer rights (see acl.go).
+// Who the connection speaks as is its principal (see principal.go): nil
+// until it authenticates.
 type session struct {
 	srv       *Server
 	conn      net.Conn
 	r         *resp.Reader
 	id        int64
 	proto     int
-	authed    bool
-	peer      bool
+	who       *principal
 	fails     int                // AUTHs refused on this connection; it is closed after maxAuthFailures
-	user      *config.User       // nil: one of the built-in identities, with no restrictions
 	linked    *storage.NodeInfo  // set by TRITIUM.PEERLINK: this connection is handed to the peer
 	forwarded bool               // this command came from another node as TRITIUM.FORWARD: apply it here, whoever owns the key
 	fwd       *replica.Forwarded // ...and, when that node said FROM, the store as that write sees it: every replica but the sender
@@ -83,14 +79,9 @@ func (s *session) touch(name string) {
 func (s *session) describe(now time.Time) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	who := "default"
-	switch {
-	case s.peer:
-		who = "peer"
-	case s.user != nil:
-		who = s.user.Name
-	case !s.authed:
-		who = ""
+	who := ""
+	if s.who != nil {
+		who = s.who.name
 	}
 	return fmt.Sprintf("id=%d addr=%s name=%s age=%d idle=%d user=%s cmd=%s", s.id, s.conn.RemoteAddr(), s.name, int(now.Sub(s.started).Seconds()), int(now.Sub(s.last).Seconds()), who, s.lastCmd)
 }
@@ -116,7 +107,10 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 	}()
 
 	now := time.Now()
-	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, authed: s.cfg.Password == "", started: now, last: now}
+	sess := &session{srv: s, conn: c, r: r, id: s.clientSeq.Add(1), proto: 2, started: now, last: now}
+	if s.cfg.Password == "" {
+		sess.who = asDefault
+	}
 	s.sessMu.Lock()
 	if s.sessions == nil {
 		s.sessions = map[int64]*session{}
@@ -129,7 +123,7 @@ func (s *Server) serveConnWith(c net.Conn, r *resp.Reader) {
 		s.sessMu.Unlock()
 	}()
 	for {
-		if !sess.authed {
+		if sess.who == nil {
 			c.SetReadDeadline(time.Now().Add(authTimeout))
 		} else {
 			c.SetReadDeadline(time.Time{}) // wait for the next command with no deadline: idle is legitimate
@@ -177,18 +171,15 @@ func (s *session) dispatch(args []string) (reply []byte, quit bool) {
 	case "HELLO":
 		return s.hello(args[1:]), s.fails >= maxAuthFailures
 	}
-	if !s.authed {
+	if s.who == nil {
 		return replyNoAuth, false
-	}
-	if peerOnly[name] && !s.isPeer() {
-		return replyNoPerm, false
-	}
-	if r := s.allow(name, args[1:]); r != nil {
-		return r, false
 	}
 	cmd, ok := commands[name]
 	if !ok {
 		return resp.AppendError(nil, fmt.Sprintf("ERR unknown command '%s'", args[0])), false
+	}
+	if r := s.allow(cmd, name, args[1:]); r != nil {
+		return r, false
 	}
 	if n := len(args) - 1; n < cmd.min || (cmd.max >= 0 && n > cmd.max) {
 		return errArity(name), false
@@ -247,13 +238,16 @@ func (s *session) authenticate(args []string) []byte {
 		if subtle.ConstantTimeCompare([]byte(password), []byte(u.Password)) != 1 || !ok {
 			return s.refuse()
 		}
-		s.authed, s.peer, s.user = true, false, &u
+		s.who = &principal{name: user, rights: &u.Rights}
 		return nil
 	}
 	if want == "" || subtle.ConstantTimeCompare([]byte(password), []byte(want)) != 1 {
 		return s.refuse()
 	}
-	s.authed, s.peer, s.user = true, user == "peer", nil
+	s.who = asDefault
+	if user == "peer" {
+		s.who = asPeer
+	}
 	return nil
 }
 
@@ -286,10 +280,10 @@ func hostOf(addr string) string {
 // authenticated as the peer user when a password is configured, and under
 // TLS_CLIENT_AUTH it presented a certificate the listener verified.
 func (s *session) isPeer() bool {
-	if s.user != nil {
+	if s.who.limited() {
 		return false // a configured user is never a node, however the node is set up
 	}
-	if s.srv.peerPassword() != "" && !s.peer {
+	if s.srv.peerPassword() != "" && !s.who.node {
 		return false
 	}
 	if s.srv.cfg.TLSClientAuth {
@@ -332,7 +326,7 @@ func (s *session) hello(args []string) []byte {
 			}
 		}
 	}
-	if !s.authed {
+	if s.who == nil {
 		return replyNoAuth
 	}
 	s.proto = proto
@@ -395,7 +389,7 @@ func (s *session) client(args []string) []byte {
 	case "ID":
 		return resp.AppendInt(nil, s.id)
 	case "LIST":
-		if s.user != nil {
+		if s.who.limited() {
 			return replyNoPerm
 		}
 		return resp.AppendBulkString(nil, s.srv.clientList())

@@ -33,6 +33,11 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   or beside them; a surface names key prefixes, never another surface, so a name is
   one hop from the keys. Increment 2 of the trust program (`docs/trust-plan.md`).
   No behaviour change; nothing to roll.
+- **v0.18.5** — **The policy in one place.** A connection speaks as a principal — `default`,
+  `peer`, or a `USER_` held to its rights — and the command table says of every command
+  whether it is a node's alone and what it does to which keys; one gate reads both. The
+  separate peer-only list and the ACL's own command tables are gone. Increment 3 of the
+  trust program. Same answers to every command; rolled to the fleet to prove it.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

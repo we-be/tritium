@@ -16,7 +16,7 @@ GitHub's **Security** tab instead of a public issue.
 What this project actually claims, and where it's enforced:
 
 - `AUTH_PASSWORD` / `PEER_PASSWORD` gating and `USER_<name>` key-prefix ACLs
-  (`internal/server/acl.go`, `internal/server/commands.go`)
+  (`internal/server/principal.go`, `internal/server/commands.go`)
 - TLS and mutual TLS between nodes and clients (`internal/server/tls.go`)
 - end-to-end AES-256-GCM sealing in `pkg/tritium` (`pkg/tritium/crypto.go`) —
   a node never holds the key or sees plaintext for a value sealed that way;

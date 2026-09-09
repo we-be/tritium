@@ -120,6 +120,10 @@ func plainName(s string) bool {
 	})
 }
 
+// MayRead and MayWrite are the rights as a principal's gate asks them.
+func (r *Rights) MayRead(key string) bool  { return May(r.Read, key) }
+func (r *Rights) MayWrite(key string) bool { return May(r.Write, key) }
+
 // May reports whether key is one of rights: named exactly, or under a right
 // that ends in ":" or "/".
 func May(rights []string, key string) bool {
