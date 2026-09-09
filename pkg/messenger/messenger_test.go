@@ -470,6 +470,16 @@ func TestGroupSendAndAuth(t *testing.T) {
 	if _, err := w.bob.AddMember(name, w.name("mallory")); !errors.Is(err, ErrNotCreator) {
 		t.Fatalf("non-creator changed the roster: %v", err)
 	}
+	if g, err := w.alice.RemoveMember(name, carol.id.Name); err != nil || len(g.Members) != 1 {
+		t.Fatalf("remove: %+v, %v", g, err)
+	}
+	if err := w.alice.SendGroup(name, []byte("carol left")); err != nil {
+		t.Fatal(err)
+	}
+	w.receive(w.bob, "carol left")
+	if msgs, _ := carol.Receive(); len(msgs) != 0 {
+		t.Fatal("a removed member still received a group send")
+	}
 }
 
 func mustPub(priv []byte) []byte {

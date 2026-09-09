@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/we-be/tritium/internal/config"
+	"github.com/we-be/tritium/internal/memstore"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/internal/resptest"
 	"github.com/we-be/tritium/pkg/storage"
@@ -287,6 +288,46 @@ func TestTLS(t *testing.T) {
 	plain := dial(t, seed)
 	if _, err := plain.do("PING"); err == nil {
 		t.Fatal("plaintext client was accepted on a TLS listener")
+	}
+}
+
+// A node reaches a TLS store under SECURE_STORE_TLS, verified against
+// SECURE_STORE_CA; a store under a CA the node does not trust is refused.
+func TestStoreTLS(t *testing.T) {
+	certFile, keyFile, _ := selfSigned(t)
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := memstore.New(memstore.Options{})
+	go st.Serve(ln)
+	t.Cleanup(func() { ln.Close(); st.Close() })
+
+	cfg := config.Config{StoreAddr: ln.Addr().String(), StoreTLS: true, StoreCA: certFile, PoolSize: 1, PeerPassword: testPeerPW}
+	s, err := New(cfg)
+	if err == nil {
+		err = s.Start("127.0.0.1:0")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Stop() })
+	dial(t, s).want("OK", "SET", "tls:k", "v")
+
+	cfg.StoreCA, _, _ = selfSigned(t) // a different CA
+	bad, err := New(cfg)
+	if err == nil {
+		err = bad.Start("127.0.0.1:0")
+	}
+	if err == nil {
+		t.Cleanup(func() { bad.Stop() })
+		if _, err = dial(t, bad).do("SET", "tls:k", "v"); err == nil {
+			t.Fatal("a store under a CA the node does not trust was written through")
+		}
 	}
 }
 

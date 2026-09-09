@@ -277,3 +277,16 @@ func TestParserAbuseKeepsServing(t *testing.T) {
 	c.want("OK", "AUTH", "right")
 	c.want("PONG", "PING")
 }
+
+// What valkey-cli sends on connect is answered — COMMAND DOCS with an
+// empty array, ECHO with its argument — so the stock CLI starts without
+// complaint.
+func TestCLIHandshake(t *testing.T) {
+	s := startNode(t, config.Config{})
+	c := dial(t, s)
+	v, err := c.do("COMMAND", "DOCS")
+	if arr, _ := v.([]any); err != nil || len(arr) != 0 {
+		t.Fatalf("COMMAND DOCS: %v, %v", v, err)
+	}
+	c.want("hi", "ECHO", "hi")
+}

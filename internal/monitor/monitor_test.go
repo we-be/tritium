@@ -35,4 +35,9 @@ func TestSnapshotReadsStoreThroughNode(t *testing.T) {
 	if !strings.Contains(out.String(), "Store ("+snap.Nodes[0].StoreAddr+")") {
 		t.Fatalf("rendered:\n%s", out.String())
 	}
+	out.Reset()
+	monitor.Render(&out, snap, true, time.Now(), time.Second)
+	if !strings.Contains(out.String(), "Node "+snap.Nodes[0].Addr+" [") {
+		t.Fatalf("summary:\n%s", out.String())
+	}
 }

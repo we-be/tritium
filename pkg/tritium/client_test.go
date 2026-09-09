@@ -198,3 +198,20 @@ func TestOptionsFromEnv(t *testing.T) {
 		t.Fatalf("OptionsFromEnv = %+v, %v", opts, err)
 	}
 }
+
+// TLSConfig refuses a CA file with no certificate in it rather than verify
+// against nothing; without a file it trusts the system roots.
+func TestTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "ca.pem")
+	os.WriteFile(empty, []byte("not a certificate\n"), 0o600)
+	if _, err := tritium.TLSConfig(empty); err == nil {
+		t.Fatal("a CA file with no certificate was accepted")
+	}
+	if _, err := tritium.TLSConfig(filepath.Join(dir, "missing.pem")); err == nil {
+		t.Fatal("a missing CA file was accepted")
+	}
+	if cfg, err := tritium.TLSConfig(""); err != nil || cfg == nil || cfg.RootCAs != nil {
+		t.Fatalf("system roots: %+v, %v", cfg, err)
+	}
+}
