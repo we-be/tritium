@@ -28,6 +28,23 @@ channel between them. In order, it has to be:
 Each iteration picks one and moves it: a fix, a measurement, a probe that
 finds nothing, or a cut. Not every iteration ships.
 
+## The program: trust levels and replication surfaces
+
+Opened 2026-09-09, aimed at Q1 2027. A node joins for a surface — a set of
+key prefixes — and gets that surface only. The order of increments, the
+rules and the phase gates are in [docs/trust-plan.md](docs/trust-plan.md);
+the loop takes the next unchecked increment from there before anything
+below, and checks it off here with its commit.
+
+- [ ] 1. `tritium-cli prefixes` — the keyspace census as a command
+- [ ] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name`
+- [ ] 3. the policy in one place; `peer` becomes a principal
+- [ ] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement
+- [ ] 5–8. phase 1: fan-out, weight, queued, chaos with a scoped node — then the gate
+- [ ] 9–12. phase 2: the view, relay, links, a second cloud node
+- [ ] 13–15. phase 3: identity by certificate, invite, bounds
+- [ ] 16–18. phase 4: visible everywhere, docs, an outsider's trial
+
 ## Now
 
 - [x] Resync a peer's store on attach — 2026-09-06
