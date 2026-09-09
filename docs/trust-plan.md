@@ -120,7 +120,12 @@ is committed to.
   from guesswork.
 - **Q5 — does it hold with a real outsider?** A second cloud node in
   another region, or someone else's box, joins `public` and carries
-  messenger traffic for a month.
+  messenger traffic for a month. The first candidate is a box another
+  project owns: the Valheim map proxy xn-valheim is weighing a nano for
+  (2026-09-09) would do, since it is provisioned by a different stack,
+  holds none of the fleet's secrets, and today could only be kept apart
+  from the plane by configuration — passwords, `PEER_ALLOW`, the CA —
+  which is exactly what this program makes structural.
 
 ## The order
 
