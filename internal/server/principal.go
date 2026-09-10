@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
@@ -94,4 +95,45 @@ func (s *session) acl(args []string) []byte {
 		return resp.AppendError(nil, fmt.Sprintf("ERR unknown subcommand '%s'. Try ACL WHOAMI.", args[0]))
 	}
 	return resp.AppendBulkString(nil, s.who.name)
+}
+
+// scopes is what each peer this node fans writes out to may hold, by the
+// address it announced. A PEER_<name> authenticates here and then says where
+// it is, in a gossip or a link, and the fan-out asks this by address — so a
+// node held to rights on the accept side is held to the same ones on the
+// send side. An address nobody scoped answers nil, every key, which is what
+// a fleet peer is.
+type scopes struct {
+	mu sync.Mutex
+	by map[string]*config.Rights
+}
+
+func newScopes() *scopes { return &scopes{by: map[string]*config.Rights{}} }
+
+// note records what the peer at addr may hold. The last word wins: a node
+// that comes back on another credential says what it is now, and the
+// unscoped peer clears whatever a scoped one left behind.
+func (s *scopes) note(addr string, r *config.Rights) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r == nil {
+		delete(s.by, addr)
+		return
+	}
+	s.by[addr] = r
+}
+
+// of is the lookup the replica fan-out holds.
+func (s *scopes) of(addr string) *config.Rights {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.by[addr]
+}
+
+// noteScope binds what this connection speaks as to the address it has just
+// announced. Only a node announces one; a client never reaches here.
+func (s *session) noteScope(addr string) {
+	if s.who != nil && s.who.node {
+		s.srv.scopes.note(addr, s.who.rights)
+	}
 }

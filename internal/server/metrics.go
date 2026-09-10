@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +93,12 @@ func (s *Server) metricsText() string {
 	m.head("tritium_peer_state", "gauge", "Each peer's state in this node's view, always 1.")
 	for _, p := range s.cluster.peers() {
 		fmt.Fprintf(m, "tritium_peer_state{peer=%s,state=%s} 1\n", quote(p.Addr), quote(string(p.State)))
+	}
+
+	withheld := s.store.Withheld()
+	m.head("tritium_peer_writes_withheld_total", "counter", "Fan-outs a peer did not get in full, its rights not naming the keys.")
+	for _, addr := range slices.Sorted(maps.Keys(withheld)) {
+		fmt.Fprintf(m, "tritium_peer_writes_withheld_total{peer=%s} %d\n", quote(addr), withheld[addr])
 	}
 	return m.String()
 }

@@ -87,6 +87,7 @@ type Server struct {
 	metrics   *http.Server // the scrape endpoint; nil unless METRICS_ADDRESS is set
 	metricsLn net.Listener
 	pconns    peerConns // authenticated connections to peers, for forwards and gossip
+	scopes    *scopes   // what each peer that authenticated here may hold
 	clock     *clock    // stamps this node's writes
 	guesses   guesses   // refused AUTHs by client address
 	connMu    sync.Mutex
@@ -116,7 +117,7 @@ func New(cfg config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{cfg: cfg, tlsServer: tlsServer, tlsPeer: tlsPeer, links: newLinks(), linkDone: make(chan struct{})}
+	s := &Server{cfg: cfg, tlsServer: tlsServer, tlsPeer: tlsPeer, links: newLinks(), linkDone: make(chan struct{}), scopes: newScopes()}
 	if cfg.StoreAddr == "" {
 		// The node's own store: reached over RESP like any other, through
 		// connections that never leave the process.
@@ -174,6 +175,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		advertise = ln.Addr().String()
 	}
 	s.store.SetReplicaTransport(s.peerTransport())
+	s.store.SetReplicaRights(s.scopes.of)
 	s.clock = newClock(advertise)
 	s.store.SetStamper(s.clock.next, s.cfg.StoreAddr == "")
 	s.store.SetAsyncFor(asyncDepth, s.far)

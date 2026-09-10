@@ -43,6 +43,15 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   for those keys, and may relay nothing; `TRITIUM.NODES` still answers it, since a node
   joins through the view. The built-in `peer` is unchanged. Increment 4 of the trust
   program, the first with a behaviour: off until a `PEER_` line exists, so nothing rolled.
+- **v0.18.7** — **A scoped peer is sent only its surface.** The other half of v0.18.6: a
+  `PEER_<name>` says where it is on the connection it authenticated on, and from then on
+  every key this node hands that address is checked against the same rights — the fan-out
+  (a write outside them is not sent, a `DEL` naming keys on both sides is cut down to the
+  ones it may hold), the resync that follows an attach, and the repair that replays what a
+  held peer missed. A key it may not hold is not a key it missed, so nothing withheld is
+  ever held or replayed, and the fleet's own event log stops at the surface.
+  `tritium_peer_writes_withheld_total{peer=…}` counts what each peer did not get in full.
+  Increment 5 of the trust program; off until a `PEER_` line exists, so nothing rolled.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

@@ -40,7 +40,11 @@ below, and checks it off here with its commit.
 - [x] 2. `SURFACE_<name>=<rights>`; a `USER_` line may say `@name` — v0.18.4, 2026-09-09
 - [x] 3. the policy in one place; `peer` becomes a principal — v0.18.5, 2026-09-09
 - [x] 4. `PEER_<name>=<password>:<rights>`, accept-side enforcement — v0.18.6, 2026-09-09
-- [ ] 5–8. phase 1: fan-out, weight, queued, chaos with a scoped node — then the gate
+- [x] 5. fan-out honours read rights — and so do the resync and the repair, since a
+  copy that reaches past the fan-out would make the filter a story rather than a
+  bound; per-peer counter in metrics — v0.18.7, 2026-09-10
+- [ ] 6–8. phase 1: weight, queued, chaos with a scoped node (SCAN MATCH per
+  prefix, so a copy does not walk keys it may not send) — then the gate
 - [ ] 9–12. phase 2: the view, relay, links, a second cloud node
 - [ ] 13–15. phase 3: identity by certificate, invite, bounds
 - [ ] 16–18. phase 4: visible everywhere, docs, an outsider's trial

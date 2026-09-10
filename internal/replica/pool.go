@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 )
 
@@ -81,6 +84,13 @@ type pool struct {
 	// writer goroutine, in order, coalesced into batches; nil means every
 	// write waits for this replica's answer.
 	queue chan job
+
+	// rights, when set, answers what this replica may hold; a nil answer is
+	// every key. It is asked per batch rather than read once at attach,
+	// since a peer says who it is when it announces itself, which may be
+	// after we have already attached it.
+	rights   func() *config.Rights
+	withheld atomic.Int64 // fan-outs this replica did not get in full, its rights not naming the keys
 
 	// onHold, when set, is called once on the transition into held — not on
 	// every write while it stays held. It runs synchronously under mu, so it
@@ -436,4 +446,100 @@ func (p *pool) integer(cmd resp.Command) (int64, error) {
 		return 0, fmt.Errorf("primary: unexpected reply %T", v)
 	}
 	return n, nil
+}
+
+// deliver hands one fan-out to this replica: queued where it is fed from a
+// queue, noted where it is held, sent otherwise. It is the one door a batch
+// comes in by, so it is the one place the replica's rights are applied.
+func (p *pool) deliver(cmds []resp.Command) {
+	if cmds = p.scope(cmds); len(cmds) == 0 {
+		return
+	}
+	if p.queue != nil {
+		p.enqueue(cmds)
+		return
+	}
+	if p.isHeld() {
+		p.hold(cmds)
+		return
+	}
+	p.send(cmds)
+}
+
+// scope cuts a batch down to what this replica may hold. What is dropped
+// here is never held either: a repair replays what a peer missed, and a key
+// its rights do not name is not something it missed.
+func (p *pool) scope(cmds []resp.Command) []resp.Command {
+	if p.rights == nil {
+		return cmds
+	}
+	r := p.rights()
+	if r == nil {
+		return cmds
+	}
+	out := make([]resp.Command, 0, len(cmds))
+	for _, c := range cmds {
+		kept, whole := scoped(c, r)
+		if kept != nil {
+			out = append(out, kept)
+		}
+		if !whole {
+			p.withheld.Add(1)
+		}
+	}
+	return out
+}
+
+// scopeKeys is keys cut down to the ones this replica may hold: what a
+// resync copies to it, and what a repair replays. keys itself is left alone,
+// since a repair still forgets every key it noted — one outside the
+// replica's rights is not a key it is waiting for.
+func (p *pool) scopeKeys(keys []string) []string {
+	if p.rights == nil {
+		return keys
+	}
+	r := p.rights()
+	if r == nil {
+		return keys
+	}
+	return slices.DeleteFunc(slices.Clone(keys), func(k string) bool { return !r.MayRead(k) })
+}
+
+// scoped is cmd as a replica holding rights should see it, and whether the
+// replica gets the whole of it: cmd itself when every key it names is one
+// the replica may hold, a DEL cut down to the ones it may, and nil when
+// nothing is left — or when the keys cannot be named at all, since a right
+// that cannot be checked is a right that is refused.
+func scoped(cmd resp.Command, r *config.Rights) (resp.Command, bool) {
+	args, err := resp.NewReader(bytes.NewReader(cmd)).ReadCommand()
+	if err != nil {
+		return nil, false
+	}
+	var stamp []string
+	if len(args) > 2 && strings.EqualFold(args[0], "STAMPED") {
+		stamp, args = args[:2], args[2:]
+	}
+	if len(args) < 2 {
+		return nil, false
+	}
+	if !strings.EqualFold(args[0], "DEL") {
+		if r.MayRead(args[1]) {
+			return cmd, true
+		}
+		return nil, false
+	}
+	keep := make([]string, 1, len(args))
+	keep[0] = args[0]
+	for _, k := range args[1:] {
+		if r.MayRead(k) {
+			keep = append(keep, k)
+		}
+	}
+	switch len(keep) {
+	case 1:
+		return nil, false
+	case len(args):
+		return cmd, true
+	}
+	return resp.NewCommand(slices.Concat(stamp, keep)...), false
 }

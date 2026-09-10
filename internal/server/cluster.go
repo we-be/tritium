@@ -523,6 +523,7 @@ func (s *session) gossip(args []string) []byte {
 	if r := s.certNames(n.Addr); r != nil {
 		return r
 	}
+	s.noteScope(n.Addr) // before the merge: learning the node is what attaches it as a replica
 	s.srv.cluster.learn(n)
 	return viewJSON(s.srv.cluster.snapshot())
 }

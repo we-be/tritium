@@ -298,6 +298,7 @@ func (s *session) peerlink(args []string) []byte {
 	if r := s.certNames(n.Addr); r != nil {
 		return r
 	}
+	s.noteScope(n.Addr)
 	s.linked = &n
 	return replyOK
 }

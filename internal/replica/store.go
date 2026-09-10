@@ -13,6 +13,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 	"github.com/we-be/tritium/pkg/storage"
 )
@@ -49,6 +50,10 @@ type Store struct {
 	// store takes the plain write and keeps no stamps.
 	stamp         func() uint64
 	primaryStamps bool
+	// rights answers what the replica at an address may hold, so a peer this
+	// node holds to rights on the accept side is held to the same ones on
+	// the send side. nil, and a nil answer, mean every key.
+	rights func(addr string) *config.Rights
 	// parked is what a replica removed while held still missed, by address:
 	// a peer detached during a partition is re-attached when the link is
 	// back, and a first-meeting sync only fills its gaps — the keys written
@@ -98,6 +103,28 @@ func (s *Store) SetReplicaTransport(t Transport) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.via = t
+}
+
+// SetReplicaRights is how the fan-out learns what each replica may hold: a
+// write whose key a replica's read rights do not name is not sent to it, and
+// a DEL naming several is cut down to the ones it may. fn is asked per batch,
+// so a peer that says who it is after it was attached is still held to it.
+func (s *Store) SetReplicaRights(fn func(addr string) *config.Rights) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rights = fn
+}
+
+// Withheld is, per replica, how many fan-outs it did not get in full because
+// its rights do not name the keys.
+func (s *Store) Withheld() map[string]int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]int64, len(s.replicas))
+	for _, r := range s.replicas {
+		out[r.addr] = r.withheld.Load()
+	}
+	return out
 }
 
 // SetAsync makes writes return once the primary has them, with replicas
@@ -189,16 +216,10 @@ func (s *Store) ReplicateTo(addr string, cmds ...resp.Command) {
 		return
 	}
 	if r.queue != nil {
-		r.enqueue(cmds)
+		r.deliver(cmds) // in order: a queued replica's batches must not race each other
 		return
 	}
-	go func() {
-		if r.isHeld() {
-			r.hold(cmds)
-			return
-		}
-		r.send(cmds)
-	}()
+	go r.deliver(cmds)
 }
 
 // Queued lists the replicas fed from a queue rather than waited on.
@@ -431,16 +452,10 @@ func (s *Store) replicateAllExcept(cmds []resp.Command, except string) {
 			continue
 		}
 		if r.queue != nil {
-			r.enqueue(cmds)
+			r.deliver(cmds)
 			continue
 		}
-		wg.Go(func() {
-			if r.isHeld() {
-				r.hold(cmds)
-				return
-			}
-			r.send(cmds)
-		})
+		wg.Go(func() { r.deliver(cmds) })
 	}
 	wg.Wait()
 }
@@ -451,11 +466,14 @@ func (s *Store) AddReplica(addr string) error {
 		return nil
 	}
 	s.mu.RLock()
-	via := s.via
+	via, rights := s.via, s.rights
 	s.mu.RUnlock()
 	p, err := newPool(addr, s.size, via)
 	if err != nil {
 		return err
+	}
+	if rights != nil {
+		p.rights = func() *config.Rights { return rights(addr) }
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

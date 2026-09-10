@@ -18,6 +18,7 @@ import (
 
 	"github.com/we-be/tritium/internal/resp"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/memstore"
 	"github.com/we-be/tritium/internal/replica"
 	"github.com/we-be/tritium/internal/resptest"
@@ -401,4 +402,99 @@ func selfSignedCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
+}
+
+// A replica held to rights is sent only what those rights name: a write
+// outside them never leaves, a DEL naming keys on both sides is cut down to
+// the ones it may hold, and neither counts as a write the replica missed.
+// Increment 5 of docs/trust-plan.md.
+func TestFanOutHonoursReplicaRights(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot be told apart from the primary")
+	}
+	for _, stamps := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "stamped"}[stamps], func(t *testing.T) {
+			primary, err := replica.NewStore(resptest.Addr(t), 1, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer primary.Close()
+			repAddr := resptest.Addr(t)
+			rep, err := replica.NewStore(repAddr, 1, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rep.Close()
+			if stamps {
+				var n atomic.Uint64
+				primary.SetStamper(func() uint64 { return n.Add(1) }, true)
+			}
+
+			pub := &config.Rights{Read: []string{"pub:"}, Write: []string{"pub:"}}
+			primary.SetReplicaRights(func(addr string) *config.Rights {
+				if addr == repAddr {
+					return pub
+				}
+				return nil
+			})
+
+			// What the primary already holds is copied on attach, and that
+			// copy reaches no further than the fan-out does.
+			if err := primary.Set("pub:old", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			if err := primary.Set("fleet:old", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			if err := primary.AddReplica(repAddr); err != nil {
+				t.Fatal(err)
+			}
+			if n, err := primary.Sync(repAddr, true); err != nil || n != 1 {
+				t.Fatalf("resync: %d keys, %v; want 1", n, err)
+			}
+			if v, err := rep.Get("pub:old"); err != nil || string(v) != "v" {
+				t.Fatalf("the resync skipped a key the replica may hold: %q, %v", v, err)
+			}
+			if _, err := rep.Get("fleet:old"); !errors.Is(err, storage.ErrNotFound) {
+				t.Fatal("the resync copied a key outside the replica's rights")
+			}
+
+			if err := primary.Set("pub:k", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			if err := primary.Set("fleet:k", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			if v, err := rep.Get("pub:k"); err != nil || string(v) != "v" {
+				t.Fatalf("the replica missed a key it may hold: %q, %v", v, err)
+			}
+			if _, err := rep.Get("fleet:k"); !errors.Is(err, storage.ErrNotFound) {
+				t.Fatal("a key outside the replica's rights was fanned out to it")
+			}
+
+			// The replica has a fleet: key of its own — its store is shared
+			// with nobody, but a DEL that reached it would still remove one.
+			if err := rep.Set("fleet:mine", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := primary.Delete("pub:k", "fleet:mine"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := rep.Get("pub:k"); !errors.Is(err, storage.ErrNotFound) {
+				t.Fatal("the replica kept a key the DEL named and it may hold")
+			}
+			if v, err := rep.Get("fleet:mine"); err != nil || string(v) != "v" {
+				t.Fatalf("a DEL reached past the replica's rights: %q, %v", v, err)
+			}
+
+			// Two fan-outs went out short; nothing was held, since a key the
+			// replica may not hold is not a key it missed.
+			if n := primary.Withheld()[repAddr]; n != 2 {
+				t.Fatalf("withheld from %s: %d, want 2", repAddr, n)
+			}
+			if held := primary.Held(); len(held) != 0 {
+				t.Fatalf("a scoped replica was held: %v", held)
+			}
+		})
+	}
 }

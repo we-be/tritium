@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
 )
 
@@ -65,7 +66,7 @@ func (s *Store) repair(p *pool) (int, error) {
 		p.mu.Lock()
 		keys := slices.Collect(maps.Keys(p.missed))
 		p.mu.Unlock()
-		for batch := range slices.Chunk(keys, 200) {
+		for batch := range slices.Chunk(p.scopeKeys(keys), 200) {
 			cmds, _, err := s.copyCommands(batch, true, true)
 			if err != nil {
 				return n, err
@@ -96,13 +97,16 @@ func (s *Store) repair(p *pool) (int, error) {
 // per key — returning the keys copied and the first error.
 func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 	s.mu.RLock()
-	via := s.via
+	via, rights := s.via, s.rights
 	s.mu.RUnlock()
 	dst, err := newPool(addr, 1, via)
 	if err != nil {
 		return 0, err
 	}
 	defer dst.close()
+	if rights != nil { // a copy to a peer reaches no further than its rights, like a fan-out
+		dst.rights = func() *config.Rights { return rights(addr) }
+	}
 	n, cursor := 0, "0"
 	var first error
 	for {
@@ -121,7 +125,7 @@ func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 			key, _ := k.([]byte)
 			keys = append(keys, string(key))
 		}
-		cmds, copied, err := s.copyCommands(keys, overwrite, false)
+		cmds, copied, err := s.copyCommands(dst.scopeKeys(keys), overwrite, false)
 		if err != nil {
 			return n, err
 		}

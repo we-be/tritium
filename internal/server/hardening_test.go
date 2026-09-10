@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/we-be/tritium/internal/config"
 	"github.com/we-be/tritium/internal/resp"
+	"github.com/we-be/tritium/internal/resptest"
+	"github.com/we-be/tritium/pkg/storage"
 )
 
 // Five refused AUTHs close the connection, and an unknown user is refused
@@ -320,5 +323,64 @@ func TestScopedPeerWritesOnlyItsKeys(t *testing.T) {
 	owner.want("v", "GET", "pub:k2")
 	if v, err := owner.do("GET", "fleet:k"); err != nil || v != nil {
 		t.Fatalf("fleet:k was written through a scoped peer: %v, %v", v, err)
+	}
+}
+
+// The other side of TestScopedPeerWritesOnlyItsKeys: what this node sends a
+// peer held to rights is what those rights name. The peer says where it is
+// on the connection it authenticated on, and the fan-out to that address is
+// held to the same rights the accept side holds it to. Increment 5 of the
+// trust program.
+func TestScopedPeerIsSentOnlyItsKeys(t *testing.T) {
+	if resptest.Shared() {
+		t.Skip("with one store behind both nodes, what the guest was sent cannot be told from what it shares")
+	}
+	t.Setenv("TRITIUM_PEER_pub", "pw:rw:pub:")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Password = "boss"
+	node := startNode(t, cfg)
+	guest := startNode(t, config.Config{Password: "boss"})
+
+	// The guest announces itself on a connection that speaks as the scoped
+	// peer — which is what makes the node attach it as a replica.
+	c := dial(t, node)
+	c.want("OK", "AUTH", "pub", "pw")
+	if _, err := c.do("TRITIUM.GOSSIP", guest.cluster.localJSON()); err != nil {
+		t.Fatal(err)
+	}
+	guestAddr := guest.Addr()
+	waitFor(t, "the guest to be attached", func() bool {
+		return slices.Contains(node.store.Replicas(), guestAddr)
+	})
+	// The resync that follows an attach reaches no further than the fan-out
+	// does; wait it out, so what the guest holds at the end is both.
+	owner := dial(t, node)
+	owner.want("OK", "AUTH", "boss")
+	waitFor(t, "the guest to be resynced", func() bool {
+		return hasEvent(t, owner, node.cluster.local.ID, "resync", guestAddr)
+	})
+
+	if err := node.store.Set("pub:k", []byte("v"), 60); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.store.Set("fleet:k", []byte("v"), 60); err != nil {
+		t.Fatal(err)
+	}
+	gc := dial(t, guest)
+	gc.want("OK", "AUTH", "boss")
+	gc.want("v", "GET", "pub:k")
+	if v, err := gc.do("GET", "fleet:k"); err != nil || v != nil {
+		t.Fatalf("a fleet key was fanned out to a scoped peer: %v, %v", v, err)
+	}
+	// The node's own event log is a replicated key like any other, and it is
+	// the fleet's business: a peer scoped to pub: does not get it either.
+	if v, err := gc.do("EXISTS", storage.EventsKeyPrefix+node.cluster.local.ID); err != nil || v != int64(0) {
+		t.Fatalf("the fleet's event log reached a scoped peer: %v, %v", v, err)
+	}
+	if n := node.store.Withheld()[guestAddr]; n == 0 {
+		t.Fatal("nothing was counted as withheld from the guest")
 	}
 }
