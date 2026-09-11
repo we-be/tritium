@@ -28,6 +28,13 @@ const (
 	EnvPeerPrefix = "TRITIUM_PEER_"
 )
 
+// reservedPeer names the PEER_ keys Load reads as the node's own settings
+// rather than a peer's credential. Both predate the PEER_<name> grammar and
+// would otherwise be swept into it, so a node that sets either — every
+// peering node sets both — refuses to start: PEER_ALLOW's "host:port,host:port"
+// reads as a password and rights.
+var reservedPeer = map[string]bool{"PASSWORD": true, "ALLOW": true}
+
 // User is a client that gets less than AUTH_PASSWORD grants: it authenticates
 // as AUTH <name> <password> and may only touch keys its Rights name. Peer
 // commands are never among them.
@@ -93,6 +100,11 @@ func entries(raw, vals map[string]string, prefix, envPrefix string) map[string]s
 // say which it is.
 func peers(vals map[string]string, surfaces map[string]Rights, users map[string]User) (map[string]User, error) {
 	raw := entries(map[string]string{}, vals, PeerPrefix, EnvPeerPrefix)
+	for name := range raw {
+		if reservedPeer[name] {
+			delete(raw, name)
+		}
+	}
 	if len(raw) == 0 {
 		return nil, nil
 	}
