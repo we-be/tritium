@@ -152,3 +152,21 @@ func TestPeerAndUserNamesAreDistinct(t *testing.T) {
 		t.Fatalf("PEER_x: %+v, %v", cfg.Peers, err)
 	}
 }
+
+// PEER_PASSWORD and PEER_ALLOW are the node's own settings, not peers: a
+// node that sets both — every peering node does — still starts, and neither
+// becomes a credential.
+func TestReservedPeerKeysAreNotCredentials(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	os.WriteFile(path, []byte("AUTH_PASSWORD=a\nPEER_PASSWORD=p\nPEER_ALLOW=bazzite.local:8080,macair.local:8080\nPEER_air=pw:rw:sig:\n"), 0o600)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PeerPassword != "p" || len(cfg.PeerAllow) != 2 {
+		t.Fatalf("settings: %q %v", cfg.PeerPassword, cfg.PeerAllow)
+	}
+	if len(cfg.Peers) != 1 || cfg.Peers["air"].Password != "pw" {
+		t.Fatalf("peers: %+v", cfg.Peers)
+	}
+}
