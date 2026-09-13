@@ -52,6 +52,10 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   ever held or replayed, and the fleet's own event log stops at the surface.
   `tritium_peer_writes_withheld_total{peer=…}` counts what each peer did not get in full.
   Increment 5 of the trust program; off until a `PEER_` line exists, so nothing rolled.
+  Also the fix that made this release urgent: `peers()` had swept every `PEER_` key through
+  the v0.18.6 credential grammar, so the settings `PEER_ALLOW` and `PEER_PASSWORD` parsed as
+  peers and **no peering node would start on v0.18.6** (`PEER_ALLOW: "…" is not r, w or rw`).
+  Reserved names are skipped; upgrade straight past v0.18.6.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
