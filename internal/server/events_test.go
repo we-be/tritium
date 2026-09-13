@@ -99,28 +99,25 @@ func hasEvent(t *testing.T, c raw, node, kind, peer string) bool {
 	return false
 }
 
-// A flapping peer cannot grow a node's log past eventsCap, and an entry
+// A flapping peer cannot grow a node's log past its cap, and an entry
 // older than the retention window is trimmed on the next write.
 func TestEventsCapAndTrim(t *testing.T) {
-	savedCap := eventsCap
-	eventsCap = 10
-	t.Cleanup(func() { eventsCap = savedCap })
-
+	const limit = 10
 	store, err := replica.NewStore(resptest.Addr(t), 1, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { store.Close() })
-	el := newEventLog("node-test", store)
+	el := newEventLog("node-test", store, limit)
 	t.Cleanup(el.stop)
 	key := storage.EventsKeyPrefix + "node-test"
 
-	for i := range eventsCap + 5 {
+	for i := range limit + 5 {
 		el.emit("attach", fmt.Sprintf("peer-%d", i), 0, 0)
 	}
-	waitFor(t, "the count to cap at eventsCap", func() bool {
+	waitFor(t, "the count to cap at the log's own cap", func() bool {
 		n, _ := store.Query("ZCARD", key)
-		return n == int64(eventsCap)
+		return n == int64(limit)
 	})
 
 	stale := resp.NewCommand("ZADD", key, strconv.FormatInt(time.Now().Add(-25*time.Hour).UnixMilli(), 10), `{"event":"stale"}`)

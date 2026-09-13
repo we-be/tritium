@@ -64,7 +64,7 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 
 		Electronegativity: s.cfg.Electronegativity,
 	}
-	events := newEventLog(local.ID, s.store)
+	events := newEventLog(local.ID, s.store, eventsCap)
 	s.store.SetHoldHook(func(addr string) { events.emit("hold", addr, 0, 0) })
 	s.store.SetRepairHook(func(addr string, keys int) { events.emit("repair", addr, keys, 0) })
 	c := &cluster{

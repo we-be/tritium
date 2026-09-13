@@ -13,8 +13,10 @@ import (
 
 // eventsTTL and eventsCap bound this node's own event log: a day of
 // history, and a hard cap so a peer flapping attach/detach all day cannot
-// grow the replicated set without bound. Variables so tests can shrink them.
-var (
+// grow the replicated set without bound. The cap is carried per-log, not
+// read from here at write time, so a test can shrink its own log's without
+// reaching into another node's running writer.
+const (
 	eventsTTL = 24 * time.Hour
 	eventsCap = 500
 )
@@ -29,13 +31,15 @@ var (
 type eventLog struct {
 	nodeID string
 	store  *replica.Store
+	cap    int
 	ch     chan storage.Event
 	done   chan struct{}
 }
 
-// newEventLog starts the writer goroutine for nodeID's log.
-func newEventLog(nodeID string, store *replica.Store) *eventLog {
-	el := &eventLog{nodeID: nodeID, store: store, ch: make(chan storage.Event, 64), done: make(chan struct{})}
+// newEventLog starts the writer goroutine for nodeID's log, keeping at
+// most limit entries.
+func newEventLog(nodeID string, store *replica.Store, limit int) *eventLog {
+	el := &eventLog{nodeID: nodeID, store: store, cap: limit, ch: make(chan storage.Event, 64), done: make(chan struct{})}
 	go el.run()
 	return el
 }
@@ -79,7 +83,7 @@ func (el *eventLog) write(ev storage.Event) {
 	cmds := []resp.Command{
 		resp.NewCommand("ZADD", key, strconv.FormatInt(ev.At, 10), string(b)),
 		resp.NewCommand("ZREMRANGEBYSCORE", key, "-inf", "("+cutoff),
-		resp.NewCommand("ZREMRANGEBYRANK", key, "0", strconv.Itoa(-(eventsCap + 1))),
+		resp.NewCommand("ZREMRANGEBYRANK", key, "0", strconv.Itoa(-(el.cap + 1))),
 		resp.NewCommand("EXPIRE", key, strconv.Itoa(int(eventsTTL.Seconds()))),
 	}
 	if _, err := el.store.Mutate(cmds...); err != nil {
