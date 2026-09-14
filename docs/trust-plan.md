@@ -153,7 +153,10 @@ is committed to.
    rights and skips a command whose key the replica may not hold — one
    filter in the fan-out, counted per peer in metrics.
 6. **Weight.** A scoped peer is weight 0 unless its rights are everything;
-   `ownerOf` never picks it and nothing is forwarded to it.
+   `ownerOf` never picks it and nothing is forwarded to it. (Done, v0.18.8.
+   "Unless its rights are everything" turned out to have no case: rights name
+   prefixes and no spec names every key, so the peer holding everything is the
+   unscoped one, which has no rights to ask about. Scoped is the whole test.)
 7. **Never waited on.** A scoped replica is queued from the start, the way
    a held one is, so the fleet's write latency does not change. Measured
    with `tritium-load` before and after.

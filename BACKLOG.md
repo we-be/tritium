@@ -43,7 +43,12 @@ below, and checks it off here with its commit.
 - [x] 5. fan-out honours read rights — and so do the resync and the repair, since a
   copy that reaches past the fan-out would make the filter a story rather than a
   bound; per-peer counter in metrics — v0.18.7, 2026-09-10
-- [ ] 6–8. phase 1: weight, queued, chaos with a scoped node (SCAN MATCH per
+- [x] 6. weight: a scoped peer is granted 0 whatever it gossips, so `ownerOf` never
+  picks it and no write is forwarded to a node that may not even hold the key. The
+  plan's "unless its rights are everything" has no case — rights name prefixes and no
+  spec names every key, so the peer that holds everything is the unscoped one —
+  v0.18.8, 2026-09-14
+- [ ] 7–8. phase 1: queued from the start, chaos with a scoped node (SCAN MATCH per
   prefix, so a copy does not walk keys it may not send) — then the gate
 - [ ] 9–12. phase 2: the view, relay, links, a second cloud node
 - [ ] 13–15. phase 3: identity by certificate, invite, bounds

@@ -95,6 +95,14 @@ func (s *Server) metricsText() string {
 		fmt.Fprintf(m, "tritium_peer_state{peer=%s,state=%s} 1\n", quote(p.Addr), quote(string(p.State)))
 	}
 
+	// What a peer gossiped is in tritium-cli nodes; this is what this node
+	// grants it, which is what ownerOf actually asks. They differ for a peer
+	// held to rights: it owns nothing here however it was configured.
+	m.head("tritium_peer_weight", "gauge", "The pull on key ownership this node grants each peer; 0 never owns a key here.")
+	for _, p := range s.cluster.peers() {
+		fmt.Fprintf(m, "tritium_peer_weight{peer=%s} %d\n", quote(p.Addr), s.weightGranted(p.Addr))
+	}
+
 	withheld := s.store.Withheld()
 	m.head("tritium_peer_writes_withheld_total", "counter", "Fan-outs a peer did not get in full, its rights not naming the keys.")
 	for _, addr := range slices.Sorted(maps.Keys(withheld)) {

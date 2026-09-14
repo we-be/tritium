@@ -62,12 +62,30 @@ func (s *Server) ownerOf(key string) string {
 		if slices.Contains(held, addr) || (s.links.has(addr) && s.cfg.Weight() > 0) {
 			continue
 		}
-		weights[addr] = s.cluster.weightOf(addr)
+		weights[addr] = s.weightGranted(addr)
 	}
 	if best := owner(key, weights); best != "" && best != local {
 		return best
 	}
 	return ""
+}
+
+// weightGranted is the pull on key ownership this node allows the peer at
+// addr: what the peer gossiped, but 0 for one held to rights. A scoped peer
+// owns no key here and nothing is forwarded to it, whatever weight it claims
+// — it is a replica, level 1 of the trust table, and ordering a write there
+// would put the fleet's writes behind a guest that is sent a surface and may
+// not even hold the key. The peer can only say what it wants; what it is
+// granted is this node's word, which is where the rest of the policy lives.
+//
+// "Unless its rights are everything": rights name prefixes, and no spec
+// names every key, so a peer that holds everything is the unscoped one —
+// scopes answers nil for it, and its gossiped weight stands.
+func (s *Server) weightGranted(addr string) int {
+	if s.scopes.of(addr) != nil {
+		return 0
+	}
+	return s.cluster.weightOf(addr)
 }
 
 // owner is the rendezvous winner for key among nodes, each competing with

@@ -56,6 +56,13 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   the v0.18.6 credential grammar, so the settings `PEER_ALLOW` and `PEER_PASSWORD` parsed as
   peers and **no peering node would start on v0.18.6** (`PEER_ALLOW: "…" is not r, w or rw`).
   Reserved names are skipped; upgrade straight past v0.18.6.
+- **v0.18.8** — **A scoped peer owns nothing.** A `PEER_<name>` is granted weight 0 whatever
+  weight it gossips, so `ownerOf` never picks it and no write is forwarded there: the
+  fleet's writes are not ordered on a guest that is sent a surface and may not even hold
+  the key. What a peer claims is its own word and what it is granted is this node's;
+  `tritium_peer_weight{peer=…}` publishes the second, beside the `ELECTRONEGATIVITY` that
+  `tritium-cli nodes` shows. Increment 6 of the trust program; off until a `PEER_` line
+  exists, so nothing rolled.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

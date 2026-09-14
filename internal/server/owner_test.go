@@ -95,6 +95,53 @@ func TestWeightZeroNeverOwns(t *testing.T) {
 	}
 }
 
+// A peer held to rights owns no key here, so no write is ordered on a guest
+// that is sent a surface and may not even hold the key. The same address
+// unscoped does own keys — the only thing that changed is this node's word
+// about what it grants, which is what keeps the check above from passing on
+// arithmetic. Increment 6 of docs/trust-plan.md.
+func TestScopedPeerNeverOwns(t *testing.T) {
+	t.Setenv("TRITIUM_PEER_pub", "pw:rw:pub:")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Password = "boss"
+	node := startNode(t, cfg)
+	guest := startNode(t, config.Config{Password: "boss"})
+
+	// The guest announces itself on a connection speaking as the scoped peer,
+	// which is what binds its address to those rights.
+	c := dial(t, node)
+	c.want("OK", "AUTH", "pub", "pw")
+	if _, err := c.do("TRITIUM.GOSSIP", guest.cluster.localJSON()); err != nil {
+		t.Fatal(err)
+	}
+	guestAddr := guest.Addr()
+	waitFor(t, "the guest to be attached", func() bool {
+		return slices.Contains(node.store.Replicas(), guestAddr)
+	})
+
+	// Keys its own rights name: the ones it would likeliest be picked for.
+	keys := make([]string, 200)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("pub:%d", i)
+	}
+	if w := node.weightGranted(guestAddr); w != 0 {
+		t.Fatalf("a scoped peer is granted weight %d, want 0", w)
+	}
+	for _, k := range keys {
+		if o := node.ownerOf(k); o != "" {
+			t.Fatalf("a scoped peer was picked to own %s: %s", k, o)
+		}
+	}
+
+	node.scopes.note(guestAddr, nil)
+	if !slices.ContainsFunc(keys, func(k string) bool { return node.ownerOf(k) == guestAddr }) {
+		t.Fatal("unscoped, the guest owned none of these keys either, so the scoped check proves nothing")
+	}
+}
+
 func TestOwnedNXIsExclusive(t *testing.T) {
 	seed := startNode(t, config.Config{})
 	peer := startNode(t, config.Config{JoinAddr: seed.Addr()})
