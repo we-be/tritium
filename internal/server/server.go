@@ -186,6 +186,7 @@ func (s *Server) Serve(ln net.Listener) error {
 		s.store.SetRelay(links[0], s.relayTargets) // the hub carries our writes on to peers we cannot reach
 	}
 	s.cluster = newCluster(s, advertise, s.cfg.StoreLabel(), s.cfg.Seeds())
+	s.cluster.start() // only now: a loop's first attach fans out a write that reads s.cluster
 	s.startLinks()
 	s.connWG.Go(s.acceptLoop) // counted with the handlers it starts, so Stop never waits on an empty group one is about to join
 	return s.startMetrics()

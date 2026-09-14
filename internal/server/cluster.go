@@ -78,13 +78,22 @@ func newCluster(s *Server, addr, storeAddr string, seeds []string) *cluster {
 		done:   make(chan struct{}),
 		events: events,
 	}
-	events.emit("start", "", 0, 0)
+	return c
+}
+
+// start runs the loops, once the server holds the cluster. It is separate
+// from newCluster because the first thing seedLoop does is attach a peer,
+// and the fan-out to that peer reads s.cluster — through the relay callback
+// the store already holds — while newCluster has not returned and the field
+// is still nil. A rare interleaving, and a nil dereference when it lands;
+// the race detector caught the read on CI's Valkey job (2026-09-14).
+func (c *cluster) start() {
+	c.events.emit("start", "", 0, 0)
 	c.wg.Go(c.loop)
-	if len(seeds) > 0 {
+	if len(c.seeds) > 0 {
 		c.wg.Go(c.seedLoop)
 	}
-	slog.Info("cluster: node registered", "id", local.ID, "store", storeAddr, "seeds", seeds)
-	return c
+	slog.Info("cluster: node registered", "id", c.local.ID, "store", c.local.StoreAddr, "seeds", c.seeds)
 }
 
 func (c *cluster) loop() {

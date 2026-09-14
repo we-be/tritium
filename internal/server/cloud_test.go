@@ -5,6 +5,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,4 +207,43 @@ func TestUserPrefixRights(t *testing.T) {
 	if _, err := c.do("TRITIUM.GOSSIP", "{}"); err == nil || !strings.Contains(err.Error(), "NOPERM") {
 		t.Fatalf("a user reached a peer command: %v", err)
 	}
+}
+
+// newCluster starts nothing. The server does not hold the cluster until
+// newCluster returns, and the first thing seedLoop does is attach a peer —
+// whose fan-out reads s.cluster through the relay callback the store is
+// already holding, and would find it nil. So no seed is dialed until
+// start(), which Serve calls after the assignment. The race detector caught
+// the read on CI's Valkey job (2026-09-14); this pins the ordering that
+// makes it impossible rather than unlikely.
+func TestClusterDialsNoSeedUntilTheServerHoldsIt(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	var dialed atomic.Bool
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			dialed.Store(true)
+			c.Close()
+		}
+	}()
+
+	s, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: "127.0.0.1:0", PeerPassword: testPeerPW})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := newCluster(s, dead(t), s.cfg.StoreLabel(), []string{ln.Addr().String()})
+	defer c.stop()
+	time.Sleep(100 * time.Millisecond)
+	if dialed.Load() {
+		t.Fatal("newCluster dialed its seed before the server held the cluster: the attach that follows fans out a write that reads s.cluster, still nil")
+	}
+	c.start()
+	waitFor(t, "the seed to be dialed once the cluster is started", dialed.Load)
 }

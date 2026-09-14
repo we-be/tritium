@@ -62,7 +62,11 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   the key. What a peer claims is its own word and what it is granted is this node's;
   `tritium_peer_weight{peer=…}` publishes the second, beside the `ELECTRONEGATIVITY` that
   `tritium-cli nodes` shows. Increment 6 of the trust program; off until a `PEER_` line
-  exists, so nothing rolled.
+  exists, so nothing rolled. Also a nil dereference that had been waiting since v0.18.0:
+  `newCluster` started the gossip and seed loops before its return value reached
+  `s.cluster`, so the first attach's fan-out could read that field — through the relay
+  callback the store already held — while it was still nil. The loops start after the
+  assignment now.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
