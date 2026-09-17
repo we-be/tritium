@@ -159,13 +159,32 @@ is committed to.
    unscoped one, which has no rights to ask about. Scoped is the whole test.)
 7. **Never waited on.** A scoped replica is queued from the start, the way
    a held one is, so the fleet's write latency does not change. Measured
-   with `tritium-load` before and after.
+   with `tritium-load` before and after. (Done, v0.18.9. The rule lives with
+   the fan-out filter, in the replica store: a replica `SetReplicaRights`
+   answers for is fed from a queue at attach, whether or not it is also far.
+   `tritium-load` on an unscoped fleet pair is unchanged — SET p50 233µs →
+   222µs, replication lag p50 339µs → 334µs — and the property is a test: a
+   500 ms link costs a scoped fan-out nothing and the unscoped control all
+   500 ms. It cannot yet be measured with a real scoped node, because one
+   cannot join — see below.)
 8. **Chaos with a scoped node.** The lab cluster gains a `public`-only node;
    repair and resync copy only what it may hold (SCAN MATCH per prefix).
    Finds what Q3 hides.
 
 *Gate:* a fourth node on bazzite joins the real fleet as a `public` replica
 for two weeks. Read Q2, Q3 and Q4 from it.
+
+*Blocked on:* nothing can join as one. Increment 4 gave a scoped peer a name
+to authenticate by, but only on the accept side — every node-to-node AUTH a
+node **sends** is still the built-in `AUTH peer <PEER_PASSWORD>`, in the
+gossip dial, the link dial, the forward dial and the replica transport. A
+node configured with a `PEER_public` password is refused at join with
+WRONGPASS (checked, 2026-09-17), so increments 4–6 have no client that
+reaches them and the gate cannot be run. What is missing is a way for a node
+to say which credential it is presenting — a `PEER_NAME` beside
+`PEER_PASSWORD`, carried into those four dials, with the name unset meaning
+`peer` exactly as today. It is a config line, so it is Hunter's call; it
+belongs before increment 8, since the chaos node has to join too.
 
 ### Phase 2 — the view and the edges.
 

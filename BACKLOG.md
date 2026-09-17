@@ -48,8 +48,17 @@ below, and checks it off here with its commit.
   plan's "unless its rights are everything" has no case — rights name prefixes and no
   spec names every key, so the peer that holds everything is the unscoped one —
   v0.18.8, 2026-09-14
-- [ ] 7–8. phase 1: queued from the start, chaos with a scoped node (SCAN MATCH per
-  prefix, so a copy does not walk keys it may not send) — then the gate
+- [x] 7. never waited on: a scoped replica is fed from a queue from the moment it
+  attaches, so what a fleet write costs does not change when a guest joins — v0.18.9,
+  2026-09-17. Measured with `tritium-load`: an unscoped fleet pair is unchanged (SET p50
+  233µs → 222µs, replication lag p50 339µs → 334µs, 0 errors either way), and the
+  property itself is a test — a 500 ms link costs a scoped fan-out nothing and the
+  unscoped control the full 500 ms. Found on the way: no node can present a `PEER_<name>`
+  credential. Every node-to-node AUTH is the built-in `peer`, so a scoped node is refused
+  at join (WRONGPASS) and increments 4–6 have no client that can reach them. The gate
+  needs that first — Hunter's call, since it is a new config line
+- [ ] 8. chaos with a scoped node (SCAN MATCH per prefix, so a copy does not walk keys it
+  may not send) — then the gate
 - [ ] 9–12. phase 2: the view, relay, links, a second cloud node
 - [ ] 13–15. phase 3: identity by certificate, invite, bounds
 - [ ] 16–18. phase 4: visible everywhere, docs, an outsider's trial

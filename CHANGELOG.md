@@ -67,6 +67,11 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   `s.cluster`, so the first attach's fan-out could read that field — through the relay
   callback the store already held — while it was still nil. The loops start after the
   assignment now.
+- **v0.18.9** — **A scoped peer is never waited on.** A replica held to rights is fed from
+  a queue from the moment it attaches, the way a far one across a link is, so a guest that
+  joined for a surface cannot slow a fleet write down however bad its link. Measured with
+  `tritium-load`: an unscoped fleet pair is unchanged (SET p50 233µs → 222µs). Increment 7
+  of the trust program; off until a `PEER_` line exists, so nothing rolled.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

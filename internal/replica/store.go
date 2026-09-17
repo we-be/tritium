@@ -85,6 +85,11 @@ func NewStoreTLS(addr string, poolSize int, password string, tlsCfg *tls.Config)
 	return NewStoreVia(t, addr, poolSize)
 }
 
+// defaultQueueDepth is the queue a replica fed from one gets when no caller
+// named a depth. The server always names one (its asyncDepth); this is for
+// an embedder that wired rights and nothing else.
+const defaultQueueDepth = 4096
+
 // NewStoreVia is NewStore over a transport of the caller's: how a node
 // reaches the store it embeds, which has no address to dial.
 func NewStoreVia(via Transport, addr string, poolSize int) (*Store, error) {
@@ -109,6 +114,8 @@ func (s *Store) SetReplicaTransport(t Transport) {
 // write whose key a replica's read rights do not name is not sent to it, and
 // a DEL naming several is cut down to the ones it may. fn is asked per batch,
 // so a peer that says who it is after it was attached is still held to it.
+// It also decides, once at attach, which replicas are never waited on: set
+// it before the replicas it speaks for are added.
 func (s *Store) SetReplicaRights(fn func(addr string) *config.Rights) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,11 +156,32 @@ func (s *Store) Async() bool {
 // SetAsyncFor makes the replicas added from now on that far names be fed
 // from a queue of depth fan-outs whatever SetAsync says: what a node does
 // for a peer on another network, so a write waits on the peers beside it
-// and never on one across the internet.
+// and never on one across the internet. A scoped replica is fed from a
+// queue of the same depth without being named here; see scoped.
 func (s *Store) SetAsyncFor(depth int, far func(addr string) bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.far, s.farDepth = far, depth
+}
+
+// scoped reports whether the replica at addr is held to rights — a node
+// that joined for a surface rather than for the fleet. Such a replica is
+// never waited on: an outsider joining must not change what a fleet write
+// costs, and the fleet must not be able to be slowed by one. Callers hold
+// s.mu. Increment 7 of docs/trust-plan.md.
+func (s *Store) scoped(addr string) bool {
+	return s.rights != nil && s.rights(addr) != nil
+}
+
+// queueDepth is how deep a queue a replica fed from one gets while SetAsync
+// is off: what SetAsyncFor named, or a default when a caller wired rights
+// without naming a depth — a zero-length queue would hold the replica on
+// its first write rather than feed it.
+func (s *Store) queueDepth() int {
+	if s.farDepth > 0 {
+		return s.farDepth
+	}
+	return defaultQueueDepth
 }
 
 // Writes is how many writes this node has carried out as owner — its own
@@ -487,8 +515,8 @@ func (s *Store) AddReplica(addr string) error {
 	}
 	if s.queue > 0 {
 		p.async(s.queue)
-	} else if s.far != nil && s.far(addr) {
-		p.async(s.farDepth)
+	} else if s.far != nil && s.far(addr) || s.scoped(addr) {
+		p.async(s.queueDepth())
 	}
 	if b, ok := s.parked[addr]; ok { // back from a partition: held until its backlog is replayed
 		p.held, p.missed, p.spilled = true, b.keys, b.spilled

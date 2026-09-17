@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -404,6 +405,27 @@ func selfSignedCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
 }
 
+// settles waits until want reads back from store at key — "" for a key that
+// must be gone — since a scoped replica is fed from a queue and a write is
+// not there the instant the primary answers.
+func settles(t *testing.T, store *replica.Store, key, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		v, err := store.Get(key)
+		switch {
+		case want == "" && errors.Is(err, storage.ErrNotFound):
+			return
+		case want != "" && err == nil && string(v) == want:
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s is %q (%v) after 2 s, want %q", key, v, err, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // A replica held to rights is sent only what those rights name: a write
 // outside them never leaves, a DEL naming keys on both sides is cut down to
 // the ones it may hold, and neither counts as a write the replica missed.
@@ -465,9 +487,7 @@ func TestFanOutHonoursReplicaRights(t *testing.T) {
 			if err := primary.Set("fleet:k", []byte("v"), 60); err != nil {
 				t.Fatal(err)
 			}
-			if v, err := rep.Get("pub:k"); err != nil || string(v) != "v" {
-				t.Fatalf("the replica missed a key it may hold: %q, %v", v, err)
-			}
+			settles(t, rep, "pub:k", "v") // the fan-out that carried fleet:k, if any, went out before this one
 			if _, err := rep.Get("fleet:k"); !errors.Is(err, storage.ErrNotFound) {
 				t.Fatal("a key outside the replica's rights was fanned out to it")
 			}
@@ -480,9 +500,7 @@ func TestFanOutHonoursReplicaRights(t *testing.T) {
 			if _, err := primary.Delete("pub:k", "fleet:mine"); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := rep.Get("pub:k"); !errors.Is(err, storage.ErrNotFound) {
-				t.Fatal("the replica kept a key the DEL named and it may hold")
-			}
+			settles(t, rep, "pub:k", "")
 			if v, err := rep.Get("fleet:mine"); err != nil || string(v) != "v" {
 				t.Fatalf("a DEL reached past the replica's rights: %q, %v", v, err)
 			}
@@ -495,6 +513,77 @@ func TestFanOutHonoursReplicaRights(t *testing.T) {
 			if held := primary.Held(); len(held) != 0 {
 				t.Fatalf("a scoped replica was held: %v", held)
 			}
+		})
+	}
+}
+
+// slow is a connection whose writes take a beat, as to a peer on a link
+// worse than the fleet's own.
+type slow struct {
+	net.Conn
+	delay time.Duration
+}
+
+func (s slow) Write(b []byte) (int, error) {
+	time.Sleep(s.delay)
+	return s.Conn.Write(b)
+}
+
+// A replica held to rights is fed from a queue from the moment it attaches,
+// so a fleet write never waits on it: an outsider joining for a surface
+// cannot slow the fleet down, however bad its link. The unscoped replica on
+// the same link is the control — that one a write does wait for.
+// Increment 7 of docs/trust-plan.md.
+func TestScopedReplicaIsNeverWaitedOn(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot lag itself")
+	}
+	const delay = 500 * time.Millisecond
+	for _, scoped := range []bool{true, false} {
+		t.Run(map[bool]string{true: "scoped", false: "fleet"}[scoped], func(t *testing.T) {
+			primary, err := replica.NewStore(resptest.Addr(t), 1, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer primary.Close()
+			repAddr := resptest.Addr(t)
+			rep, err := replica.NewStore(repAddr, 1, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rep.Close()
+			primary.SetReplicaTransport(replica.Transport{Dial: func(addr string) (net.Conn, error) {
+				c, err := net.Dial("tcp", addr)
+				if err != nil {
+					return nil, err
+				}
+				return slow{c, delay}, nil
+			}, Timeout: 5 * time.Second})
+			if scoped {
+				primary.SetReplicaRights(func(string) *config.Rights {
+					return &config.Rights{Read: []string{"pub:"}, Write: []string{"pub:"}}
+				})
+			}
+			if err := primary.AddReplica(repAddr); err != nil {
+				t.Fatal(err)
+			}
+
+			if queued := slices.Contains(primary.Queued(), repAddr); queued != scoped {
+				t.Fatalf("queued: %v, want %v", queued, scoped)
+			}
+			start := time.Now()
+			if err := primary.Set("pub:k", []byte("v"), 60); err != nil {
+				t.Fatal(err)
+			}
+			took := time.Since(start)
+			if scoped && took > delay/2 {
+				t.Fatalf("a write waited %v on a scoped replica: the fleet pays for an outsider's link", took)
+			}
+			if !scoped && took < delay {
+				t.Fatalf("a write took %v, less than the link costs: the control is not waiting", took)
+			}
+			// Queued is not dropped: it arrives, just not on the write's time.
+			settles(t, rep, "pub:k", "v")
 		})
 	}
 }
