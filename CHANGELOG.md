@@ -72,6 +72,13 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   joined for a surface cannot slow a fleet write down however bad its link. Measured with
   `tritium-load`: an unscoped fleet pair is unchanged (SET p50 233µs → 222µs). Increment 7
   of the trust program; off until a `PEER_` line exists, so nothing rolled.
+- **v0.18.10** — **A turned-down initiation is kept.** When both sides open a session at once
+  the tie-break drops one of them; the side that won forgot it, so the same hello read again —
+  a hello mailbox is public, and a replay costs nothing — started a session from scratch and,
+  once ours had been answered, took its place, leaving every message after it unread in a
+  mailbox nobody polls. The one we turn down is kept now: what it sent before reading our own
+  hello still opens in its chain, and a replayed hello dies on the ratchet like any other
+  replay. `pkg/messenger` only, and a state file written before this restores as it did.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

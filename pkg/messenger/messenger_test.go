@@ -96,6 +96,32 @@ func (w *world) ids(mailbox string) []string {
 	return ids
 }
 
+// entry copies a mailbox's only entry as the store holds it, and replay puts
+// it back: whoever runs a node can keep what it was told to delete.
+func (w *world) entry(mailbox string) (string, string) {
+	w.t.Helper()
+	ids := w.ids(mailbox)
+	if len(ids) != 1 {
+		w.t.Fatalf("%s holds %d entries, want one", mailbox, len(ids))
+	}
+	v, err := w.raw.Do("GET", "msg:"+mailbox+":"+ids[0])
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	data, _ := v.([]byte)
+	return ids[0], string(data)
+}
+
+func (w *world) replay(mailbox, id, data string) {
+	w.t.Helper()
+	if _, err := w.raw.Do("SET", "msg:"+mailbox+":"+id, data); err != nil {
+		w.t.Fatal(err)
+	}
+	if _, err := w.raw.Do("ZADD", mailbox, "1", id); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
 func (w *world) send(from *Client, to Bundle, body string) {
 	w.t.Helper()
 	if err := from.Send(to, []byte(body)); err != nil {
@@ -337,6 +363,43 @@ func TestSimultaneousHello(t *testing.T) {
 	a, b := w.alice.sessions[bob.Fingerprint()], w.bob.sessions[alice.Fingerprint()]
 	if a.Outbox != b.Inbox || a.Inbox != b.Outbox || a.Hello != nil || b.Hello != nil {
 		t.Fatalf("sessions did not converge: alice %s/%s bob %s/%s", a.Outbox, a.Inbox, b.Outbox, b.Inbox)
+	}
+}
+
+// The initiation turned down in that tie-break is kept, not forgotten: what
+// the peer sent before it read our own hello still opens in its chain, and a
+// hello replayed into the mailbox — which anyone can write to — is dropped
+// once our session is live, rather than taking its place and leaving every
+// message after it unread in a mailbox nobody polls.
+func TestDeclinedInitiation(t *testing.T) {
+	w := setup(t)
+	for w.bob.id.Fingerprint() >= w.alice.id.Fingerprint() {
+		w = setup(t) // bob turns alice's initiation down only when his own fingerprint wins the tie
+	}
+	bob, alice := w.lookup(w.alice, "bob"), w.lookup(w.bob, "alice")
+	hello := helloMailbox(w.bob.id.Bundle())
+
+	w.send(w.alice, bob, "a1") // both open a session before either has read
+	id, data := w.entry(hello) // alice's hello, as the store holds it
+	w.send(w.bob, alice, "b1")
+	w.send(w.alice, bob, "a2") // still on her own initiation: she has not read bob's hello yet
+	w.receive(w.alice, "b1")   // alice adopts bob's, hers is the one he turns down
+	w.receive(w.bob, "a1", "a2")
+	live := w.bob.sessions[alice.Fingerprint()]
+
+	w.send(w.alice, bob, "a3") // on bob's session now, which answers his hello
+	w.receive(w.bob, "a3")
+	w.send(w.bob, alice, "b2")
+	w.receive(w.alice, "b2")
+	if live.Hello != nil {
+		t.Fatal("bob's session was never answered")
+	}
+
+	w.replay(hello, id, data)
+	w.send(w.alice, bob, "a4")
+	w.receive(w.bob, "a4") // the replay is dropped; a1 does not come back
+	if w.bob.sessions[alice.Fingerprint()] != live {
+		t.Fatal("a replayed hello replaced the live session")
 	}
 }
 

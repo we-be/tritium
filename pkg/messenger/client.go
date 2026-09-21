@@ -39,6 +39,7 @@ type Client struct {
 	id        *Identity
 	TTL       int                 // seconds a message lives on the server; 0 uses the node's default
 	sessions  map[string]*Session // by peer fingerprint
+	declined  map[string]*Session // an initiation of theirs we turned down, by peer fingerprint: kept so its late messages still open and a replay of its hello dies on the ratchet
 	helloSeen []string            // hello mailbox entries read by the last Receive, deleted by the next
 	rosters   map[string]int      // highest version seen per device or group roster: an older one replayed is refused
 }
@@ -46,7 +47,7 @@ type Client struct {
 // New is id's messenger over the connection t, with no sessions yet;
 // Restore brings back the ones a previous run saved.
 func New(t *tritium.Client, id *Identity) *Client {
-	return &Client{t: t, id: id, sessions: map[string]*Session{}, rosters: map[string]int{}}
+	return &Client{t: t, id: id, sessions: map[string]*Session{}, declined: map[string]*Session{}, rosters: map[string]int{}}
 }
 
 // Message is a decrypted message from a peer. Group is set only once the
@@ -210,6 +211,11 @@ func (c *Client) Prune(idle time.Duration) int {
 			n++
 		}
 	}
+	for fp, s := range c.declined { // not a conversation of ours, so not counted
+		if time.Since(s.Touched) > idle {
+			delete(c.declined, fp)
+		}
+	}
 	return n
 }
 
@@ -329,6 +335,13 @@ func (c *Client) openHello(it item) (Message, bool) {
 	if cur != nil && bytes.Equal(cur.PeerEphemeral, h.Ephemeral) {
 		return c.openWith(cur, it) // the session this hello already started
 	}
+	// An initiation we turned down is answered from the session we kept for
+	// it, never from a new one: what the peer sent before reading our own
+	// hello still opens, in its chain, and a hello replayed into the mailbox
+	// dies on the ratchet like any other replay.
+	if d := c.declined[fp]; d != nil && bytes.Equal(d.PeerEphemeral, h.Ephemeral) {
+		return c.openWith(d, it)
+	}
 	fresh, err := respond(c.id, h)
 	if err != nil {
 		slog.Warn("messenger: hello agreement failed", "key", it.key, "err", err)
@@ -342,9 +355,15 @@ func (c *Client) openHello(it item) (Message, bool) {
 		return Message{}, false
 	}
 	// Adopt the peer's session unless we opened one to them at the same time
-	// and ours wins the tie: the lower fingerprint's initiation survives.
+	// and ours wins the tie: the lower fingerprint's initiation survives. The
+	// one we turn down is kept rather than dropped, since the hello mailbox is
+	// public: without it, a hello replayed once our own session had been
+	// answered would read as first contact and take its place, and every
+	// message after that would sit unread in a mailbox nobody polls.
 	if cur == nil || cur.Hello == nil || fp < c.id.Fingerprint() {
 		c.sessions[fp] = fresh
+	} else {
+		c.declined[fp] = fresh
 	}
 	return m, true
 }
@@ -442,6 +461,7 @@ func (c *Client) Sessions() []Bundle {
 
 type state struct {
 	Sessions  map[string]*Session `json:"sessions"`
+	Declined  map[string]*Session `json:"declined,omitempty"`
 	HelloSeen []string            `json:"hello_seen,omitempty"`
 	Rosters   map[string]int      `json:"rosters,omitempty"`
 }
@@ -449,7 +469,7 @@ type state struct {
 // State serializes sessions and read positions for storage. It contains
 // chain keys; keep it as secret as the identity.
 func (c *Client) State() ([]byte, error) {
-	return json.Marshal(state{c.sessions, c.helloSeen, c.rosters})
+	return json.Marshal(state{c.sessions, c.declined, c.helloSeen, c.rosters})
 }
 
 // Restore loads what State produced. A session saved in an older wire
@@ -462,13 +482,28 @@ func (c *Client) Restore(data []byte) error {
 	if st.Sessions == nil {
 		st.Sessions = map[string]*Session{}
 	}
+	if st.Declined == nil {
+		st.Declined = map[string]*Session{}
+	}
 	if st.Rosters != nil {
 		c.rosters = st.Rosters
 	}
+	dropped := readable(st.Sessions) + readable(st.Declined)
+	if dropped > 0 {
+		slog.Warn("messenger: dropped sessions of an older format", "n", dropped)
+	}
+	c.sessions, c.declined, c.helloSeen = st.Sessions, st.Declined, st.HelloSeen
+	return nil
+}
+
+// readable drops the sessions of an older wire format and fills in what a
+// state written by an older version did not carry. It reports how many it
+// dropped.
+func readable(sessions map[string]*Session) int {
 	dropped := 0
-	for fp, s := range st.Sessions {
+	for fp, s := range sessions {
 		if s.Format != sessionFormat { // an older wire format: unreadable now, and the peer will start over
-			delete(st.Sessions, fp)
+			delete(sessions, fp)
 			dropped++
 			continue
 		}
@@ -479,11 +514,7 @@ func (c *Client) Restore(data []byte) error {
 			s.Touched = time.Now()
 		}
 	}
-	if dropped > 0 {
-		slog.Warn("messenger: dropped sessions of an older format", "n", dropped)
-	}
-	c.sessions, c.helloSeen = st.Sessions, st.HelloSeen
-	return nil
+	return dropped
 }
 
 // helloMailbox is where first contact for a bundle's owner lands. Anyone

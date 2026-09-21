@@ -86,7 +86,15 @@ below, and checks it off here with its commit.
 
 - [x] A forwarded write pays two LAN round trips in series: the forward to the owner, then the owner's synchronous fan-out back to the node that forwarded, before that node can answer its client. Measured 2026-09-08 on the wifi fleet after v0.16.0: SET p50 12 ms (about half the keys are owned by the other machine) against 5.6 ms for a key owned here. Design (2026-09-08): the forwarder sends `TRITIUM.FORWARD FROM <its addr> cmd…`; an owner that understands applies the write to its primary, fans it out to every replica but the forwarder, and replies `[reply, stamped-replicate-command]`; the forwarder applies the stamped command to its own primary (`Store.Apply`) and answers its client — one LAN round trip plus a local apply, read-your-writes intact. An old owner answers `ERR TRITIUM.FORWARD does not carry 'FROM'`, which today reaches the client as an error, so step one was to add that prefix to the refusals that mean "write here" (done, v0.17.4); step two is the new reply, once every node runs v0.17.4 or later — done, v0.17.8, 2026-09-08: `TRITIUM.FORWARD FROM addr …`, `replica.Forwarded`, `TestForwardFromAnswersWithWhatItSent`. Worth ~5 ms on the third of a machine's writes the other machine owns; not urgent
 
-- [ ] `TestSimultaneousHello` failed once in CI (2026-09-07, "received [a1], want [a3]": a hello's first message delivered twice after the tie-break) and never in 380 local runs, one CPU included; find the interleaving before it bites a real simultaneous first contact
+- [x] `TestSimultaneousHello` failed once in CI (2026-09-07, "received [a1], want [a3]": a hello's
+  first message delivered twice after the tie-break) and never in 380 local runs, one CPU included
+  — not an interleaving. The initiation the tie-break turns down was forgotten, so the same hello
+  read a second time started a session all over again and, once ours had been answered, took its
+  place: every message after that sat unread in a mailbox nobody polls. A hello mailbox is public
+  and `fetch` deletes what it read only on the next call, so a second read needs no race at all —
+  a replay is enough. The turned-down initiation is kept now, so what it sent late still opens in
+  its chain and a replayed hello dies on the ratchet, which is what the security review's threat
+  table already claimed. `TestDeclinedInitiation` — 2026-09-21
 
 - [x] Metrics export for a Grafana stack: a Prometheus text endpoint is zero-dep; OpenTelemetry means the OTel SDK (a dependency) or a hand-rolled OTLP exporter — decide when the stack exists. Until then the plane's own event log and gossip stats are the time series — done 2026-09-08: `METRICS_ADDRESS` serves `GET /metrics` in the Prometheus text format from the same figures INFO gathers, peer states included; OTel stays out, it would be a dependency
 
