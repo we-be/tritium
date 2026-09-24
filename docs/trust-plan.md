@@ -169,7 +169,12 @@ is committed to.
    cannot join — see below.)
 8. **Chaos with a scoped node.** The lab cluster gains a `public`-only node;
    repair and resync copy only what it may hold (SCAN MATCH per prefix).
-   Finds what Q3 hides.
+   Finds what Q3 hides. (The copy half is done: a resync to a peer held to
+   rights walks one SCAN MATCH per right instead of filtering a walk of
+   everything, so a key outside the surface is never read, and a resync to a
+   small surface costs that surface rather than the keyspace. Repair already
+   replayed only noted keys. `TestResyncWalksOnlyTheReplicasRights`. The
+   chaos node itself still waits on the join below.)
 
 *Gate:* a fourth node on bazzite joins the real fleet as a `public` replica
 for two weeks. Read Q2, Q3 and Q4 from it.

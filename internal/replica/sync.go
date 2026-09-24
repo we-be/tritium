@@ -94,7 +94,9 @@ func (s *Store) repair(p *pool) (int, error) {
 // is the newer one); without it only keys the peer lacks are filled, so a
 // node that just started never clobbers what the survivors hold. Best
 // effort, a SCAN page at a time — three pipelined round trips per page, not
-// per key — returning the keys copied and the first error.
+// per key — returning the keys copied and the first error. A peer held to
+// rights is copied one walk per right, so what the resync reads is what that
+// peer may hold rather than everything this node has.
 func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 	s.mu.RLock()
 	via, rights := s.via, s.rights
@@ -104,42 +106,60 @@ func (s *Store) Sync(addr string, overwrite bool) (int, error) {
 		return 0, err
 	}
 	defer dst.close()
-	if rights != nil { // a copy to a peer reaches no further than its rights, like a fan-out
+	// A copy to a peer reaches no further than its rights, like a fan-out.
+	// scopeKeys is the bound; asking for one pattern per right is what keeps
+	// the walk itself off the keys the peer may not be sent, so a resync to a
+	// small surface costs that surface's size and not the whole keyspace's.
+	patterns := []string{""} // no MATCH: every key, for a peer held to nothing
+	if rights != nil {
 		dst.rights = func() *config.Rights { return rights(addr) }
-	}
-	n, cursor := 0, "0"
-	var first error
-	for {
-		v, err := s.primary.do(resp.NewCommand("SCAN", cursor, "COUNT", "200"))
-		if err != nil {
-			return n, err
-		}
-		page, ok := v.([]any)
-		if !ok || len(page) != 2 {
-			return n, fmt.Errorf("unexpected SCAN reply %T", v)
-		}
-		next, _ := page[0].([]byte)
-		raw, _ := page[1].([]any)
-		keys := make([]string, 0, len(raw))
-		for _, k := range raw {
-			key, _ := k.([]byte)
-			keys = append(keys, string(key))
-		}
-		cmds, copied, err := s.copyCommands(dst.scopeKeys(keys), overwrite, false)
-		if err != nil {
-			return n, err
-		}
-		if len(cmds) > 0 {
-			if _, err := dst.doAll(cmds); err != nil && first == nil {
-				first = err
+		if r := rights(addr); r != nil {
+			if g, ok := r.ReadGlobs(); ok {
+				patterns = g
 			}
 		}
-		n += copied
-		cursor = string(next)
-		if cursor == "0" {
-			return n, first
+	}
+	n := 0
+	var first error
+	for _, pattern := range patterns {
+		cursor := "0"
+		for {
+			scan := []string{"SCAN", cursor, "COUNT", "200"}
+			if pattern != "" {
+				scan = append(scan, "MATCH", pattern)
+			}
+			v, err := s.primary.do(resp.NewCommand(scan...))
+			if err != nil {
+				return n, err
+			}
+			page, ok := v.([]any)
+			if !ok || len(page) != 2 {
+				return n, fmt.Errorf("unexpected SCAN reply %T", v)
+			}
+			next, _ := page[0].([]byte)
+			raw, _ := page[1].([]any)
+			keys := make([]string, 0, len(raw))
+			for _, k := range raw {
+				key, _ := k.([]byte)
+				keys = append(keys, string(key))
+			}
+			cmds, copied, err := s.copyCommands(dst.scopeKeys(keys), overwrite, false)
+			if err != nil {
+				return n, err
+			}
+			if len(cmds) > 0 {
+				if _, err := dst.doAll(cmds); err != nil && first == nil {
+					first = err
+				}
+			}
+			n += copied
+			cursor = string(next)
+			if cursor == "0" {
+				break
+			}
 		}
 	}
+	return n, first
 }
 
 // copyCommands is what recreates keys elsewhere with their remaining TTL,

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -128,9 +129,71 @@ func (r *Rights) MayWrite(key string) bool { return May(r.Write, key) }
 // that ends in ":" or "/".
 func May(rights []string, key string) bool {
 	for _, r := range rights {
-		if key == r || (strings.HasSuffix(r, ":") || strings.HasSuffix(r, "/")) && strings.HasPrefix(key, r) {
+		if key == r || covers(r) && strings.HasPrefix(key, r) {
 			return true
 		}
 	}
 	return false
+}
+
+// covers reports whether a right stands for everything under it rather than
+// the one key it names. The whole difference between the two kinds of right.
+func covers(r string) bool {
+	return strings.HasSuffix(r, ":") || strings.HasSuffix(r, "/")
+}
+
+// ReadGlobs is Globs of the read rights: what to ask a store for when the
+// copy may only carry what this principal can read.
+func (r *Rights) ReadGlobs() ([]string, bool) { return Globs(r.Read) }
+
+// Globs names rights as SCAN MATCH patterns — one walk per pattern asks a
+// store for the keys May accepts and no others, where filtering a full walk
+// would have paid for the whole keyspace. An exact right matches itself and
+// a covering one everything under it, with metacharacters escaped so a right
+// stands for the literal string it holds. A right that another already
+// covers is dropped, so no key matches two patterns and no walk copies a key
+// twice. Empty rights give no patterns, since they name no keys.
+//
+// False means the rights cannot be said as patterns and the caller has to
+// fall back to filtering a full walk: an empty right names the empty key,
+// but an empty pattern is how SCAN says "no MATCH at all", so the one thing
+// that would widen a walk instead of narrowing it is refused here.
+func Globs(rights []string) ([]string, bool) {
+	if slices.Contains(rights, "") {
+		return nil, false
+	}
+	// Sorted, a right that covers another sorts before it, so each one need
+	// only be held against the last one kept.
+	globs := []string{}
+	var last string
+	for _, r := range slices.Compact(slices.Sorted(slices.Values(rights))) {
+		if last != "" && covers(last) && strings.HasPrefix(r, last) {
+			continue
+		}
+		last = r
+		g := escapeGlob(r)
+		if covers(r) {
+			g += "*"
+		}
+		globs = append(globs, g)
+	}
+	return globs, true
+}
+
+// escapeGlob quotes what a glob would otherwise read as a wildcard, so a
+// right holding one matches that character and not whatever it stands for.
+func escapeGlob(s string) string {
+	const special = `*?[]\`
+	if !strings.ContainsAny(s, special) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := range len(s) {
+		if strings.IndexByte(special, s[i]) >= 0 {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }

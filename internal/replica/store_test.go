@@ -9,10 +9,13 @@ import (
 	"crypto/x509/pkix"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"slices"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -585,5 +588,156 @@ func TestScopedReplicaIsNeverWaitedOn(t *testing.T) {
 			// Queued is not dropped: it arrives, just not on the write's time.
 			settles(t, rep, "pub:k", "v")
 		})
+	}
+}
+
+// asked records every command a store is sent, proxying them on to a real
+// one, so a test can say what was asked for and not only what came back.
+type asked struct {
+	ln   net.Listener
+	up   string
+	mu   sync.Mutex
+	cmds [][]string
+}
+
+func record(tb testing.TB, upstream string) *asked {
+	tb.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	a := &asked{ln: ln, up: upstream}
+	go a.serve()
+	tb.Cleanup(func() { ln.Close() })
+	return a
+}
+
+func (a *asked) addr() string { return a.ln.Addr().String() }
+
+func (a *asked) serve() {
+	for {
+		c, err := a.ln.Accept()
+		if err != nil {
+			return
+		}
+		go a.proxy(c)
+	}
+}
+
+func (a *asked) proxy(c net.Conn) {
+	defer c.Close()
+	up, err := net.Dial("tcp", a.up)
+	if err != nil {
+		return
+	}
+	defer up.Close()
+	pr, pw := io.Pipe()
+	go func() {
+		r := resp.NewReader(pr)
+		for {
+			args, err := r.ReadCommand()
+			if err != nil {
+				return
+			}
+			a.mu.Lock()
+			a.cmds = append(a.cmds, args)
+			a.mu.Unlock()
+		}
+	}()
+	go func() { io.Copy(c, up); c.Close() }()
+	io.Copy(up, io.TeeReader(c, pw))
+	pw.Close()
+}
+
+// commands is what has been asked so far, whose first word is name.
+func (a *asked) commands(name string) [][]string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out [][]string
+	for _, c := range a.cmds {
+		if len(c) > 0 && strings.EqualFold(c[0], name) {
+			out = append(out, slices.Clone(c))
+		}
+	}
+	return out
+}
+
+// A resync to a replica held to rights reads what that replica may hold and
+// nothing else: the walk is one SCAN per right, so a key outside the surface
+// is never even asked about, where filtering a full walk would have paid for
+// the whole keyspace to copy a corner of it. Increment 8 of
+// docs/trust-plan.md.
+func TestResyncWalksOnlyTheReplicasRights(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot be told apart from the primary")
+	}
+	store := record(t, resptest.Addr(t))
+	primary, err := replica.NewStore(store.addr(), 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	repAddr := resptest.Addr(t)
+	rep, err := replica.NewStore(repAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	// A small surface in a keyspace mostly out of its reach.
+	for i := range 200 {
+		if err := primary.Set("fleet:"+strconv.Itoa(i), []byte("v"), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, k := range []string{"pub:a", "pub:b", "news"} {
+		if err := primary.Set(k, []byte("v"), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary.SetReplicaRights(func(addr string) *config.Rights {
+		if addr == repAddr {
+			return &config.Rights{Read: []string{"pub:", "news"}, Write: []string{"pub:"}}
+		}
+		return nil
+	})
+
+	before := len(store.commands("SCAN"))
+	n, err := primary.Sync(repAddr, true)
+	if err != nil || n != 3 {
+		t.Fatalf("resync: %d keys, %v; want 3", n, err)
+	}
+	if v, err := rep.Get("pub:a"); err != nil || string(v) != "v" {
+		t.Fatalf("the resync skipped a key the replica may hold: %q, %v", v, err)
+	}
+	if v, err := rep.Get("news"); err != nil || string(v) != "v" {
+		t.Fatalf("the resync skipped an exactly-named right: %q, %v", v, err)
+	}
+
+	// Every walk named a right; none asked for the keyspace.
+	scans := store.commands("SCAN")[before:]
+	if len(scans) != 2 {
+		t.Fatalf("%d SCANs for two rights: %q", len(scans), scans)
+	}
+	var matched []string
+	for _, c := range scans {
+		i := slices.IndexFunc(c, func(a string) bool { return strings.EqualFold(a, "MATCH") })
+		if i < 0 || i+1 >= len(c) {
+			t.Fatalf("a resync for a scoped replica walked the keyspace: %q", c)
+		}
+		matched = append(matched, c[i+1])
+	}
+	slices.Sort(matched)
+	if want := []string{"news", "pub:*"}; !slices.Equal(matched, want) {
+		t.Fatalf("walked %q; want %q", matched, want)
+	}
+
+	// And no key outside the surface was so much as read.
+	for _, name := range []string{"TYPE", "TTL", "GET", "STAMPOF"} {
+		for _, c := range store.commands(name) {
+			if len(c) > 1 && strings.HasPrefix(c[1], "fleet:") {
+				t.Fatalf("the resync read a key the replica may not hold: %q", c)
+			}
+		}
 	}
 }

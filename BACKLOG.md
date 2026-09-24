@@ -58,7 +58,11 @@ below, and checks it off here with its commit.
   at join (WRONGPASS) and increments 4–6 have no client that can reach them. The gate
   needs that first — Hunter's call, since it is a new config line
 - [ ] 8. chaos with a scoped node (SCAN MATCH per prefix, so a copy does not walk keys it
-  may not send) — then the gate
+  may not send) — then the gate. The SCAN MATCH half is done, 2026-09-24: a resync to a
+  peer held to rights walks one pattern per right, so a key outside its surface is never
+  read and the copy costs the surface rather than the keyspace; the scopeKeys filter stays
+  the bound. Still open: the chaos node, which cannot join until a node can present a
+  `PEER_<name>` credential (Hunter's call, see the trust plan's *Blocked on*)
 - [ ] 9–12. phase 2: the view, relay, links, a second cloud node
 - [ ] 13–15. phase 3: identity by certificate, invite, bounds
 - [ ] 16–18. phase 4: visible everywhere, docs, an outsider's trial

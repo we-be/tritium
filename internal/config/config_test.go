@@ -124,6 +124,82 @@ func TestMayIsExactWithoutASeparator(t *testing.T) {
 	}
 }
 
+// Rights as SCAN patterns: a covering right takes a star and an exact one
+// does not, a right another covers is dropped along with any duplicate, and
+// a metacharacter in a right is quoted rather than left to widen the walk.
+func TestGlobsNameTheRightsAndNoMore(t *testing.T) {
+	for _, c := range []struct {
+		rights []string
+		want   []string
+	}{
+		{[]string{"sig:"}, []string{"sig:*"}},
+		{[]string{"fleet"}, []string{"fleet"}},
+		{[]string{"sig:", "sig:x:", "sig:one"}, []string{"sig:*"}}, // covered
+		{[]string{"a:", "a:"}, []string{"a:*"}},                    // duplicate
+		{[]string{"ab:", "a:"}, []string{"a:*", "ab:*"}},           // neither covers the other
+		{[]string{"node/", "fleet"}, []string{"fleet", "node/*"}},
+		{[]string{"we*:"}, []string{`we\*:*`}},
+		{[]string{`odd[x]?\k`}, []string{`odd\[x\]\?\\k`}},
+		{nil, []string{}},
+	} {
+		got, ok := Globs(c.rights)
+		if !ok || !reflect.DeepEqual(got, c.want) {
+			t.Errorf("Globs(%q) = %q, %v; want %q", c.rights, got, ok, c.want)
+		}
+	}
+	// An empty right names the empty key, but an empty pattern is how SCAN
+	// says "no MATCH", so it is refused instead of widening the walk.
+	if got, ok := Globs([]string{"a:", ""}); ok {
+		t.Errorf("Globs with an empty right = %q, true; want a refusal", got)
+	}
+}
+
+// Every glob is answerable by the rights it came from: a key one pattern
+// matches is a key May accepts, and no key May accepts is left unmatched.
+func TestGlobsAgreeWithMay(t *testing.T) {
+	rights := []string{"sig:", "sig:x:", "fleet", "node/", "we*:"}
+	globs, ok := Globs(rights)
+	if !ok {
+		t.Fatal("Globs refused plain rights")
+	}
+	for _, key := range []string{"sig:a", "sig:x:1", "fleet", "fleetish", "node/a", "nodes", "we*:k", "weird:k", "", "x"} {
+		matched := 0
+		for _, g := range globs {
+			if globMatches(g, key) {
+				matched++
+			}
+		}
+		if want := May(rights, key); (matched > 0) != want {
+			t.Errorf("%q matched by %d of %q, but May = %v", key, matched, globs, want)
+		}
+		if matched > 1 {
+			t.Errorf("%q matched %d patterns in %q; a walk each would copy it twice", key, matched, globs)
+		}
+	}
+}
+
+// globMatches is the glob subset Globs emits — literal bytes, "\" escapes
+// and a trailing star — read the way a store's SCAN MATCH reads it.
+func globMatches(glob, key string) bool {
+	for len(glob) > 0 {
+		switch {
+		case glob == "*":
+			return true
+		case glob[0] == '\\' && len(glob) > 1:
+			if key == "" || key[0] != glob[1] {
+				return false
+			}
+			glob, key = glob[2:], key[1:]
+		default:
+			if key == "" || key[0] != glob[0] {
+				return false
+			}
+			glob, key = glob[1:], key[1:]
+		}
+	}
+	return key == ""
+}
+
 // A size takes a K, M or G suffix, with or without a B, and nothing else.
 func TestParseBytes(t *testing.T) {
 	for raw, want := range map[string]int64{"268435456": 268435456, "256M": 256 << 20, "1G": 1 << 30, "512K": 512 << 10, "64MB": 64 << 20, " 2k ": 2 << 10} {
