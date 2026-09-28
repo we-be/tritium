@@ -18,8 +18,8 @@ import (
 // Repair replays, on every replica held after a failed write, the keys it
 // missed meanwhile — our current copy of each, or its deletion — and
 // releases it once nothing is missing. Meant for a periodic tick: a replica
-// that still does not answer stays held for the next one. Returns the keys
-// replayed.
+// that still does not answer, or still has no room, stays held for the next
+// one. Returns the keys replayed.
 func (s *Store) Repair() int {
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
@@ -72,9 +72,11 @@ func (s *Store) repair(p *pool) (int, error) {
 				return n, err
 			}
 			if len(cmds) > 0 {
+				// a refusal is the peer's answer and the key is done with; a full
+				// store is not an answer, so those keys stay noted for the next tick
 				if _, err := p.doAll(cmds); err != nil {
 					var se *resp.ServerError
-					if !errors.As(err, &se) {
+					if !errors.As(err, &se) || isFull(err) {
 						return n, err
 					}
 				}

@@ -31,11 +31,18 @@ type Server struct {
 // Start serves a fresh store on a loopback port until the test ends.
 func Start(tb testing.TB) *Server {
 	tb.Helper()
+	return StartLimited(tb, 0)
+}
+
+// StartLimited is Start with a byte limit on the keys and values the store
+// keeps, for a test that needs a store it can fill. 0: no limit.
+func StartLimited(tb testing.TB, max int64) *Server {
+	tb.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		tb.Fatal(err)
 	}
-	st := memstore.New(memstore.Options{Version: "test"})
+	st := memstore.New(memstore.Options{Version: "test", MaxMemory: max})
 	go st.Serve(ln)
 	tb.Cleanup(func() { ln.Close(); st.Close() })
 	return &Server{ln: ln}

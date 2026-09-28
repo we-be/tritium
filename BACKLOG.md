@@ -107,6 +107,17 @@ below, and checks it off here with its commit.
 - [x] A cloud node, so a fleet that spans networks has a member that is always up — 2026-09-07, `docs/cloud.md`
 - [x] Relay through a node that both sides can reach: `TRITIUM.REPLICATE RELAY n addr…` names the peers the sender could not deliver to; the hub applies and sends the plain write on from its own pools; stamps settle duplicates; a hub older than v0.18.0 is sent plain writes, so the hub rolls first. `TestHomesExchangeWritesThroughTheHub` — v0.18.0, 2026-09-08
 
+- [x] A full replica lost writes silently: a fan-out the replica answered `-OOM` was logged
+  as a refusal and dropped, so the write stayed on the primary alone, the replica was never
+  held, and no repair ever replayed it — a node past `STORE_MAX_MEMORY` holding keys it may
+  not evict (no expiry, so nothing for `room` to take) diverges permanently, and the client's
+  SET still answered OK. A refusal is final and a full store is not, so `-OOM` now holds the
+  replica the way a transport failure does, and a repair whose replay OOMs keeps those keys
+  noted instead of reporting them replayed — the next tick lands them once there is room.
+  `TestFullReplicaIsHeldUntilItHasRoom`, plus `TestFullStoreAnswersTheSenderOOM` for the hop
+  that carries it: a node hands its store's OOM back to the peer that sent the write —
+  2026-09-28
+
 ## Done
 
 - [x] The replicated Store moved out of the public API: `pkg/storage` keeps the six cluster-view types clients use (`NodeInfo`, `NodeStats`, `NodeState`, `Event`, `EventsKeyPrefix`, `ErrNotFound`); the thousand-line Store with its node-only setters is `internal/replica` — 2026-09-08

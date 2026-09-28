@@ -741,3 +741,71 @@ func TestResyncWalksOnlyTheReplicasRights(t *testing.T) {
 		}
 	}
 }
+
+// A replica whose store is full answers -OOM, which is not a refusal: the
+// write is simply gone. So it is held and the keys are noted, and the repair
+// keeps them noted until there is room, rather than reporting a replay that
+// the store did not take.
+func TestFullReplicaIsHeldUntilItHasRoom(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot be filled on its own")
+	}
+	primary, err := replica.NewStore(resptest.Addr(t), 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	replicaAddr := resptest.StartLimited(t, 4096).Addr()
+	rep, err := replica.NewStore(replicaAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+
+	// Fill the replica with keys that never expire, so it has nothing to evict.
+	filler := strings.Repeat("x", 400)
+	fillers := 0
+	for i := range 100 {
+		k := fmt.Sprintf("fill:%d", i)
+		if _, err := rep.Apply(resp.NewCommand("SET", k, filler)); err != nil {
+			break
+		}
+		fillers++
+	}
+	if fillers == 0 || fillers == 100 {
+		t.Fatalf("the filler did not fill the store: %d keys", fillers)
+	}
+
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.Set("full:a", []byte(strings.Repeat("y", 800)), 60); err != nil {
+		t.Fatalf("a full replica failed the write on the primary: %v", err)
+	}
+	if _, err := rep.Get("full:a"); err == nil {
+		t.Fatal("the full replica took the write after all; the test proves nothing")
+	}
+	if held := primary.Held(); !slices.Contains(held, replicaAddr) {
+		t.Fatalf("a replica that lost the write is not held: %v", held)
+	}
+	if n := primary.Repair(); n != 0 {
+		t.Fatalf("repaired %d keys onto a store with no room", n)
+	}
+	if held := primary.Held(); !slices.Contains(held, replicaAddr) {
+		t.Fatal("a replica that still has no room was released")
+	}
+
+	// Room again: the repair lands what the replica missed.
+	if _, err := rep.Delete(fmt.Sprintf("fill:%d", fillers-1)); err != nil {
+		t.Fatal(err)
+	}
+	if n := primary.Repair(); n != 1 {
+		t.Fatalf("replayed %d keys, want 1", n)
+	}
+	if v, err := rep.Get("full:a"); err != nil || len(v) != 800 {
+		t.Fatalf("full:a on the replica = %d bytes, %v after the repair", len(v), err)
+	}
+	if held := primary.Held(); len(held) != 0 {
+		t.Fatalf("a repaired replica is still held: %v", held)
+	}
+}

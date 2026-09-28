@@ -33,7 +33,10 @@ const testPeerPW = "peer-test-pw"
 
 func startNode(t *testing.T, cfg config.Config) *Server {
 	t.Helper()
-	cfg.StoreAddr, cfg.ListenAddr, cfg.PoolSize, cfg.Ownership = resptest.Addr(t), "127.0.0.1:0", 2, true
+	if cfg.StoreAddr == "" {
+		cfg.StoreAddr = resptest.Addr(t)
+	}
+	cfg.ListenAddr, cfg.PoolSize, cfg.Ownership = "127.0.0.1:0", 2, true
 	if cfg.PeerPassword == "" {
 		cfg.PeerPassword = testPeerPW
 	}

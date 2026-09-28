@@ -165,10 +165,13 @@ apply as they come. An external store keeps no stamps, so a node in front
 of one settles by arrival order, as before. Reads hit the local primary
 only. A peer that stops answering is held: writes note the keys it
 missed instead of waiting on it, and every 5 s the node replays them — the
-current value, or the deletion — until it answers again. Every write waits
-for its peers by default, so a key read from any node right after the answer
-is there — except on a peer at the other end of a link, which is on another
-network and is fed in order from a queue, so no write waits out the internet.
+current value, or the deletion — until it answers again. A peer whose store
+has no room left is held the same way: its `OOM` says the write is gone, not
+refused, so the replay keeps those keys until there is room for them. Every
+write waits for its peers by default, so a key read from any node right after
+the answer is there — except on a peer at the other end of a link, which is
+on another network and is fed in order from a queue, so no write waits out
+the internet.
 `REPLICATION=async` feeds every peer that way, answering once the local store
 has the write, and `tritium-load -peer` shows the lag that buys. A peer that falls too far behind is held and
 repaired like one that stopped answering.

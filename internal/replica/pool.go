@@ -252,8 +252,10 @@ func (p *pool) writer() {
 	}
 }
 
-// send runs one fan-out on the replica. A transport failure holds it; an
-// error reply is the peer refusing this write and nothing more.
+// send runs one fan-out on the replica. A transport failure holds it, and so
+// does a full store: either way the write never landed, and the repair is
+// what replays it. Any other error reply is the peer refusing this write and
+// nothing more — no replay changes a refusal.
 func (p *pool) send(cmds []resp.Command) {
 	out := cmds
 	if p.decorate != nil {
@@ -264,12 +266,20 @@ func (p *pool) send(cmds []resp.Command) {
 		return
 	}
 	var se *resp.ServerError
-	if errors.As(err, &se) {
+	if errors.As(err, &se) && !isFull(err) {
 		slog.Warn("replica rejected write", "addr", p.addr, "err", err)
 		return
 	}
 	p.hold(cmds)
 	slog.Warn("replica write failed, holding writes for it until a repair", "addr", p.addr, "err", err)
+}
+
+// isFull reports whether err is the replica's store answering that it has no
+// room. A refusal is final, but a full store is a condition that passes —
+// the keys are worth noting so a later repair can land them.
+func isFull(err error) bool {
+	var se *resp.ServerError
+	return errors.As(err, &se) && strings.HasPrefix(se.Msg, "OOM")
 }
 
 // isHeld reports whether writes to this replica are being noted, not sent.

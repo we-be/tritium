@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net"
 	"slices"
 	"strconv"
@@ -383,4 +384,31 @@ func TestScopedPeerIsSentOnlyItsKeys(t *testing.T) {
 	if n := node.store.Withheld()[guestAddr]; n == 0 {
 		t.Fatal("nothing was counted as withheld from the guest")
 	}
+}
+
+// A node whose store has no room answers the peer that sent the write with
+// the store's own -OOM, rather than an OK for a write it did not take: that
+// reply is what makes the sender hold this replica until a repair lands the
+// keys.
+func TestFullStoreAnswersTheSenderOOM(t *testing.T) {
+	if resptest.Shared() {
+		t.Skip("a shared store cannot be filled on its own")
+	}
+	srv := startNode(t, config.Config{StoreAddr: resptest.StartLimited(t, 4096).Addr()})
+	c := dial(t, srv)
+	c.want("OK", "AUTH", "peer", testPeerPW) // TRITIUM.REPLICATE is peer-only
+
+	// Keys without an expiry, so the store has nothing it may evict.
+	filler := strings.Repeat("x", 400)
+	fillers := 0
+	for i := range 100 {
+		if _, err := c.do("TRITIUM.REPLICATE", "SET", fmt.Sprintf("fill:%d", i), filler); err != nil {
+			break
+		}
+		fillers++
+	}
+	if fillers == 0 || fillers == 100 {
+		t.Fatalf("the filler did not fill the store: %d keys", fillers)
+	}
+	c.wantErr("OOM", "TRITIUM.REPLICATE", "SET", "full:k", strings.Repeat("y", 800), "EX", "60")
 }
