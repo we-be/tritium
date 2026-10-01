@@ -213,8 +213,7 @@ func (s *session) del(args []string) []byte {
 	for owner, keys := range byOwner {
 		if owner != "" {
 			v, err := s.srv.forward(owner, append([]string{"DEL"}, keys...))
-			var se *resp.ServerError
-			if errors.As(err, &se) {
+			if se, ok := errors.AsType[*resp.ServerError](err); ok {
 				return resp.AppendError(nil, se.Msg)
 			}
 			if err == nil {

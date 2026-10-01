@@ -204,8 +204,7 @@ func errArity(name string) []byte {
 // errMsg passes a backing store's own error reply through verbatim and
 // wraps anything else as ERR.
 func errMsg(err error) []byte {
-	var se *resp.ServerError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*resp.ServerError](err); ok {
 		return resp.AppendError(nil, se.Msg)
 	}
 	return resp.AppendError(nil, "ERR "+err.Error())

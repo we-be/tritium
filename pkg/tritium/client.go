@@ -122,8 +122,7 @@ func (c *Client) call(args ...string) (any, error) {
 	c.conn.SetDeadline(time.Now().Add(c.opts.Timeout))
 	v, err := resp.NewCommand(args...).Do(c.conn, c.r)
 	if err != nil {
-		var se *resp.ServerError
-		if errors.As(err, &se) {
+		if se, ok := errors.AsType[*resp.ServerError](err); ok {
 			return nil, fmt.Errorf("tritium: %s", se.Msg)
 		}
 		c.drop()

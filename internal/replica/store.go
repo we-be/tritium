@@ -222,8 +222,8 @@ func (s *Store) relayDecorate(cmds []resp.Command) []resp.Command {
 
 // prefixed puts args in front of cmd's own.
 func prefixed(cmd resp.Command, args []string) resp.Command {
-	for i := len(args) - 1; i >= 0; i-- {
-		cmd = resp.Prefix(cmd, args[i])
+	for _, arg := range slices.Backward(args) {
+		cmd = resp.Prefix(cmd, arg)
 	}
 	return cmd
 }
