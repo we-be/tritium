@@ -107,6 +107,18 @@ below, and checks it off here with its commit.
 - [x] A cloud node, so a fleet that spans networks has a member that is always up — 2026-09-07, `docs/cloud.md`
 - [x] Relay through a node that both sides can reach: `TRITIUM.REPLICATE RELAY n addr…` names the peers the sender could not deliver to; the hub applies and sends the plain write on from its own pools; stamps settle duplicates; a hub older than v0.18.0 is sent plain writes, so the hub rolls first. `TestHomesExchangeWritesThroughTheHub` — v0.18.0, 2026-09-08
 
+- [x] A replica whose clock is behind lost writes silently: a stamped fan-out is
+  refused by a node that will not reach that far past its own clock (the bound
+  `maxStampAhead` puts on a peer freezing a key), and the sender read that `-ERR`
+  as a refusal — logged, dropped, the replica never held and no repair ever
+  replayed it, with the client's SET already answered OK. A refusal is final and a
+  wrong clock is not: a node without a real-time clock boots with one, so a Pi
+  Zero worker joining before NTP sets it would take no stamped write at all and
+  nothing would heal it afterwards. The refusal now holds the replica the way a
+  full store does, and the repair lands the keys once the clocks agree.
+  `TestAReplicaWhoseClockIsBehindIsHeld`; both sides share the text as
+  `replica.StampAhead` so they cannot drift apart — 2026-10-08
+
 - [x] A full replica lost writes silently: a fan-out the replica answered `-OOM` was logged
   as a refusal and dropped, so the write stayed on the primary alone, the replica was never
   held, and no repair ever replayed it — a node past `STORE_MAX_MEMORY` holding keys it may

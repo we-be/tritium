@@ -412,3 +412,61 @@ func TestFullStoreAnswersTheSenderOOM(t *testing.T) {
 	}
 	c.wantErr("OOM", "TRITIUM.REPLICATE", "SET", "full:k", strings.Repeat("y", 800), "EX", "60")
 }
+
+// A node whose clock is behind refuses a stamped write, and the sender must
+// hold it for a repair rather than write the key off: the stamp the peer
+// cannot take yet is a condition that passes once its clock agrees, not a
+// refusal of the write. Dropping it loses the key on that peer for good,
+// with the client's SET already answered OK.
+func TestAReplicaWhoseClockIsBehindIsHeld(t *testing.T) {
+	a := startNode(t, config.Config{})
+	b := startNode(t, config.Config{})
+	// Attached the way the cluster attaches a peer it has learnt of, but
+	// without the gossip: nothing but this test decides when b is a replica,
+	// and b is no member of a's cluster, so nothing detaches it either.
+	if err := a.store.AddReplica(b.Addr()); err != nil {
+		t.Fatal(err)
+	}
+
+	// A key a owns, so the write fans out from here rather than being
+	// forwarded to b, whose clock is the one this test puts behind.
+	key := ""
+	for i := range 100 {
+		if k := fmt.Sprintf("skew:%d", i); a.ownerOf(k) == "" {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		t.Skip("every key landed on b")
+	}
+
+	// a's clock five minutes ahead of the wall clock and b reaching one
+	// minute past its own: a stamps later than b will take, which is what a
+	// node booting without a real-time clock looks like from the other side.
+	ahead := uint64(time.Now().Add(5*time.Minute).UnixMilli()-stampEpoch) << 24
+	if !a.clock.observe(ahead) {
+		t.Fatal("a's clock refused a stamp five minutes ahead")
+	}
+	b.clock.reach(time.Minute)
+
+	ca, cb := dial(t, a), dial(t, b)
+	ca.want("OK", "SET", key, "v", "EX", "60")
+	if f := a.forwarded.Load(); f != 0 {
+		t.Fatalf("a forwarded the write %d times; it was meant to fan out from here", f)
+	}
+	cb.want(nil, "GET", key) // b could not take the stamp; the test proves nothing if it did
+	if held := a.store.Held(); !slices.Contains(held, b.Addr()) {
+		t.Fatalf("a replica that could not take the stamp is not held: %v", held)
+	}
+
+	// Clocks agree again: the repair lands what b missed and releases it.
+	b.clock.reach(time.Hour)
+	if n := a.store.Repair(); n == 0 {
+		t.Fatal("the repair replayed nothing onto a replica whose clock had caught up")
+	}
+	cb.want("v", "GET", key)
+	if held := a.store.Held(); len(held) != 0 {
+		t.Fatalf("a repaired replica is still held: %v", held)
+	}
+}

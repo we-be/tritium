@@ -73,10 +73,11 @@ func (s *Store) repair(p *pool) (int, error) {
 			}
 			if len(cmds) > 0 {
 				// a refusal is the peer's answer and the key is done with; a full
-				// store is not an answer, so those keys stay noted for the next tick
+				// store or a clock behind the stamp is not an answer, so those keys
+				// stay noted for the next tick
 				if _, err := p.doAll(cmds); err != nil {
 					var se *resp.ServerError
-					if !errors.As(err, &se) || isFull(err) {
+					if !errors.As(err, &se) || isTransient(err) {
 						return n, err
 					}
 				}

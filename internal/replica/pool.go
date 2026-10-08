@@ -253,9 +253,9 @@ func (p *pool) writer() {
 }
 
 // send runs one fan-out on the replica. A transport failure holds it, and so
-// does a full store: either way the write never landed, and the repair is
-// what replays it. Any other error reply is the peer refusing this write and
-// nothing more — no replay changes a refusal.
+// does a condition that passes: either way the write never landed, and the
+// repair is what replays it. Any other error reply is the peer refusing this
+// write and nothing more — no replay changes a refusal.
 func (p *pool) send(cmds []resp.Command) {
 	out := cmds
 	if p.decorate != nil {
@@ -266,7 +266,7 @@ func (p *pool) send(cmds []resp.Command) {
 		return
 	}
 	var se *resp.ServerError
-	if errors.As(err, &se) && !isFull(err) {
+	if errors.As(err, &se) && !isTransient(err) {
 		slog.Warn("replica rejected write", "addr", p.addr, "err", err)
 		return
 	}
@@ -274,12 +274,23 @@ func (p *pool) send(cmds []resp.Command) {
 	slog.Warn("replica write failed, holding writes for it until a repair", "addr", p.addr, "err", err)
 }
 
-// isFull reports whether err is the replica's store answering that it has no
-// room. A refusal is final, but a full store is a condition that passes —
-// the keys are worth noting so a later repair can land them.
-func isFull(err error) bool {
+// StampAhead is how a node answers a stamped write whose stamp reaches
+// further past its own clock than it allows. The sender reads it, so the two
+// sides share the text rather than each spelling it out.
+const StampAhead = "ERR stamp too far ahead of this node's clock"
+
+// isTransient reports whether err is the peer answering with a condition
+// that passes rather than refusing the write itself: it has no room, or its
+// clock is too far behind the stamp to take it — a clock that NTP has yet to
+// set, which a node without a real-time clock boots with. A refusal is final
+// and the write is done with; a condition is not, so the keys are worth
+// noting for a repair once it has passed.
+func isTransient(err error) bool {
 	var se *resp.ServerError
-	return errors.As(err, &se) && strings.HasPrefix(se.Msg, "OOM")
+	if !errors.As(err, &se) {
+		return false
+	}
+	return strings.HasPrefix(se.Msg, "OOM") || se.Msg == StampAhead
 }
 
 // isHeld reports whether writes to this replica are being noted, not sent.

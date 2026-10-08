@@ -352,7 +352,7 @@ func (s *session) replicate(args []string) []byte {
 			return resp.AppendError(nil, "ERR TRITIUM.REPLICATE does not carry '"+args[2]+"'")
 		}
 		if !s.srv.clock.observe(stamp) {
-			return resp.AppendError(nil, "ERR stamp too far ahead of this node's clock")
+			return resp.AppendError(nil, replica.StampAhead)
 		}
 		if _, primary := s.srv.store.Stamps(); !primary {
 			args = args[2:]
