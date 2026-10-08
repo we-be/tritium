@@ -82,6 +82,13 @@ last section.
    `PEER_PASSWORD` that is unset or equal to `AUTH_PASSWORD`;
    `ALLOW_SHARED_PEER_PASSWORD=true` keeps the old behaviour, with the same
    warning. A lone node that never peers is unaffected either way.
+10. **A line had no bound.** A simple string, an error, an integer or the
+   length header of a bulk string or array was read until its `\r\n`,
+   however long, onto the heap, where `STORE_MAX_MEMORY` never looks. In
+   the 10 s before AUTH, one unauthenticated connection could spend as much
+   of a node's memory as it could send, and `MAX_CLIENTS` of them far more.
+   Now: a line past 64 KiB is refused (v0.18.8); bulk strings keep their
+   512 MiB limit and grow only as their bytes arrive.
 
 ## Looked at and left as is
 

@@ -3,6 +3,7 @@ package resp_test
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net"
 	"reflect"
 	"strings"
@@ -102,4 +103,51 @@ func TestLimits(t *testing.T) {
 	if err != nil || !bytes.Equal(v.([]byte), big) {
 		t.Fatalf("3 MiB bulk: %v", err)
 	}
+}
+
+// TestLineIsBounded: a line — a simple string, an error, an integer, or the
+// length header a bulk string or array declares itself with — is as much a
+// sender's claim as a bulk length, so a sender that never terminates one is
+// refused after a bounded read instead of buffered for as long as it keeps
+// typing. Nothing bounded it before, and the bytes land on the process's heap,
+// where STORE_MAX_MEMORY never sees them: an unauthenticated connection had
+// the whole auth window to spend a node's memory.
+func TestLineIsBounded(t *testing.T) {
+	e := &endless{}
+	if _, err := resp.NewReader(e).ReadValue(); err == nil {
+		t.Fatal("a line with no terminator was accepted")
+	}
+	if e.sent > 1<<20 {
+		t.Fatalf("read %d bytes of a line that was never going to end", e.sent)
+	}
+	msg := "ERR " + strings.Repeat("x", 60<<10) // a long line within the bound still arrives whole
+	_, err := resp.NewReader(strings.NewReader("-" + msg + "\r\n")).ReadValue()
+	var se *resp.ServerError
+	if !errors.As(err, &se) || se.Msg != msg {
+		t.Fatalf("60 KiB error line: %v", err)
+	}
+	if _, err := resp.NewReader(strings.NewReader("+" + strings.Repeat("x", 65<<10) + "\r\n")).ReadValue(); err == nil {
+		t.Fatal("a line past the bound was accepted")
+	}
+}
+
+// endless declares an integer and then types digits, ending nothing. It gives
+// up at 8 MiB, so a reader that lost its bound fails the test instead of
+// taking the machine's memory.
+type endless struct{ sent int }
+
+func (e *endless) Read(p []byte) (int, error) {
+	if e.sent >= 8<<20 {
+		return 0, io.EOF
+	}
+	if e.sent == 0 {
+		p[0] = resp.Integer
+		e.sent = 1
+		return 1, nil
+	}
+	for i := range p {
+		p[i] = '9'
+	}
+	e.sent += len(p)
+	return len(p), nil
 }

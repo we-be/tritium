@@ -56,29 +56,30 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   the v0.18.6 credential grammar, so the settings `PEER_ALLOW` and `PEER_PASSWORD` parsed as
   peers and **no peering node would start on v0.18.6** (`PEER_ALLOW: "…" is not r, w or rw`).
   Reserved names are skipped; upgrade straight past v0.18.6.
-- **v0.18.8** — **A scoped peer owns nothing.** A `PEER_<name>` is granted weight 0 whatever
-  weight it gossips, so `ownerOf` never picks it and no write is forwarded there: the
-  fleet's writes are not ordered on a guest that is sent a surface and may not even hold
-  the key. What a peer claims is its own word and what it is granted is this node's;
-  `tritium_peer_weight{peer=…}` publishes the second, beside the `ELECTRONEGATIVITY` that
-  `tritium-cli nodes` shows. Increment 6 of the trust program; off until a `PEER_` line
-  exists, so nothing rolled. Also a nil dereference that had been waiting since v0.18.0:
-  `newCluster` started the gossip and seed loops before its return value reached
-  `s.cluster`, so the first attach's fan-out could read that field — through the relay
-  callback the store already held — while it was still nil. The loops start after the
-  assignment now.
-- **v0.18.9** — **A scoped peer is never waited on.** A replica held to rights is fed from
-  a queue from the moment it attaches, the way a far one across a link is, so a guest that
-  joined for a surface cannot slow a fleet write down however bad its link. Measured with
-  `tritium-load`: an unscoped fleet pair is unchanged (SET p50 233µs → 222µs). Increment 7
-  of the trust program; off until a `PEER_` line exists, so nothing rolled.
-- **v0.18.10** — **A turned-down initiation is kept.** When both sides open a session at once
-  the tie-break drops one of them; the side that won forgot it, so the same hello read again —
-  a hello mailbox is public, and a replay costs nothing — started a session from scratch and,
-  once ours had been answered, took its place, leaving every message after it unread in a
-  mailbox nobody polls. The one we turn down is kept now: what it sent before reading our own
-  hello still opens in its chain, and a replayed hello dies on the ratchet like any other
-  replay. `pkg/messenger` only, and a state file written before this restores as it did.
+- **v0.18.8** (2026-10-08) — **A line is bounded.** A simple string, an error, an integer
+  or the length header a bulk string or array declares is cut off past 64 KiB, the way a
+  bulk length already was. Nothing bounded it before, so a connection that never sent the
+  line's `\r\n` was buffered on the heap for as long as it kept typing, where
+  `STORE_MAX_MEMORY` never sees it, and an unauthenticated one had the whole auth window to
+  spend a node's memory: on a node with an internet port, anyone's. Roll it. The release
+  also carries what had waited on main since v0.18.7:
+  - **A scoped peer owns nothing.** A `PEER_<name>` is granted weight 0 whatever weight it
+    gossips, so no write is forwarded to a guest that may not even hold the key;
+    `tritium_peer_weight{peer=…}` publishes the grant. Also a nil dereference waiting since
+    v0.18.0: `newCluster` started its loops before `s.cluster` held the cluster, so the
+    first attach's fan-out could read it nil. The loops start after the assignment now.
+  - **A scoped peer is never waited on.** A replica held to rights is fed from a queue from
+    the moment it attaches, so a guest's bad link cannot slow a fleet write (unscoped SET
+    p50 unchanged, 233µs → 222µs).
+  - **A resync reads only the surface it is copying**: one `SCAN MATCH` per right instead of
+    a walk of the whole keyspace filtered afterwards.
+  - **A replica with no room is held, not written off.** A fan-out answered `-OOM` holds the
+    replica like a transport failure, and a repair that OOMs keeps its keys for the next
+    tick, where before a full node diverged from the fleet for good while SET answered OK.
+  - **A turned-down initiation is kept** (`pkg/messenger`): when both sides open a session
+    at once, the losing hello is remembered, so a replay of it dies on the ratchet instead
+    of replacing the live session and stranding every message after it.
+  The trust-program items are off until a `PEER_` line exists.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

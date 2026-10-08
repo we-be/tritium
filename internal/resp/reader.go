@@ -12,11 +12,14 @@ import (
 // Limits on what one value may declare. Bulk matches proto-max-bulk-len's
 // default. Elements and depth bound what a stream can make the node allocate
 // or recurse into before a byte of payload arrives: a command is one flat
-// array, and no reply nests past three.
+// array, and no reply nests past three. A line (a simple string, an error, an
+// integer, or a length header) is bounded too: one the sender never ends
+// would otherwise buffer on the heap for as long as it keeps typing.
 const (
 	maxBulkLen  = 512 << 20
 	maxArrayLen = 1 << 20
 	maxDepth    = 32
+	maxLineLen  = 64 << 10
 )
 
 // Reader decodes RESP replies. Values decode as string (simple string), int64
@@ -139,9 +142,19 @@ func (r *Reader) ReadInt() (int64, error) {
 }
 
 func (r *Reader) readLine() ([]byte, error) {
-	line, err := r.r.ReadBytes('\n')
-	if err != nil {
-		return nil, err
+	var line []byte
+	for {
+		frag, err := r.r.ReadSlice('\n')
+		if len(line)+len(frag) > maxLineLen+2 { // +2: the CRLF is not the line
+			return nil, fmt.Errorf("resp: line longer than %d bytes", maxLineLen)
+		}
+		line = append(line, frag...)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return nil, err
+		}
 	}
 	if len(line) < 2 || line[len(line)-2] != '\r' {
 		return nil, errors.New("resp: invalid line ending")
