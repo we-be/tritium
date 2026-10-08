@@ -419,6 +419,9 @@ func TestFullStoreAnswersTheSenderOOM(t *testing.T) {
 // refusal of the write. Dropping it loses the key on that peer for good,
 // with the client's SET already answered OK.
 func TestAReplicaWhoseClockIsBehindIsHeld(t *testing.T) {
+	if resptest.Shared() {
+		t.Skip("with one store behind both nodes, the write b refused is already there to read")
+	}
 	a := startNode(t, config.Config{})
 	b := startNode(t, config.Config{})
 	// Attached the way the cluster attaches a peer it has learnt of, but
