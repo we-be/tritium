@@ -372,7 +372,14 @@ func TestScopedPeerIsSentOnlyItsKeys(t *testing.T) {
 	}
 	gc := dial(t, guest)
 	gc.want("OK", "AUTH", "boss")
-	gc.want("v", "GET", "pub:k")
+	// A scoped peer is fed from a queue, not waited on: Set returns before
+	// the guest has the write. fleet:k was cut at the fan-out, before Set
+	// returned, so once pub:k lands there is nothing left in flight for it.
+	waitFor(t, "pub:k to reach the guest", func() bool {
+		v, _ := gc.do("GET", "pub:k")
+		b, _ := v.([]byte)
+		return string(b) == "v"
+	})
 	if v, err := gc.do("GET", "fleet:k"); err != nil || v != nil {
 		t.Fatalf("a fleet key was fanned out to a scoped peer: %v, %v", v, err)
 	}
