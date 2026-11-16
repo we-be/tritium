@@ -80,6 +80,13 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
     at once, the losing hello is remembered, so a replay of it dies on the ratchet instead
     of replacing the live session and stranding every message after it.
   The trust-program items are off until a `PEER_` line exists.
+- **v0.18.9** (2026-11-16) — **A replica whose clock is behind is held, not written off.**
+  A peer refuses a stamped write that runs past its own clock, and the sender used to log
+  that refusal and drop it: no hold, no repair, the client's SET already answered OK, the
+  replica diverged on that key for good. A node that boots without a real-time clock (the
+  Pi Zero `make dist` builds for) took no stamped write until NTP set it and nothing healed
+  the gap. The refusal now holds the replica and the repair lands the keys once the clocks
+  agree. Roll it.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 
