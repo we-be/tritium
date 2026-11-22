@@ -809,3 +809,83 @@ func TestFullReplicaIsHeldUntilItHasRoom(t *testing.T) {
 		t.Fatalf("a repaired replica is still held: %v", held)
 	}
 }
+
+// A replica removed — detached, its peer read as down — keeps a backlog of
+// every write made after it is gone, so re-adding it holds it until those
+// are replayed: a peer back as the same incarnation is only gap-filled, and
+// an older value it still holds would otherwise stay there. Past missedCap
+// the backlog spills and the repair is a full copy that overwrites.
+func TestRemovedReplicaMissesAreReplayed(t *testing.T) {
+	if sameServer(t) {
+		t.Skip("a shared store cannot miss a write")
+	}
+	primary, err := replica.NewStore(resptest.Addr(t), 2, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer primary.Close()
+	replicaAddr := resptest.Addr(t)
+	rep, err := replica.NewStore(replicaAddr, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rep.Close()
+	set := func(k, v string) {
+		t.Helper()
+		if err := primary.Set(k, []byte(v), 60); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	set("gone:a", "1")
+	if !primary.RemoveReplica(replicaAddr) {
+		t.Fatal("the replica was not known")
+	}
+	set("gone:a", "2")
+	set("gone:b", "1")
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	if held := primary.Held(); !slices.Contains(held, replicaAddr) {
+		t.Fatalf("a replica back with writes to catch up on is not held: %v", held)
+	}
+	if n := primary.Repair(); n != 2 {
+		t.Fatalf("replayed %d keys, want 2", n)
+	}
+	if v, _ := rep.Get("gone:a"); string(v) != "2" {
+		t.Fatalf("gone:a on the replica = %q after repair", v)
+	}
+	if v, _ := rep.Get("gone:b"); string(v) != "1" {
+		t.Fatalf("gone:b on the replica = %q after repair", v)
+	}
+
+	// removed and re-added with nothing written meanwhile: nothing to hold for
+	primary.RemoveReplica(replicaAddr)
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	if held := primary.Held(); len(held) != 0 {
+		t.Fatalf("held with nothing missed: %v", held)
+	}
+
+	primary.RemoveReplica(replicaAddr)
+	set("gone:a", "3")
+	cmds := make([]resp.Command, 0, 10001)
+	for i := range 10001 {
+		cmds = append(cmds, resp.NewCommand("SET", "spill:"+strconv.Itoa(i), "x", "EX", "60"))
+	}
+	if _, err := primary.Mutate(cmds...); err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.AddReplica(replicaAddr); err != nil {
+		t.Fatal(err)
+	}
+	if n := primary.Repair(); n < 10002 {
+		t.Fatalf("a spilled backlog copied %d keys, want every key", n)
+	}
+	if v, _ := rep.Get("gone:a"); string(v) != "3" {
+		t.Fatalf("gone:a on the replica = %q after a spilled repair", v)
+	}
+}

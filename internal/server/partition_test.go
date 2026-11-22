@@ -211,3 +211,64 @@ func TestPartitionSettlesConflicts(t *testing.T) {
 	pa.want(int64(0), "TRITIUM.REPLICATE", "STAMPED", "1", "DEL", "part:c")
 	ca.want("b-side", "GET", "part:c")
 }
+
+// A peer already detached when a write is made — down past downAfter, a
+// laptop asleep or a link cut longer than that — is not held, so nothing
+// notes the write for it; when it returns as the same incarnation the
+// re-attach only fills its gaps, and without stamps (an external store) an
+// older value it still holds would stay there, the two sides diverged until
+// the next write. The writes it missed while detached are replayed too.
+// (A delete is not asserted: without stamps the peer's own gap-fill can
+// bring a key back that this side deleted — only a stamped store settles that.)
+func TestPartitionWritesAfterDetach(t *testing.T) {
+	hurry(t)
+	if resptest.Shared() {
+		t.Skip("a shared store cannot be partitioned")
+	}
+	realA, realB := reserve(t), reserve(t)
+	linkA, linkB := newLink(t, realA), newLink(t, realB)
+	a, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realA, AdvertiseAddr: linkA.Addr(), PoolSize: 2, PeerPassword: testPeerPW})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Start(realA); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Stop() })
+	b, err := New(config.Config{StoreAddr: resptest.Addr(t), ListenAddr: realB, AdvertiseAddr: linkB.Addr(), PoolSize: 2, JoinAddr: linkA.Addr(), PeerPassword: testPeerPW})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(realB); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { b.Stop() })
+	if err := b.Join(linkA.Addr()); err != nil {
+		t.Fatal(err)
+	}
+	ca, cb := dial(t, a), dial(t, b)
+	aID, bID := a.cluster.local.ID, b.cluster.local.ID
+	waitFor(t, "both attached", func() bool { return len(a.store.Replicas()) == 1 && len(b.store.Replicas()) == 1 })
+	ca.want("OK", "SET", "late:a", "1", "EX", "60")
+	waitFor(t, "the first write to replicate", func() bool { v, _ := cb.do("GET", "late:a"); return v != nil && string(v.([]byte)) == "1" })
+	startedB := a.Nodes()[bID].Started
+
+	linkA.Cut()
+	linkB.Cut()
+	waitFor(t, "both to detach the other", func() bool {
+		return len(a.store.Replicas()) == 0 && len(b.store.Replicas()) == 0
+	})
+	ca.want("OK", "SET", "late:a", "2", "EX", "60") // b is detached already: no fan-out reaches for it
+	cb.want("1", "GET", "late:a")
+
+	linkA.Heal()
+	linkB.Heal()
+	waitFor(t, "b to re-attach as the same incarnation", func() bool {
+		n, ok := a.Nodes()[bID]
+		return ok && n.State == storage.NodeStateHealthy && len(a.store.Replicas()) == 1
+	})
+	if _, ok := b.Nodes()[aID]; !ok || !a.Nodes()[bID].Started.Equal(startedB) {
+		t.Fatal("a partition survivor came back as a new incarnation")
+	}
+	waitFor(t, "the update made after the detach to reach b", func() bool { v, _ := cb.do("GET", "late:a"); return v != nil && string(v.([]byte)) == "2" })
+}

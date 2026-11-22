@@ -54,11 +54,15 @@ type Store struct {
 	// node holds to rights on the accept side is held to the same ones on
 	// the send side. nil, and a nil answer, mean every key.
 	rights func(addr string) *config.Rights
-	// parked is what a replica removed while held still missed, by address:
-	// a peer detached during a partition is re-attached when the link is
+	// parked is what a removed replica has missed, by address — what it
+	// missed while held, and every write fanned out since the removal: a
+	// peer detached during a partition is re-attached when the link is
 	// back, and a first-meeting sync only fills its gaps — the keys written
-	// meanwhile would otherwise stay stale there until they expire.
-	parked map[string]backlog
+	// meanwhile would otherwise stay stale there until they expire. noting
+	// counts the parked backlogs still taking keys (not spilled), so a write
+	// pays for this only while one does.
+	parked map[string]*backlog
+	noting int
 }
 
 // backlog is what a held replica has missed.
@@ -100,7 +104,7 @@ func NewStoreVia(via Transport, addr string, poolSize int) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("primary: %w", err)
 	}
-	return &Store{primary: p, size: poolSize, via: via, parked: map[string]backlog{}}, nil
+	return &Store{primary: p, size: poolSize, via: via, parked: map[string]*backlog{}}, nil
 }
 
 // SetReplicaTransport is how replicas added from now on are reached.
@@ -472,7 +476,11 @@ func (s *Store) replicateAllExcept(cmds []resp.Command, except string) {
 	s.writes.Add(1)
 	s.mu.RLock()
 	replicas := slices.Clone(s.replicas)
+	noting := s.noting > 0
 	s.mu.RUnlock()
+	if noting {
+		s.note(cmds)
+	}
 
 	var wg sync.WaitGroup
 	for _, r := range replicas {
@@ -486,6 +494,39 @@ func (s *Store) replicateAllExcept(cmds []resp.Command, except string) {
 		wg.Go(func() { r.deliver(cmds) })
 	}
 	wg.Wait()
+}
+
+// note adds the keys of cmds to every parked backlog still taking them; one
+// past missedCap spills, and its peer's repair copies everything instead.
+func (s *Store) note(cmds []resp.Command) {
+	var keys []string
+	for _, c := range cmds {
+		keys = append(keys, keysOf(c)...)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.parked {
+		if b.spilled {
+			continue
+		}
+		for _, k := range keys {
+			b.keys[k] = struct{}{}
+		}
+		if len(b.keys) > missedCap {
+			b.keys, b.spilled = nil, true
+			s.noting--
+		}
+	}
+}
+
+// unpark drops the backlog parked for addr, if any. Called with s.mu held.
+func (s *Store) unpark(addr string) {
+	if b, ok := s.parked[addr]; ok {
+		if !b.spilled {
+			s.noting--
+		}
+		delete(s.parked, addr)
+	}
 }
 
 // AddReplica starts fanning writes out to addr. Adding an address twice is a no-op.
@@ -519,8 +560,10 @@ func (s *Store) AddReplica(addr string) error {
 		p.async(s.queueDepth())
 	}
 	if b, ok := s.parked[addr]; ok { // back from a partition: held until its backlog is replayed
-		p.held, p.missed, p.spilled = true, b.keys, b.spilled
-		delete(s.parked, addr)
+		if b.spilled || len(b.keys) > 0 {
+			p.held, p.missed, p.spilled = true, b.keys, b.spilled
+		}
+		s.unpark(addr)
 	}
 	s.replicas = append(s.replicas, p)
 	return nil
@@ -535,10 +578,16 @@ func (s *Store) RemoveReplica(addr string) bool {
 		p = s.replicas[i]
 		s.replicas = slices.Delete(s.replicas, i, i+1)
 		p.mu.Lock()
-		if p.held {
-			s.parked[addr] = backlog{p.missed, p.spilled}
+		b := &backlog{keys: p.missed, spilled: p.held && p.spilled}
+		if !p.held || b.keys == nil && !b.spilled {
+			b.keys = map[string]struct{}{} // from now on every write fanned out is one it misses
 		}
 		p.mu.Unlock()
+		s.unpark(addr)
+		s.parked[addr] = b
+		if !b.spilled {
+			s.noting++
+		}
 	}
 	s.mu.Unlock()
 	if p == nil {
