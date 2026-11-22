@@ -87,6 +87,13 @@ Dates are tag dates. `gh release list --repo we-be/tritium` is the authoritative
   Pi Zero `make dist` builds for) took no stamped write until NTP set it and nothing healed
   the gap. The refusal now holds the replica and the repair lands the keys once the clocks
   agree. Roll it.
+- **v0.18.10** (2026-11-22) — **A write made after a peer was detached reaches it when it
+  returns.** Only a peer held at the moment of its detach kept a backlog, so every write
+  made once it read as down reached nobody for it; back as the same incarnation (a laptop
+  asleep, a link cut past 15 s) it was only gap-filled with NX, and on an external store,
+  which keeps no stamps, an older value it still held stayed until the key's next write
+  (#2). A detached peer's backlog now keeps noting writes until it spills at 10 000 keys,
+  past which its return is a full overwriting copy. Roll it.
 
 ## v0.17.x — ownership weights and forwarding (2026-09-08)
 

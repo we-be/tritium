@@ -194,8 +194,8 @@ peer is attached and has the other's store copied over: a peer that restarted
 since it was last seen is a fresh incarnation and stale, so the survivor's keys
 win there; a newcomer, or a peer back from a partition both sides lived
 through, keeps what it holds and only has its gaps filled — and what it
-missed while the link was down, which the other side noted while holding it,
-is replayed on top, so a key updated on one side of a partition reaches the
+missed while the link was down, which the other side noted while holding it
+and kept noting once it was dropped, is replayed on top, so a key updated on one side of a partition reaches the
 other once it heals, and a key written on both sides ends up, on both, with
 the later write by its stamp. A node whose own clock stops for
 longer than 15 s (stopped, asleep, starved) knows it was the one away and
